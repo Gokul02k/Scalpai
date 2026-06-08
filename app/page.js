@@ -1,6 +1,6 @@
 "use client";
 
-import { fetchRealMarketData } from './lib/marketData';
+import { fetchAllMarketData } from './lib/marketData';
 
 import { useState, useEffect, useRef } from "react";
 import {
@@ -211,6 +211,9 @@ export default function App() {
   const [rsi,        setRsi]        = useState(52);
   const [macd,       setMacd]       = useState({ v: 0.35, s: 0.12, h: 0.23 });
   const [signals,    setSignals]    = useState([]);
+  const [isLive,     setIsLive]     = useState(false);
+  const [dataSource, setDataSource] = useState(null);
+  const [liveError,  setLiveError]  = useState(null);
 
   // ── Portfolio ────────────────────────────
   const [portfolio, setPortfolio] = useState([
@@ -252,28 +255,36 @@ export default function App() {
   // ─────────────────────────────────────────
   // EFFECTS
   // ─────────────────────────────────────────
-  // Fetch real market data on mount
+  // Poll Finnhub for real prices; fall back to simulation only when live data is unavailable
   useEffect(() => {
-    const fetchData = async () => {
-      for (const inst of Object.keys(INSTRUMENTS)) {
-        const realData = await fetchRealMarketData(inst);
-        if (realData && realData.source === 'finnhub') {
-          setPrices(prev => ({
-            ...prev,
-            [inst]: {
-              cur: realData.cur,
-              open: realData.open,
-              high: realData.high,
-              low: realData.low,
-              prev: realData.prev,
-            }
-          }));
-        }
+    let cancelled = false;
+
+    const refreshLivePrices = async () => {
+      const result = await fetchAllMarketData();
+      if (cancelled) return;
+
+      if (result.isLive) {
+        setPrices(prev => ({ ...prev, ...result.prices }));
+        setIsLive(true);
+        setDataSource(result.source);
+        setLiveError(result.liveCount < result.total
+          ? `Live: ${result.liveCount}/${result.total} indices (${result.source})`
+          : null);
+      } else {
+        setIsLive(false);
+        setDataSource(null);
+        setLiveError(result.error || 'Using simulated prices — live feed unavailable');
       }
     };
-    fetchData();
-  }, []);
+
+    refreshLivePrices();
+    const id = setInterval(refreshLivePrices, refresh * 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [refresh]);
+
   useEffect(() => {
+    if (isLive) return;
+
     const id = setInterval(() => {
       setPrices(prev => {
         const next = { ...prev };
@@ -296,7 +307,7 @@ export default function App() {
       });
     }, refresh * 1000);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, isLive]);
 
   useEffect(() => {
     const id = setInterval(() => setPortfolio(p => p.map(s => ({ ...s, cur: +(s.cur * (1 + (Math.random() - 0.5) * 0.0008)).toFixed(2) }))), 8000);
@@ -443,7 +454,7 @@ Be concise, specific, and actionable. Confirm any change you make.`;
       <div style={{ background: `linear-gradient(135deg,${C.card} 0%,#0c1828 100%)`, border: `1px solid ${isUp ? C.green + "40" : C.red + "40"}`, borderRadius: 14, padding: 16, marginBottom: 10 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
-            <div style={{ color: C.muted, fontSize: 10, marginBottom: 4, letterSpacing: 1, textTransform: "uppercase" }}>{instrument} · LIVE</div>
+            <div style={{ color: C.muted, fontSize: 10, marginBottom: 4, letterSpacing: 1, textTransform: "uppercase" }}>{instrument} · {isLive ? `${(dataSource || "LIVE").toUpperCase()} LIVE` : "SIMULATED"}</div>
             <div style={{ color: C.text, fontSize: 31, fontWeight: 900, letterSpacing: -1, fontVariantNumeric: "tabular-nums" }}>₹{fmt(cp)}</div>
             <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 5 }}>
               {isUp ? <ArrowUp size={13} color={C.green} /> : <ArrowDown size={13} color={C.red} />}
@@ -836,9 +847,12 @@ Be concise, specific, and actionable. Confirm any change you make.`;
           <div style={{ color: C.muted, fontSize: 10, letterSpacing: .3 }}>NSE · {new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })} IST</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 5, background: `${C.green}18`, border: `1px solid ${C.green}45`, borderRadius: 7, padding: "4px 10px" }}>
-            <div style={{ width: 6, height: 6, borderRadius: "50%", background: C.green }} />
-            <span style={{ color: C.green, fontSize: 11, fontWeight: 700 }}>LIVE</span>
+          <div
+            title={liveError || (isLive ? `Live data via ${dataSource}` : "Simulated data")}
+            style={{ display: "flex", alignItems: "center", gap: 5, background: isLive ? `${C.green}18` : `${C.yellow}18`, border: `1px solid ${isLive ? C.green : C.yellow}45`, borderRadius: 7, padding: "4px 10px" }}
+          >
+            <div style={{ width: 6, height: 6, borderRadius: "50%", background: isLive ? C.green : C.yellow }} />
+            <span style={{ color: isLive ? C.green : C.yellow, fontSize: 11, fontWeight: 700 }}>{isLive ? "LIVE" : "DEMO"}</span>
           </div>
           <button onClick={() => setChatOpen(true)} style={{ background: `${C.blue}22`, border: `1px solid ${C.blue}55`, borderRadius: 8, padding: "6px 12px", color: C.blue, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
             <MessageCircle size={14} />

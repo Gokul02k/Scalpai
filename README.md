@@ -27,9 +27,22 @@ Real-time scalping dashboard for NIFTY, SENSEX, BANK NIFTY with AI-powered signa
 
 ## Deploy to Vercel
 
-1. Push to GitHub
-2. Connect repo to Vercel
-3. Deploy automatically!
+1. Push this repo to GitHub
+2. Import the repo at [vercel.com/new](https://vercel.com/new)
+3. **Optional:** add `FINNHUB_API_KEY` from [finnhub.io/dashboard](https://finnhub.io/dashboard) — **not required** for Indian indices (Finnhub free tier does not include NSE/BSE). Live prices use **Yahoo Finance** automatically.
+4. Deploy (or **Redeploy** after any env var change)
+
+The header shows **LIVE** when real market data is connected (via Yahoo Finance), or **DEMO** when using simulated prices.
+
+### Troubleshooting live data
+
+| Symptom | Fix |
+|---------|-----|
+| Header shows **DEMO** | Redeploy on Vercel; test `/api/market?symbol=%5ENSEI` — should return `"source":"yahoo"` |
+| Finnhub key set but still Yahoo | Normal — Finnhub free plan does not include Indian index quotes |
+| Prices frozen | Indian market hours are 9:15 AM–3:30 PM IST; outside that, last close is shown |
+
+Local dev: copy `.env.example` to `.env.local` and add your key, then run `npm run dev`.
 
 ## Usage
 
