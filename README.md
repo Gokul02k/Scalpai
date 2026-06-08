@@ -3,13 +3,17 @@
 Real-time scalping dashboard for NIFTY, SENSEX, BANK NIFTY with AI-powered signals and analysis.
 
 ## Features
-- Live price tracking & candlestick charts
-- Technical indicators (RSI, MACD, Bollinger Bands)
-- Buy/Sell scalping signals
-- Portfolio tracker
-- Trade history & statistics
-- Market news & insights
-- AI Chat assistant (powered by Claude)
+- Live index prices (Yahoo Finance) + real candlestick charts
+- Technical indicators calculated from real data (RSI, MACD, BB, EMA, ATR, Stochastic)
+- Smart buy/sell signals for indices + your portfolio stocks
+- Portfolio tracker with CSV upload + live stock prices
+- Watchlist tab with live quotes
+- Trade history with today/week/month filters (saved in browser)
+- Live market news + portfolio-linked headlines
+- Sound & browser alerts on new signals
+- Scalp timer + quick BUY/SELL buttons
+- AI chat assistant (requires `ANTHROPIC_API_KEY`)
+- Light/dark theme, calculators, market hours display
 
 ## Quick Start
 
@@ -65,11 +69,12 @@ Local dev: copy `.env.example` to `.env.local` and add both keys if needed.
 
 | Symptom | Fix |
 |---------|-----|
-| Header shows **DEMO** | Redeploy on Vercel; test `/api/market?symbol=%5ENSEI` — should return `"source":"yahoo"` |
-| Finnhub key set but still Yahoo | Normal — Finnhub free plan does not include Indian index quotes |
-| Prices frozen | Indian market hours are 9:15 AM–3:30 PM IST; outside that, last close is shown |
+| Header shows **DEMO** | Redeploy; test `/api/market?symbol=%5ENSEI` — should return `"source":"yahoo"` |
+| AI says "not configured" | Add `ANTHROPIC_API_KEY` on Vercel and redeploy |
+| Can't scroll on small screen | Fixed in latest version — hard refresh (`Ctrl+Shift+R`) |
+| Prices frozen | Indian market hours 9:15 AM–3:30 PM IST; outside that shows last close |
 
-Local dev: copy `.env.example` to `.env.local` and add your key, then run `npm run dev`.
+Local dev: copy `.env.example` to `.env.local`, then run `npm run dev`.
 
 ## Usage
 
