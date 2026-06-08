@@ -6,25 +6,33 @@ import {
   ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import {
-  Settings, ChevronDown, MessageCircle, X, Send, Newspaper, BarChart2,
-  Briefcase, Home, Activity, ArrowUp, ArrowDown, Zap, RefreshCw, Star,
-  Upload, Plus, Trash2, Bell, Sun, Moon, Timer, Calculator,
+  Settings, ChevronDown,   MessageCircle, X, Send, Newspaper, BarChart2,
+  Briefcase, Home, ArrowUp, ArrowDown, Zap, RefreshCw, Star,
+  Upload, Plus, Trash2, Bell, Sun, Moon, Calculator, ImageIcon, Lightbulb,
 } from "lucide-react";
 import {
   fetchAllMarketData, fetchCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, genFallbackCandles,
 } from "./lib/marketData";
 import { analyzeFromCandles } from "./lib/indicators";
 import { generateIndexSignals, generatePortfolioSignals, parsePortfolioCSV } from "./lib/signals";
+import { getOverallSuggestion, explainNiftyMove } from "./lib/suggestion";
 import { loadPersisted, savePersisted } from "./lib/storage";
 import { getMarketStatus } from "./lib/marketHours";
 import { THEMES, cardStyle } from "./lib/themes";
 
 const INSTRUMENTS = {
   "NIFTY":        { base: 25000, vol: 0.0012, lot: 50 },
+  "GOLD":         { base: 124,   vol: 0.0015, lot: 1 },
+  "SILVER":       { base: 228,   vol: 0.0020, lot: 1 },
   "SENSEX":       { base: 82000, vol: 0.0010, lot: 10 },
   "BANK NIFTY":   { base: 55000, vol: 0.0015, lot: 15 },
   "FINNIFTY":     { base: 23800, vol: 0.0013, lot: 40 },
   "MIDCAP NIFTY": { base: 12500, vol: 0.0018, lot: 75 },
+};
+
+const INSTRUMENT_SUB = {
+  GOLD: "NSE · GOLDBEES ETF",
+  SILVER: "NSE · SILVERBEES ETF",
 };
 
 const DEFAULT_PORTFOLIO = [
@@ -175,7 +183,12 @@ function NewsCard({ n, onClick, C }) {
           <span style={{ color: C.muted, fontSize: 10 }}>{n.time}</span>
         </div>
       </div>
-      <p style={{ color: C.text, fontSize: 13, lineHeight: 1.45, margin: "0 0 8px" }}>{n.headline}</p>
+      <p style={{ color: C.text, fontSize: 13, lineHeight: 1.45, margin: "0 0 6px" }}>{n.headline}</p>
+      {n.marketImpact && (
+        <p style={{ color: C.muted, fontSize: 11, lineHeight: 1.4, margin: "0 0 8px", borderLeft: `2px solid ${sc}`, paddingLeft: 8 }}>
+          📈 Market impact: {n.marketImpact}
+        </p>
+      )}
       <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
         {(n.stocks || []).slice(0, 3).map((s) => (
           <span key={s} style={{ background: C.dim, color: C.muted, fontSize: 10, padding: "2px 6px", borderRadius: 4 }}>{s}</span>
@@ -249,6 +262,8 @@ export default function App() {
   const [chatLoading, setChatLoading] = useState(false);
   const chatEnd = useRef(null);
   const csvRef = useRef(null);
+  const imageRef = useRef(null);
+  const [portfolioLoading, setPortfolioLoading] = useState(false);
   const portfolioRef = useRef(portfolio);
   const pricesRef = useRef(prices);
   portfolioRef.current = portfolio;
@@ -390,6 +405,19 @@ export default function App() {
     return analyzeFromCandles(instCandles);
   }, [instCandles]);
 
+  const cpLive = prices[instrument]?.cur ?? 0;
+  const pctLive = prices[instrument]?.prev
+    ? +(((cpLive - prices[instrument].prev) / prices[instrument].prev) * 100).toFixed(2)
+    : 0;
+  const suggestion = useMemo(
+    () => getOverallSuggestion(analysis, pctLive),
+    [analysis, pctLive]
+  );
+  const niftyMove = useMemo(
+    () => explainNiftyMove(prices.NIFTY, news),
+    [prices.NIFTY, news]
+  );
+
   useEffect(() => {
     const cp = prices[instrument]?.cur;
     if (!analysis || !cp) return;
@@ -466,7 +494,7 @@ export default function App() {
 Instrument: ${instrument} @ ₹${fmt(cp)} | RSI: ${analysis?.rsi ?? "—"} | Theme: ${theme}
 Commands via <CMD>{"action":"...","value":"..."}</CMD>:
 changeInstrument, changeTimeframe, changeRefreshRate, toggleIndicator, setRiskLimit, setTheme, addStock, addToWatchlist, switchTab
-Tabs: dashboard|charts|portfolio|trades|news|watchlist|settings`;
+Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -488,28 +516,6 @@ Tabs: dashboard|charts|portfolio|trades|news|watchlist|settings`;
     }
   };
 
-  const quickTrade = (type) => {
-    setActiveScalp({ type, ins: instrument, entry: cp, startTime: Date.now() });
-    setNewT({ ins: instrument, type, entry: String(cp), qty: 1, date: todayStr() });
-    setAddTrade(true);
-    setTab("trades");
-  };
-
-  const logTrade = () => {
-    if (!newT.entry) return;
-    const lot = INSTRUMENTS[newT.ins].lot;
-    const exit = +(+newT.entry * (newT.type === "BUY" ? 1.0045 : 0.9955)).toFixed(2);
-    const pnl = +((exit - +newT.entry) * (newT.type === "BUY" ? 1 : -1) * +newT.qty * lot).toFixed(0);
-    setTrades((p) => [{
-      id: Date.now(), ins: newT.ins, type: newT.type, entry: +newT.entry, exit, qty: +newT.qty,
-      time: new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }),
-      date: newT.date || todayStr(), dur: activeScalp ? formatElapsed(scalpElapsed) : "—", pnl, win: pnl > 0,
-    }, ...p]);
-    setActiveScalp(null);
-    setAddTrade(false);
-    setNewT({ ins: "NIFTY", type: "BUY", entry: "", qty: 1, date: todayStr() });
-  };
-
   const handleCSV = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -520,6 +526,54 @@ Tabs: dashboard|charts|portfolio|trades|news|watchlist|settings`;
     };
     reader.readAsText(file);
     e.target.value = "";
+  };
+
+  const handlePortfolioImage = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setPortfolioLoading(true);
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const dataUrl = ev.target.result;
+        const base64 = String(dataUrl).split(",")[1];
+        const mediaType = file.type || "image/jpeg";
+        const res = await fetch("/api/portfolio/parse", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: base64, mediaType }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(data.error || "Could not read screenshot. Try a clearer image or use CSV.");
+          return;
+        }
+        if (data.portfolio?.length) {
+          setPortfolio(data.portfolio);
+        } else {
+          alert("No holdings found in the image. Try CSV upload or a clearer screenshot.");
+        }
+      } catch {
+        alert("Failed to upload image.");
+      } finally {
+        setPortfolioLoading(false);
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
+  // Kept for Trades tab when re-enabled
+  const logTrade = () => {
+    const entry = parseFloat(newT.entry) || cp;
+    const exit = entry + (newT.type === "BUY" ? 15 : -15);
+    const pnl = newT.type === "BUY" ? exit - entry : entry - exit;
+    setTrades((p) => [{
+      id: Date.now(), ins: newT.ins, type: newT.type, entry, exit, pnl, win: pnl > 0,
+      date: newT.date, time: new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }), dur: "—",
+    }, ...p]);
+    setAddTrade(false);
+    setNewT({ ins: instrument, type: "BUY", entry: "", date: new Date().toISOString().slice(0, 10) });
   };
 
   const addToWatchlist = () => {
@@ -567,25 +621,40 @@ Tabs: dashboard|charts|portfolio|trades|news|watchlist|settings`;
         )}
       </div>
 
-      {activeScalp && (
-        <div style={{ ...S.card, borderColor: `${C.yellow}55`, background: `${C.yellow}10` }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-            <Timer size={14} color={C.yellow} />
-            <span style={{ color: C.yellow, fontWeight: 800, fontSize: 12 }}>ACTIVE SCALP — {activeScalp.type} {activeScalp.ins}</span>
+      {suggestion && (
+        <div style={{
+          ...S.card,
+          borderColor: suggestion.action === "BUY" ? `${C.green}55` : suggestion.action === "SELL" ? `${C.red}55` : `${C.yellow}55`,
+          background: suggestion.action === "BUY" ? `${C.green}0d` : suggestion.action === "SELL" ? `${C.red}0d` : `${C.yellow}0d`,
+          marginBottom: 10,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <Lightbulb size={16} color={suggestion.action === "BUY" ? C.green : suggestion.action === "SELL" ? C.red : C.yellow} />
+            <span style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>Today&apos;s Suggestion</span>
+            <span style={{
+              marginLeft: "auto",
+              background: suggestion.action === "BUY" ? C.green : suggestion.action === "SELL" ? C.red : C.yellow,
+              color: suggestion.action === "HOLD" || suggestion.action === "WAIT" ? C.text : "#000",
+              fontSize: 10, fontWeight: 800, padding: "3px 10px", borderRadius: 4,
+            }}>
+              {suggestion.label}
+            </span>
           </div>
-          <div style={{ color: C.text, fontSize: 22, fontWeight: 900 }}>{formatElapsed(scalpElapsed)}</div>
-          <div style={{ color: C.muted, fontSize: 11 }}>Entry ₹{fmt(activeScalp.entry)}</div>
-          <button onClick={() => setActiveScalp(null)} style={{ marginTop: 8, padding: "6px 12px", background: C.dim, border: `1px solid ${C.border}`, color: C.muted, borderRadius: 6, cursor: "pointer", fontSize: 11 }}>End Scalp</button>
+          <p style={{ color: C.text, fontSize: 13, lineHeight: 1.5, margin: "0 0 6px" }}>{suggestion.reason}</p>
+          <p style={{ color: C.muted, fontSize: 11, margin: 0 }}>{suggestion.detail}</p>
+          {suggestion.confidence > 0 && (
+            <div style={{ color: C.muted, fontSize: 10, marginTop: 8 }}>Confidence: {Math.round(suggestion.confidence)}% · Suggestion only, not a trade</div>
+          )}
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-        <button onClick={() => quickTrade("BUY")} style={{ flex: 1, padding: 12, borderRadius: 10, background: C.green, color: "#000", fontWeight: 800, border: "none", fontSize: 14, cursor: "pointer" }}>⚡ QUICK BUY</button>
-        <button onClick={() => quickTrade("SELL")} style={{ flex: 1, padding: 12, borderRadius: 10, background: C.red, color: "#fff", fontWeight: 800, border: "none", fontSize: 14, cursor: "pointer" }}>⚡ QUICK SELL</button>
-      </div>
-
       <div style={{ background: `linear-gradient(135deg,${C.card} 0%,${C.dim} 100%)`, border: `1px solid ${isUp ? C.green + "40" : C.red + "40"}`, borderRadius: 14, padding: 16, marginBottom: 10 }}>
-        <div style={{ color: C.muted, fontSize: 10, marginBottom: 4, textTransform: "uppercase" }}>{instrument} · {isLive ? `${(dataSource || "LIVE").toUpperCase()}` : "SIMULATED"}</div>
+        <div style={{ color: C.muted, fontSize: 10, marginBottom: 4, textTransform: "uppercase" }}>
+          {instrument} · {isLive ? `${(dataSource || "LIVE").toUpperCase()}` : "SIMULATED"}
+          {INSTRUMENT_SUB[instrument] && (
+            <span style={{ display: "block", textTransform: "none", marginTop: 2, fontSize: 9 }}>{INSTRUMENT_SUB[instrument]}</span>
+          )}
+        </div>
         <div style={{ color: C.text, fontSize: 31, fontWeight: 900, fontVariantNumeric: "tabular-nums" }}>₹{fmt(cp)}</div>
         <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 5 }}>
           {isUp ? <ArrowUp size={13} color={C.green} /> : <ArrowDown size={13} color={C.red} />}
@@ -595,10 +664,10 @@ Tabs: dashboard|charts|portfolio|trades|news|watchlist|settings`;
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
         {[
-          { l: "Period P&L", v: `₹${fmt(totPnL, 0)}`, c: totPnL >= 0 ? C.green : C.red },
-          { l: "Win Rate", v: `${winRate}%`, c: winRate >= 60 ? C.green : C.yellow },
-          { l: "Trades", v: filteredTrades.length, c: C.blue },
+          { l: "Active Signals", v: indexSignals.length + portSignals.length, c: C.yellow },
+          { l: "RSI", v: analysis?.rsi ?? "—", c: analysis?.rsi > 70 ? C.red : analysis?.rsi < 30 ? C.green : C.yellow },
           { l: "Portfolio P&L", v: `₹${fmt(portPnL, 0)}`, c: portPnL >= 0 ? C.green : C.red },
+          { l: "Portfolio Value", v: `₹${fmt(portVal, 0)}`, c: C.blue },
         ].map((s) => (
           <div key={s.l} style={{ ...S.card, marginBottom: 0, padding: 12 }}>
             <div style={{ color: C.muted, fontSize: 10, marginBottom: 4, textTransform: "uppercase" }}>{s.l}</div>
@@ -758,9 +827,18 @@ Tabs: dashboard|charts|portfolio|trades|news|watchlist|settings`;
         </div>
 
         <input ref={csvRef} type="file" accept=".csv,.txt" style={{ display: "none" }} onChange={handleCSV} />
-        <button onClick={() => csvRef.current?.click()} style={{ width: "100%", padding: 12, borderRadius: 10, background: `${C.blue}18`, border: `1px dashed ${C.blue}55`, color: C.blue, fontWeight: 700, cursor: "pointer", marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-          <Upload size={14} /> Upload Portfolio CSV
-        </button>
+        <input ref={imageRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handlePortfolioImage} />
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <button onClick={() => csvRef.current?.click()} style={{ flex: 1, padding: 12, borderRadius: 10, background: `${C.blue}18`, border: `1px dashed ${C.blue}55`, color: C.blue, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+            <Upload size={14} /> CSV
+          </button>
+          <button onClick={() => imageRef.current?.click()} disabled={portfolioLoading} style={{ flex: 1, padding: 12, borderRadius: 10, background: `${C.green}18`, border: `1px dashed ${C.green}55`, color: C.green, fontWeight: 700, cursor: portfolioLoading ? "wait" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, opacity: portfolioLoading ? 0.7 : 1 }}>
+            <ImageIcon size={14} /> {portfolioLoading ? "Reading…" : "Screenshot"}
+          </button>
+        </div>
+        <p style={{ color: C.muted, fontSize: 11, margin: "0 0 12px", lineHeight: 1.4 }}>
+          Upload a Groww/Zerodha CSV or a portfolio screenshot — AI reads holdings (needs ANTHROPIC_API_KEY for images).
+        </p>
 
         {portfolio.map((s) => {
           const pnl = (s.cur - s.buy) * s.qty;
@@ -852,6 +930,26 @@ Tabs: dashboard|charts|portfolio|trades|news|watchlist|settings`;
 
   const NewsTab = () => (
     <div style={{ padding: "0 14px 90px" }}>
+      <div style={{
+        ...S.card,
+        borderColor: niftyMove.direction === "down" ? `${C.red}44` : niftyMove.direction === "up" ? `${C.green}44` : `${C.yellow}44`,
+      }}>
+        <div style={{ color: C.text, fontWeight: 800, fontSize: 14, marginBottom: 8 }}>
+          {niftyMove.direction === "down" ? "📉 Why is NIFTY down today?" : niftyMove.direction === "up" ? "📈 Why is NIFTY up today?" : "📊 Why is NIFTY flat?"}
+        </div>
+        <p style={{ color: C.text, fontSize: 13, lineHeight: 1.55, margin: "0 0 10px" }}>{niftyMove.summary}</p>
+        {niftyMove.reasons?.length > 0 && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ color: C.muted, fontSize: 10, textTransform: "uppercase", marginBottom: 6 }}>Key reasons</div>
+            {niftyMove.reasons.map((r, i) => (
+              <div key={i} style={{ color: C.muted, fontSize: 12, padding: "6px 0", borderBottom: i < niftyMove.reasons.length - 1 ? `1px solid ${C.dim}` : "none" }}>
+                • {r}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div style={{ ...S.card }}>
         <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Market Overview</div>
         {Object.entries(prices).slice(0, 5).map(([name, p]) => {
@@ -891,7 +989,13 @@ Tabs: dashboard|charts|portfolio|trades|news|watchlist|settings`;
               <button onClick={() => setSelNews(null)} style={{ background: C.dim, border: "none", color: C.muted, cursor: "pointer", borderRadius: 6, padding: 4 }}><X size={16} /></button>
             </div>
             <p style={{ color: C.text, fontWeight: 700, fontSize: 16, marginBottom: 12 }}>{selNews.headline}</p>
-            <p style={{ color: C.muted, fontSize: 13, lineHeight: 1.6 }}>{selNews.detail}</p>
+            <p style={{ color: C.muted, fontSize: 13, lineHeight: 1.6, marginBottom: 12 }}>{selNews.detail}</p>
+            {selNews.marketImpact && (
+              <div style={{ background: C.dim, borderRadius: 8, padding: 12, marginBottom: 12 }}>
+                <div style={{ color: C.yellow, fontSize: 11, fontWeight: 700, marginBottom: 4 }}>How this affects the market</div>
+                <p style={{ color: C.text, fontSize: 13, lineHeight: 1.5, margin: 0 }}>{selNews.marketImpact}</p>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1000,13 +1104,13 @@ Tabs: dashboard|charts|portfolio|trades|news|watchlist|settings`;
     { id: "dashboard", Icon: Home, label: "Home" },
     { id: "charts", Icon: BarChart2, label: "Charts" },
     { id: "portfolio", Icon: Briefcase, label: "Portfolio" },
-    { id: "trades", Icon: Activity, label: "Trades" },
+    // { id: "trades", Icon: Activity, label: "Trades" }, // hidden — re-enable when trade logging needed
     { id: "news", Icon: Newspaper, label: "News" },
     { id: "watchlist", Icon: Star, label: "Watch" },
     { id: "settings", Icon: Settings, label: "Settings" },
   ];
 
-  const CONTENT = { dashboard: Dashboard, charts: Charts, portfolio: PortfolioTab, trades: TradesTab, news: NewsTab, watchlist: WatchlistTab, settings: SettingsTab };
+  const CONTENT = { dashboard: Dashboard, charts: Charts, portfolio: PortfolioTab, news: NewsTab, watchlist: WatchlistTab, settings: SettingsTab };
   const ActiveTab = CONTENT[tab];
 
   return (

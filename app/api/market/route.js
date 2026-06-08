@@ -8,6 +8,8 @@ const YAHOO_SYMBOL = {
   '^NSEBANK': '^NSEBANK',
   '^NSEFI': '^CNXFIN',
   '^NSMIDCP': 'NIFTY_MID_SELECT.NS',
+  'GOLDBEES.NS': 'GOLDBEES.NS',
+  'SILVERBEES.NS': 'SILVERBEES.NS',
 };
 
 async function fetchFromFinnhub(symbol, apiKey) {

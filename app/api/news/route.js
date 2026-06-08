@@ -1,3 +1,5 @@
+import { newsMarketImpact } from '../../lib/suggestion.js';
+
 export const dynamic = 'force-dynamic';
 
 function timeAgo(ts) {
@@ -67,7 +69,7 @@ export async function GET(request) {
       if (seen.has(n.headline)) return false;
       seen.add(n.headline);
       return true;
-    });
+    }).map(n => ({ ...n, marketImpact: newsMarketImpact(n) }));
 
     const pos = unique.filter(n => n.sentiment === 'positive').length;
     const neg = unique.filter(n => n.sentiment === 'negative').length;
