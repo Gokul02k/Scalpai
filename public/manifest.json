@@ -1,0 +1,18 @@
+{
+  "name": "ScalpAI Trading Dashboard",
+  "short_name": "ScalpAI",
+  "description": "AI-powered scalping dashboard for NIFTY, SENSEX, BANK NIFTY",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#040810",
+  "theme_color": "#00e676",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

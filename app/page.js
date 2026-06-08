@@ -387,18 +387,20 @@ Commands available:
 
 Be concise, specific, and actionable. Confirm any change you make.`;
 
-      const res  = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
           system: sys,
           messages: [...msgs.slice(-8), { role: "user", content: text }],
         }),
       });
-      const data  = await res.json();
-      const full  = data.content?.[0]?.text ?? "Sorry, try again.";
+      const data = await res.json();
+      if (!res.ok) {
+        setMsgs(p => [...p, { role: "assistant", content: `⚠️ ${data.error || "AI unavailable. Check ANTHROPIC_API_KEY on Vercel."}` }]);
+        return;
+      }
+      const full = data.text ?? "Sorry, try again.";
       const match = full.match(/<CMD>(.*?)<\/CMD>/s);
       if (match) execCmd(match[1].trim());
       setMsgs(p => [...p, { role: "assistant", content: full.replace(/<CMD>.*?<\/CMD>/gs, "").trim() }]);
@@ -838,7 +840,7 @@ Be concise, specific, and actionable. Confirm any change you make.`;
   // RENDER
   // ─────────────────────────────────────────
   return (
-    <div style={{ background: C.bg, minHeight: "100vh", maxWidth: 480, margin: "0 auto", position: "relative", fontFamily: "'SF Pro Display',-apple-system,BlinkMacSystemFont,sans-serif" }}>
+    <div style={{ background: C.bg, minHeight: "100dvh", width: "100%", maxWidth: "min(100%, 960px)", margin: "0 auto", position: "relative", fontFamily: "'SF Pro Display',-apple-system,BlinkMacSystemFont,sans-serif", paddingBottom: 72 }}>
 
       {/* ── Header ── */}
       <div style={{ background: C.card, borderBottom: `1px solid ${C.border}`, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", position: "sticky", top: 0, zIndex: 50 }}>
@@ -875,7 +877,7 @@ Be concise, specific, and actionable. Confirm any change you make.`;
       </div>
 
       {/* ── Bottom Nav ── */}
-      <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: C.card, borderTop: `1px solid ${C.border}`, display: "flex", justifyContent: "space-around", padding: "8px 0 12px", zIndex: 50 }}>
+      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, margin: "0 auto", width: "100%", maxWidth: "min(100%, 960px)", background: C.card, borderTop: `1px solid ${C.border}`, display: "flex", justifyContent: "space-around", padding: "8px 0 max(12px, env(safe-area-inset-bottom))", zIndex: 50 }}>
         {TABS.map(({ id, Icon, label }) => (
           <button key={id} onClick={() => setTab(id)} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "4px 8px", background: "none", border: "none", cursor: "pointer" }}>
             <Icon size={21} color={tab === id ? C.green : C.muted} />
@@ -937,6 +939,15 @@ Be concise, specific, and actionable. Confirm any change you make.`;
       {/* ── Global Styles ── */}
       <style>{`
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+        html, body {
+          margin: 0;
+          padding: 0;
+          min-height: 100%;
+          overflow-x: hidden;
+          overflow-y: auto;
+          -webkit-overflow-scrolling: touch;
+          background: ${C.bg};
+        }
         *{ -webkit-tap-highlight-color:transparent; box-sizing:border-box; }
         ::-webkit-scrollbar{ width:3px; height:3px; }
         ::-webkit-scrollbar-thumb{ background:#1e3050; border-radius:2px; }
