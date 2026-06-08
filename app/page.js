@@ -15,25 +15,26 @@ import {
 } from "./lib/marketData";
 import { analyzeFromCandles } from "./lib/indicators";
 import { generateIndexSignals, generatePortfolioSignals, parsePortfolioCSV } from "./lib/signals";
-import { getOverallSuggestion, explainNiftyMove } from "./lib/suggestion";
+import { getOverallSuggestion, explainAssetMove, getStockSuggestion } from "./lib/suggestion";
 import { loadPersisted, savePersisted } from "./lib/storage";
 import { getMarketStatus } from "./lib/marketHours";
 import { THEMES, cardStyle } from "./lib/themes";
 
 const INSTRUMENTS = {
-  "NIFTY":        { base: 25000, vol: 0.0012, lot: 50 },
-  "GOLD":         { base: 124,   vol: 0.0015, lot: 1 },
-  "SILVER":       { base: 228,   vol: 0.0020, lot: 1 },
-  "SENSEX":       { base: 82000, vol: 0.0010, lot: 10 },
-  "BANK NIFTY":   { base: 55000, vol: 0.0015, lot: 15 },
-  "FINNIFTY":     { base: 23800, vol: 0.0013, lot: 40 },
-  "MIDCAP NIFTY": { base: 12500, vol: 0.0018, lot: 75 },
+  "NIFTY":  { base: 25000, vol: 0.0012, lot: 50 },
+  "GOLD":   { base: 124,   vol: 0.0015, lot: 1 },
+  "SILVER": { base: 228,   vol: 0.0020, lot: 1 },
 };
 
+const INSTRUMENT_KEYS = Object.keys(INSTRUMENTS);
+
 const INSTRUMENT_SUB = {
+  NIFTY: "Scalping · NSE Index",
   GOLD: "NSE · GOLDBEES ETF",
   SILVER: "NSE · SILVERBEES ETF",
 };
+
+const MACRO_SYMBOLS = new Set(["NIFTY", "GOLD", "SILVER", "GOLDBEES", "SILVERBEES", "SENSEX", "BANKNIFTY"]);
 
 const DEFAULT_PORTFOLIO = [
   { id: 1, name: "RELIANCE",  qty: 10, buy: 2850, cur: 2920, sector: "Energy"  },
@@ -206,6 +207,74 @@ function Toggle({ on, onToggle, C }) {
   );
 }
 
+function InstrumentDropdown({ instrument, setInstrument, open, setOpen, isUp, marketStatus, C }) {
+  return (
+    <div style={{ position: "relative", marginBottom: 12 }}>
+      <button onClick={() => setOpen(!open)} style={{ display: "flex", alignItems: "center", gap: 8, background: C.card, border: `1px solid ${isUp ? C.green + "60" : C.red + "60"}`, borderRadius: 10, padding: "10px 14px", color: C.text, fontSize: 15, fontWeight: 800, cursor: "pointer", width: "100%" }}>
+        <span style={{ width: 8, height: 8, borderRadius: "50%", background: marketStatus.open ? C.green : C.yellow, boxShadow: `0 0 6px ${marketStatus.open ? C.green : C.yellow}` }} />
+        {instrument}
+        <ChevronDown size={15} style={{ marginLeft: "auto", color: C.muted }} />
+      </button>
+      {open && (
+        <div style={{ position: "absolute", top: "105%", left: 0, right: 0, background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, zIndex: 100 }}>
+          {INSTRUMENT_KEYS.map((k) => (
+            <button key={k} onClick={() => { setInstrument(k); setOpen(false); }} style={{ display: "flex", width: "100%", padding: "12px 16px", background: k === instrument ? `${C.green}18` : "transparent", color: k === instrument ? C.green : C.text, border: "none", cursor: "pointer", fontSize: 14, fontWeight: k === instrument ? 800 : 400, borderBottom: `1px solid ${C.border}` }}>{k}</button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SuggestionMiniCard({ name, suggestion, selected, onSelect, C }) {
+  if (!suggestion) return null;
+  const clr = suggestion.action === "BUY" ? C.green : suggestion.action === "SELL" ? C.red : C.yellow;
+  return (
+    <button
+      onClick={onSelect}
+      style={{
+        flex: 1,
+        minWidth: 0,
+        textAlign: "left",
+        padding: 10,
+        borderRadius: 10,
+        background: selected ? `${clr}14` : C.card,
+        border: `1px solid ${selected ? clr + "66" : C.border}`,
+        cursor: "pointer",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4 }}>
+        <Lightbulb size={12} color={clr} />
+        <span style={{ color: C.text, fontWeight: 800, fontSize: 11 }}>{name}</span>
+      </div>
+      <div style={{ color: clr, fontWeight: 800, fontSize: 10, marginBottom: 4 }}>{suggestion.label}</div>
+      <div style={{ color: C.muted, fontSize: 9, lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{suggestion.reason}</div>
+    </button>
+  );
+}
+
+function MoveCard({ move, C, S }) {
+  return (
+    <div style={{
+      ...S.card,
+      borderColor: move.direction === "down" ? `${C.red}44` : move.direction === "up" ? `${C.green}44` : `${C.yellow}44`,
+    }}>
+      <div style={{ color: C.text, fontWeight: 800, fontSize: 14, marginBottom: 8 }}>{move.title}</div>
+      <p style={{ color: C.text, fontSize: 13, lineHeight: 1.55, margin: "0 0 10px" }}>{move.summary}</p>
+      {move.reasons?.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ color: C.muted, fontSize: 10, textTransform: "uppercase", marginBottom: 6 }}>Key reasons</div>
+          {move.reasons.map((r, i) => (
+            <div key={i} style={{ color: C.muted, fontSize: 12, padding: "6px 0", borderBottom: i < move.reasons.length - 1 ? `1px solid ${C.dim}` : "none" }}>
+              • {r}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [theme, setTheme] = useState("dark");
   const C = THEMES[theme];
@@ -214,6 +283,8 @@ export default function App() {
   const [hydrated, setHydrated] = useState(false);
   const [instrument, setInstrument] = useState("NIFTY");
   const [dropOpen, setDropOpen] = useState(false);
+  const [chartsDropOpen, setChartsDropOpen] = useState(false);
+  const [portfolioSubTab, setPortfolioSubTab] = useState("holdings");
   const [tab, setTab] = useState("dashboard");
   const [tf, setTf] = useState("5m");
   const [refresh, setRefresh] = useState(5);
@@ -256,7 +327,7 @@ export default function App() {
 
   const [chatOpen, setChatOpen] = useState(false);
   const [msgs, setMsgs] = useState([
-    { role: "assistant", content: "👋 Hi! I'm your AI scalping assistant.\n\nTry: \"Switch to BANK NIFTY\", \"Light mode\", \"Add RELIANCE to watchlist\", or \"What does RSI say?\"" },
+    { role: "assistant", content: "👋 Hi! I'm your AI scalping assistant.\n\nTry: \"Switch to GOLD\", \"Light mode\", \"Add RELIANCE to watchlist\", or \"What does RSI say for NIFTY?\"" },
   ]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
@@ -338,21 +409,23 @@ export default function App() {
     return () => clearInterval(id);
   }, [refresh, isLive]);
 
-  // Real candles on instrument/tf change
+  // Real candles for all instruments on timeframe change
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const data = await fetchCandles(instrument, tf);
-      if (cancelled) return;
-      if (data?.length) {
-        setCandles((prev) => ({ ...prev, [instrument]: data }));
-      } else {
-        const base = pricesRef.current[instrument]?.cur ?? INSTRUMENTS[instrument].base;
-        setCandles((prev) => ({ ...prev, [instrument]: genFallbackCandles(base, 65, INSTRUMENTS[instrument].vol) }));
-      }
+      await Promise.all(INSTRUMENT_KEYS.map(async (inst) => {
+        const data = await fetchCandles(inst, tf);
+        if (cancelled) return;
+        if (data?.length) {
+          setCandles((prev) => ({ ...prev, [inst]: data }));
+        } else {
+          const base = pricesRef.current[inst]?.cur ?? INSTRUMENTS[inst].base;
+          setCandles((prev) => ({ ...prev, [inst]: genFallbackCandles(base, 65, INSTRUMENTS[inst].vol) }));
+        }
+      }));
     })();
     return () => { cancelled = true; };
-  }, [instrument, tf]);
+  }, [tf]);
 
   // Portfolio live prices
   useEffect(() => {
@@ -400,23 +473,31 @@ export default function App() {
   }, [stockNamesKey]);
 
   const instCandles = candles[instrument] || [];
-  const analysis = useMemo(() => {
-    if (!instCandles.length) return null;
-    return analyzeFromCandles(instCandles);
-  }, [instCandles]);
+  const analyses = useMemo(() => {
+    const out = {};
+    for (const k of INSTRUMENT_KEYS) {
+      const c = candles[k] || [];
+      out[k] = c.length ? analyzeFromCandles(c) : null;
+    }
+    return out;
+  }, [candles]);
+  const analysis = analyses[instrument];
 
-  const cpLive = prices[instrument]?.cur ?? 0;
-  const pctLive = prices[instrument]?.prev
-    ? +(((cpLive - prices[instrument].prev) / prices[instrument].prev) * 100).toFixed(2)
-    : 0;
-  const suggestion = useMemo(
-    () => getOverallSuggestion(analysis, pctLive),
-    [analysis, pctLive]
-  );
-  const niftyMove = useMemo(
-    () => explainNiftyMove(prices.NIFTY, news),
-    [prices.NIFTY, news]
-  );
+  const allSuggestions = useMemo(() => {
+    const out = {};
+    for (const k of INSTRUMENT_KEYS) {
+      const p = prices[k];
+      const pct = p?.prev ? +(((p.cur - p.prev) / p.prev) * 100).toFixed(2) : 0;
+      out[k] = getOverallSuggestion(analyses[k], pct);
+    }
+    return out;
+  }, [analyses, prices]);
+
+  const suggestion = allSuggestions[instrument];
+
+  const niftyMove = useMemo(() => explainAssetMove(prices.NIFTY, news, "NIFTY"), [prices.NIFTY, news]);
+  const goldMove = useMemo(() => explainAssetMove(prices.GOLD, news, "GOLD"), [prices.GOLD, news]);
+  const silverMove = useMemo(() => explainAssetMove(prices.SILVER, news, "SILVER"), [prices.SILVER, news]);
 
   useEffect(() => {
     const cp = prices[instrument]?.cur;
@@ -600,25 +681,42 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
 
   const indexSignals = signals.filter((s) => s.scope === "index");
   const portSignals = signals.filter((s) => s.scope === "portfolio");
-  const portfolioNews = news.filter((n) => (n.stocks || []).some((s) => stockNamesKey.split(",").includes(s)));
+  const portfolioStocks = portfolio.filter((s) => !MACRO_SYMBOLS.has(s.name.toUpperCase()));
+  const portfolioStockNews = news.filter((n) =>
+    portfolioStocks.some((s) =>
+      (n.stocks || []).some((st) => st.toUpperCase() === s.name.toUpperCase())
+      || (n.headline || "").toUpperCase().includes(s.name.toUpperCase())
+    )
+  );
   const filteredNews = newsFilter === "All" ? news : news.filter((n) => n.cat === newsFilter);
 
   // ── TAB COMPONENTS ──
   const Dashboard = () => (
     <div style={{ padding: "0 14px 90px" }}>
-      <div style={{ position: "relative", marginBottom: 12 }}>
-        <button onClick={() => setDropOpen(!dropOpen)} style={{ display: "flex", alignItems: "center", gap: 8, background: C.card, border: `1px solid ${isUp ? C.green + "60" : C.red + "60"}`, borderRadius: 10, padding: "10px 14px", color: C.text, fontSize: 15, fontWeight: 800, cursor: "pointer", width: "100%" }}>
-          <span style={{ width: 8, height: 8, borderRadius: "50%", background: marketStatus.open ? C.green : C.yellow, boxShadow: `0 0 6px ${marketStatus.open ? C.green : C.yellow}` }} />
-          {instrument}
-          <ChevronDown size={15} style={{ marginLeft: "auto", color: C.muted }} />
-        </button>
-        {dropOpen && (
-          <div style={{ position: "absolute", top: "105%", left: 0, right: 0, background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, zIndex: 100 }}>
-            {Object.keys(INSTRUMENTS).map((k) => (
-              <button key={k} onClick={() => { setInstrument(k); setDropOpen(false); }} style={{ display: "flex", width: "100%", padding: "12px 16px", background: k === instrument ? `${C.green}18` : "transparent", color: k === instrument ? C.green : C.text, border: "none", cursor: "pointer", fontSize: 14, fontWeight: k === instrument ? 800 : 400, borderBottom: `1px solid ${C.border}` }}>{k}</button>
-            ))}
-          </div>
-        )}
+      <InstrumentDropdown
+        instrument={instrument}
+        setInstrument={setInstrument}
+        open={dropOpen}
+        setOpen={setDropOpen}
+        isUp={isUp}
+        marketStatus={marketStatus}
+        C={C}
+      />
+
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ color: C.muted, fontSize: 10, textTransform: "uppercase", marginBottom: 8, fontWeight: 700 }}>Scalping suggestions · NIFTY · Gold · Silver</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {INSTRUMENT_KEYS.map((k) => (
+            <SuggestionMiniCard
+              key={k}
+              name={k}
+              suggestion={allSuggestions[k]}
+              selected={instrument === k}
+              onSelect={() => setInstrument(k)}
+              C={C}
+            />
+          ))}
+        </div>
       </div>
 
       {suggestion && (
@@ -630,7 +728,7 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
         }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
             <Lightbulb size={16} color={suggestion.action === "BUY" ? C.green : suggestion.action === "SELL" ? C.red : C.yellow} />
-            <span style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>Today&apos;s Suggestion</span>
+            <span style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>{instrument} · Today&apos;s Suggestion</span>
             <span style={{
               marginLeft: "auto",
               background: suggestion.action === "BUY" ? C.green : suggestion.action === "SELL" ? C.red : C.yellow,
@@ -725,18 +823,20 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
           ? indexSignals.map((s, i) => <SignalCard key={i} sig={s} price={cp} C={C} />)
           : <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 20 }}>Scanning…</div>}
       </div>
-
-      {portSignals.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          <div style={{ color: C.muted, fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Portfolio Signals</div>
-          {portSignals.map((s, i) => <SignalCard key={i} sig={s} price={s.target || cp} C={C} />)}
-        </div>
-      )}
     </div>
   );
 
   const Charts = () => (
     <div style={{ padding: "0 14px 90px" }}>
+      <InstrumentDropdown
+        instrument={instrument}
+        setInstrument={setInstrument}
+        open={chartsDropOpen}
+        setOpen={setChartsDropOpen}
+        isUp={isUp}
+        marketStatus={marketStatus}
+        C={C}
+      />
       <div style={{ display: "flex", gap: 4, marginBottom: 10, flexWrap: "wrap" }}>
         {["1m", "5m", "15m", "1h", "1d"].map((t) => (
           <button key={t} onClick={() => setTf(t)} style={{ padding: "6px 14px", borderRadius: 8, background: t === tf ? C.green : C.card, color: t === tf ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 12, cursor: "pointer", fontWeight: 700 }}>{t}</button>
@@ -818,47 +918,118 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
 
   const PortfolioTab = () => {
     const retPct = portCost ? +((portPnL / portCost) * 100).toFixed(2) : 0;
+    const subTabs = [
+      { id: "holdings", label: "Holdings" },
+      { id: "suggestions", label: "Suggestions" },
+      { id: "news", label: "Stock News" },
+    ];
     return (
       <div style={{ padding: "0 14px 90px" }}>
-        <div style={{ ...S.card, background: `linear-gradient(135deg,${C.card},${C.dim})` }}>
-          <div style={{ color: C.muted, fontSize: 10, marginBottom: 4, textTransform: "uppercase" }}>Total Value</div>
-          <div style={{ color: C.text, fontSize: 27, fontWeight: 900 }}>₹{fmt(portVal, 0)}</div>
-          <div style={{ color: portPnL >= 0 ? C.green : C.red, fontSize: 14, fontWeight: 700 }}>{portPnL >= 0 ? "+" : ""}₹{fmt(portPnL, 0)} ({retPct >= 0 ? "+" : ""}{retPct}%)</div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+          {subTabs.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setPortfolioSubTab(t.id)}
+              style={{
+                flex: 1,
+                padding: "9px 8px",
+                borderRadius: 8,
+                background: portfolioSubTab === t.id ? C.green : C.card,
+                color: portfolioSubTab === t.id ? "#000" : C.muted,
+                border: `1px solid ${C.border}`,
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
 
-        <input ref={csvRef} type="file" accept=".csv,.txt" style={{ display: "none" }} onChange={handleCSV} />
-        <input ref={imageRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handlePortfolioImage} />
-        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-          <button onClick={() => csvRef.current?.click()} style={{ flex: 1, padding: 12, borderRadius: 10, background: `${C.blue}18`, border: `1px dashed ${C.blue}55`, color: C.blue, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-            <Upload size={14} /> CSV
-          </button>
-          <button onClick={() => imageRef.current?.click()} disabled={portfolioLoading} style={{ flex: 1, padding: 12, borderRadius: 10, background: `${C.green}18`, border: `1px dashed ${C.green}55`, color: C.green, fontWeight: 700, cursor: portfolioLoading ? "wait" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, opacity: portfolioLoading ? 0.7 : 1 }}>
-            <ImageIcon size={14} /> {portfolioLoading ? "Reading…" : "Screenshot"}
-          </button>
-        </div>
-        <p style={{ color: C.muted, fontSize: 11, margin: "0 0 12px", lineHeight: 1.4 }}>
-          Upload a Groww/Zerodha CSV or a portfolio screenshot — AI reads holdings (needs ANTHROPIC_API_KEY for images).
-        </p>
-
-        {portfolio.map((s) => {
-          const pnl = (s.cur - s.buy) * s.qty;
-          const pnlPct = +((s.cur - s.buy) / s.buy * 100).toFixed(2);
-          const up = pnl >= 0;
-          return (
-            <div key={s.id} style={{ ...S.card, borderColor: up ? `${C.green}35` : `${C.red}35` }}>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <div>
-                  <div style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{s.name}</div>
-                  <div style={{ color: C.muted, fontSize: 11 }}>{s.sector} · {s.qty} shares · Avg ₹{fmt(s.buy)}</div>
-                </div>
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>₹{fmt(s.cur)}</div>
-                  <div style={{ color: up ? C.green : C.red, fontSize: 12, fontWeight: 700 }}>{up ? "+" : ""}₹{fmt(pnl, 0)} ({pnlPct >= 0 ? "+" : ""}{pnlPct}%)</div>
-                </div>
-              </div>
+        {portfolioSubTab === "holdings" && (
+          <>
+            <div style={{ ...S.card, background: `linear-gradient(135deg,${C.card},${C.dim})` }}>
+              <div style={{ color: C.muted, fontSize: 10, marginBottom: 4, textTransform: "uppercase" }}>Total Value</div>
+              <div style={{ color: C.text, fontSize: 27, fontWeight: 900 }}>₹{fmt(portVal, 0)}</div>
+              <div style={{ color: portPnL >= 0 ? C.green : C.red, fontSize: 14, fontWeight: 700 }}>{portPnL >= 0 ? "+" : ""}₹{fmt(portPnL, 0)} ({retPct >= 0 ? "+" : ""}{retPct}%)</div>
             </div>
-          );
-        })}
+
+            <input ref={csvRef} type="file" accept=".csv,.txt" style={{ display: "none" }} onChange={handleCSV} />
+            <input ref={imageRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handlePortfolioImage} />
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <button onClick={() => csvRef.current?.click()} style={{ flex: 1, padding: 12, borderRadius: 10, background: `${C.blue}18`, border: `1px dashed ${C.blue}55`, color: C.blue, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                <Upload size={14} /> CSV
+              </button>
+              <button onClick={() => imageRef.current?.click()} disabled={portfolioLoading} style={{ flex: 1, padding: 12, borderRadius: 10, background: `${C.green}18`, border: `1px dashed ${C.green}55`, color: C.green, fontWeight: 700, cursor: portfolioLoading ? "wait" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, opacity: portfolioLoading ? 0.7 : 1 }}>
+                <ImageIcon size={14} /> {portfolioLoading ? "Reading…" : "Screenshot"}
+              </button>
+            </div>
+            <p style={{ color: C.muted, fontSize: 11, margin: "0 0 12px", lineHeight: 1.4 }}>
+              Upload a Groww/Zerodha CSV or a portfolio screenshot — AI reads holdings (needs ANTHROPIC_API_KEY for images).
+            </p>
+
+            {portfolio.map((s) => {
+              const pnl = (s.cur - s.buy) * s.qty;
+              const pnlPct = +((s.cur - s.buy) / s.buy * 100).toFixed(2);
+              const up = pnl >= 0;
+              return (
+                <div key={s.id} style={{ ...S.card, borderColor: up ? `${C.green}35` : `${C.red}35` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <div>
+                      <div style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{s.name}</div>
+                      <div style={{ color: C.muted, fontSize: 11 }}>{s.sector} · {s.qty} shares · Avg ₹{fmt(s.buy)}</div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>₹{fmt(s.cur)}</div>
+                      <div style={{ color: up ? C.green : C.red, fontSize: 12, fontWeight: 700 }}>{up ? "+" : ""}₹{fmt(pnl, 0)} ({pnlPct >= 0 ? "+" : ""}{pnlPct}%)</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </>
+        )}
+
+        {portfolioSubTab === "suggestions" && (
+          <>
+            {portfolioStocks.length === 0 && (
+              <div style={{ ...S.card, textAlign: "center", color: C.muted }}>Add stocks to your portfolio to see buy/sell suggestions.</div>
+            )}
+            {portfolioStocks.map((s) => {
+              const sug = getStockSuggestion(s, sett);
+              const clr = sug.action === "BUY" ? C.green : sug.action === "SELL" ? C.red : C.yellow;
+              return (
+                <div key={s.id} style={{ ...S.card, borderColor: `${clr}44` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                    <div>
+                      <div style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{s.name}</div>
+                      <div style={{ color: C.muted, fontSize: 11 }}>₹{fmt(s.cur)} · Avg ₹{fmt(s.buy)}</div>
+                    </div>
+                    <span style={{ background: clr, color: sug.action === "HOLD" || sug.action === "WAIT" ? C.text : "#000", fontSize: 10, fontWeight: 800, padding: "3px 10px", borderRadius: 4 }}>
+                      {sug.label}
+                    </span>
+                  </div>
+                  <p style={{ color: C.text, fontSize: 12, lineHeight: 1.5, margin: "0 0 4px" }}>{sug.reason}</p>
+                  <p style={{ color: C.muted, fontSize: 11, margin: 0 }}>{sug.detail}</p>
+                </div>
+              );
+            })}
+            {portSignals.filter((sig) => portfolioStocks.some((s) => s.name === sig.instrument)).map((sig, i) => (
+              <SignalCard key={`sig-${i}`} sig={sig} price={sig.target || cp} C={C} />
+            ))}
+          </>
+        )}
+
+        {portfolioSubTab === "news" && (
+          <>
+            {portfolioStockNews.length === 0 ? (
+              <div style={{ ...S.card, textAlign: "center", color: C.muted }}>No news found for your portfolio stocks.</div>
+            ) : (
+              portfolioStockNews.map((n) => <NewsCard key={n.id} n={n} onClick={setSelNews} C={C} />)
+            )}
+          </>
+        )}
       </div>
     );
   };
@@ -930,37 +1101,26 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
 
   const NewsTab = () => (
     <div style={{ padding: "0 14px 90px" }}>
-      <div style={{
-        ...S.card,
-        borderColor: niftyMove.direction === "down" ? `${C.red}44` : niftyMove.direction === "up" ? `${C.green}44` : `${C.yellow}44`,
-      }}>
-        <div style={{ color: C.text, fontWeight: 800, fontSize: 14, marginBottom: 8 }}>
-          {niftyMove.direction === "down" ? "📉 Why is NIFTY down today?" : niftyMove.direction === "up" ? "📈 Why is NIFTY up today?" : "📊 Why is NIFTY flat?"}
-        </div>
-        <p style={{ color: C.text, fontSize: 13, lineHeight: 1.55, margin: "0 0 10px" }}>{niftyMove.summary}</p>
-        {niftyMove.reasons?.length > 0 && (
-          <div style={{ marginTop: 8 }}>
-            <div style={{ color: C.muted, fontSize: 10, textTransform: "uppercase", marginBottom: 6 }}>Key reasons</div>
-            {niftyMove.reasons.map((r, i) => (
-              <div key={i} style={{ color: C.muted, fontSize: 12, padding: "6px 0", borderBottom: i < niftyMove.reasons.length - 1 ? `1px solid ${C.dim}` : "none" }}>
-                • {r}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      <MoveCard move={niftyMove} C={C} S={S} />
+      <MoveCard move={goldMove} C={C} S={S} />
+      <MoveCard move={silverMove} C={C} S={S} />
 
       <div style={{ ...S.card }}>
         <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Market Overview</div>
-        {Object.entries(prices).slice(0, 5).map(([name, p]) => {
+        {INSTRUMENT_KEYS.map((name) => {
+          const p = prices[name];
+          if (!p) return null;
           const ch = +(p.cur - p.prev).toFixed(2);
           const pc = +((ch / p.prev) * 100).toFixed(2);
           return (
             <div key={name} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: `1px solid ${C.dim}` }}>
-              <span style={{ color: C.text, fontWeight: 700 }}>{name}</span>
+              <div>
+                <span style={{ color: C.text, fontWeight: 700 }}>{name}</span>
+                {INSTRUMENT_SUB[name] && <div style={{ color: C.muted, fontSize: 9 }}>{INSTRUMENT_SUB[name]}</div>}
+              </div>
               <div style={{ textAlign: "right" }}>
-                <div style={{ color: C.text }}>₹{fmt(p.cur, 0)}</div>
-                <div style={{ color: ch >= 0 ? C.green : C.red, fontSize: 11 }}>{ch >= 0 ? "+" : ""}{fmt(ch, 0)} ({pc >= 0 ? "+" : ""}{pc}%)</div>
+                <div style={{ color: C.text }}>₹{fmt(p.cur, name === "NIFTY" ? 0 : 2)}</div>
+                <div style={{ color: ch >= 0 ? C.green : C.red, fontSize: 11 }}>{ch >= 0 ? "+" : ""}{fmt(ch, name === "NIFTY" ? 0 : 2)} ({pc >= 0 ? "+" : ""}{pc}%)</div>
               </div>
             </div>
           );
@@ -968,37 +1128,11 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
         {newsOverview && <p style={{ color: C.muted, fontSize: 12, lineHeight: 1.5, marginTop: 10, marginBottom: 0 }}>{newsOverview}</p>}
       </div>
 
-      {portfolioNews.length > 0 && (
-        <div style={{ ...S.card, borderColor: `${C.blue}44` }}>
-          <div style={{ color: C.blue, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Portfolio-Linked News</div>
-          {portfolioNews.slice(0, 3).map((n) => <NewsCard key={n.id} n={n} onClick={setSelNews} C={C} />)}
-        </div>
-      )}
-
       <div style={{ display: "flex", gap: 6, marginBottom: 10, overflowX: "auto" }}>
         {["All", "Market", "Earnings", "Sector", "Technical", "Corporate", "Global"].map((c) => (
           <button key={c} onClick={() => setNewsFilter(c)} style={{ padding: "5px 12px", borderRadius: 7, background: c === newsFilter ? C.green : C.card, color: c === newsFilter ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap", fontWeight: c === newsFilter ? 800 : 400 }}>{c}</button>
         ))}
       </div>
-
-      {selNews && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)", zIndex: 200, display: "flex", alignItems: "flex-end" }} onClick={() => setSelNews(null)}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: "18px 18px 0 0", padding: 20, width: "100%", maxHeight: "72vh", overflowY: "auto" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-              <span style={{ color: C.green, fontSize: 11, fontWeight: 700 }}>{selNews.cat} · {selNews.impact}</span>
-              <button onClick={() => setSelNews(null)} style={{ background: C.dim, border: "none", color: C.muted, cursor: "pointer", borderRadius: 6, padding: 4 }}><X size={16} /></button>
-            </div>
-            <p style={{ color: C.text, fontWeight: 700, fontSize: 16, marginBottom: 12 }}>{selNews.headline}</p>
-            <p style={{ color: C.muted, fontSize: 13, lineHeight: 1.6, marginBottom: 12 }}>{selNews.detail}</p>
-            {selNews.marketImpact && (
-              <div style={{ background: C.dim, borderRadius: 8, padding: 12, marginBottom: 12 }}>
-                <div style={{ color: C.yellow, fontSize: 11, fontWeight: 700, marginBottom: 4 }}>How this affects the market</div>
-                <p style={{ color: C.text, fontSize: 13, lineHeight: 1.5, margin: 0 }}>{selNews.marketImpact}</p>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       {filteredNews.length ? filteredNews.map((n) => <NewsCard key={n.id} n={n} onClick={setSelNews} C={C} />)
         : <div style={{ ...S.card, textAlign: "center", color: C.muted }}>No news available</div>}
@@ -1146,6 +1280,25 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
           </button>
         ))}
       </div>
+
+      {selNews && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)", zIndex: 200, display: "flex", alignItems: "flex-end" }} onClick={() => setSelNews(null)}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: "18px 18px 0 0", padding: 20, width: "100%", maxHeight: "72vh", overflowY: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+              <span style={{ color: C.green, fontSize: 11, fontWeight: 700 }}>{selNews.cat} · {selNews.impact}</span>
+              <button onClick={() => setSelNews(null)} style={{ background: C.dim, border: "none", color: C.muted, cursor: "pointer", borderRadius: 6, padding: 4 }}><X size={16} /></button>
+            </div>
+            <p style={{ color: C.text, fontWeight: 700, fontSize: 16, marginBottom: 12 }}>{selNews.headline}</p>
+            <p style={{ color: C.muted, fontSize: 13, lineHeight: 1.6, marginBottom: 12 }}>{selNews.detail}</p>
+            {selNews.marketImpact && (
+              <div style={{ background: C.dim, borderRadius: 8, padding: 12, marginBottom: 12 }}>
+                <div style={{ color: C.yellow, fontSize: 11, fontWeight: 700, marginBottom: 4 }}>How this affects the market</div>
+                <p style={{ color: C.text, fontSize: 13, lineHeight: 1.5, margin: 0 }}>{selNews.marketImpact}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {chatOpen && (
         <div style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex", flexDirection: "column", background: C.bg }}>

@@ -72,37 +72,149 @@ export function getOverallSuggestion(analysis, chgPct) {
   };
 }
 
-export function explainNiftyMove(niftyPrice, newsItems = []) {
-  if (!niftyPrice?.cur) return { direction: 'flat', summary: 'Market data loading…', reasons: [] };
+export function getMoveTitle(assetName, direction) {
+  if (direction === 'down') return `${assetName} is falling today`;
+  if (direction === 'up') return `${assetName} is rising today`;
+  return `${assetName} is trading flat today`;
+}
 
-  const chg = niftyPrice.cur - niftyPrice.prev;
-  const pct = niftyPrice.prev ? (chg / niftyPrice.prev) * 100 : 0;
+function filterNewsForAsset(newsItems, assetName) {
+  const name = assetName.toUpperCase();
+  if (name === 'NIFTY') {
+    return newsItems.filter((n) => {
+      const h = (n.headline || '').toLowerCase();
+      return /nifty|sensex|index|fii|fpi|market|bank nifty|rbi|repo/.test(h)
+        || (n.stocks || []).some((s) => /NIFTY|SENSEX|BANK/.test(s));
+    });
+  }
+  if (name === 'GOLD') {
+    return newsItems.filter((n) => {
+      const h = (n.headline || '').toLowerCase();
+      return /gold|bullion|precious|xau|jewellery|jewelry|safe.?haven/.test(h);
+    });
+  }
+  if (name === 'SILVER') {
+    return newsItems.filter((n) => {
+      const h = (n.headline || '').toLowerCase();
+      return /silver|xag|precious|industrial metal/.test(h);
+    });
+  }
+  return newsItems;
+}
+
+export function explainAssetMove(price, newsItems = [], assetName = 'NIFTY') {
+  if (!price?.cur) {
+    return { direction: 'flat', title: `${assetName} — loading…`, summary: 'Market data loading…', reasons: [] };
+  }
+
+  const chg = price.cur - price.prev;
+  const pct = price.prev ? (chg / price.prev) * 100 : 0;
   const direction = pct > 0.15 ? 'up' : pct < -0.15 ? 'down' : 'flat';
+  const title = getMoveTitle(assetName, direction);
 
+  const relevant = filterNewsForAsset(newsItems, assetName);
   const reasons = [];
-  const neg = newsItems.filter((n) => n.sentiment === 'negative').slice(0, 2);
-  const pos = newsItems.filter((n) => n.sentiment === 'positive').slice(0, 2);
+  const neg = relevant.filter((n) => n.sentiment === 'negative').slice(0, 2);
+  const pos = relevant.filter((n) => n.sentiment === 'positive').slice(0, 2);
 
   if (direction === 'down') {
     if (neg.length) neg.forEach((n) => reasons.push(n.headline));
+    else if (assetName === 'GOLD') reasons.push('Strong dollar / higher US yields pressuring gold', 'Profit booking in gold ETFs');
+    else if (assetName === 'SILVER') reasons.push('Industrial demand concerns weigh on silver', 'Risk-off sentiment in base metals');
     else reasons.push('Profit booking and weak global cues', 'Sector rotation out of heavyweights');
-    if (pct < -0.5) reasons.unshift(`NIFTY down ${Math.abs(pct).toFixed(2)}% — selling pressure dominates`);
+    if (pct < -0.5) reasons.unshift(`${assetName} down ${Math.abs(pct).toFixed(2)}% — selling pressure dominates`);
   } else if (direction === 'up') {
     if (pos.length) pos.forEach((n) => reasons.push(n.headline));
+    else if (assetName === 'GOLD') reasons.push('Safe-haven demand supports gold', 'Weaker dollar / geopolitical uncertainty');
+    else if (assetName === 'SILVER') reasons.push('Industrial demand and gold co-movement lift silver', 'Risk-on sentiment in commodities');
     else reasons.push('FII inflows and positive sector momentum', 'Short covering rally');
-    if (pct > 0.5) reasons.unshift(`NIFTY up ${pct.toFixed(2)}% — buyers in control`);
+    if (pct > 0.5) reasons.unshift(`${assetName} up ${pct.toFixed(2)}% — buyers in control`);
   } else {
-    reasons.push('Range-bound session — no clear directional catalyst', 'Wait for breakout above resistance or break below support');
+    if (assetName === 'GOLD') reasons.push('Gold consolidating — watch USD and Fed commentary', 'Range-bound ahead of macro data');
+    else if (assetName === 'SILVER') reasons.push('Silver range-bound — tracking gold and industrial cues', 'No clear directional catalyst');
+    else reasons.push('Range-bound session — no clear directional catalyst', 'Wait for breakout above resistance or break below support');
   }
+
+  const chgStr = assetName === 'NIFTY'
+    ? `${Math.abs(chg).toFixed(0)} pts (${pct.toFixed(2)}%)`
+    : `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
 
   const summary =
     direction === 'down'
-      ? `NIFTY is down ${Math.abs(chg).toFixed(0)} pts (${pct.toFixed(2)}%) today. Likely drivers: ${reasons.slice(0, 2).join('; ')}.`
+      ? `${assetName} is down ${chgStr} today. Likely drivers: ${reasons.slice(0, 2).join('; ')}.`
       : direction === 'up'
-        ? `NIFTY is up ${chg.toFixed(0)} pts (${pct.toFixed(2)}%) today. Likely drivers: ${reasons.slice(0, 2).join('; ')}.`
-        : `NIFTY is flat (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%). Market is consolidating — no strong trend yet.`;
+        ? `${assetName} is up ${chgStr} today. Likely drivers: ${reasons.slice(0, 2).join('; ')}.`
+        : `${assetName} is flat (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%). ${reasons[0] || 'Consolidating with no strong trend.'}`;
 
-  return { direction, summary, reasons: reasons.slice(0, 4), pct, chg };
+  return { direction, title, summary, reasons: reasons.slice(0, 4), pct, chg };
+}
+
+/** @deprecated use explainAssetMove */
+export function explainNiftyMove(niftyPrice, newsItems = []) {
+  return explainAssetMove(niftyPrice, newsItems, 'NIFTY');
+}
+
+export function getStockSuggestion(stock, settings = { profitPct: 1.5, slPct: 0.8 }) {
+  if (!stock?.cur || !stock?.buy) {
+    return { action: 'WAIT', label: 'Loading…', reason: 'Waiting for live price.', confidence: 0 };
+  }
+  const chgPct = +(((stock.cur - stock.buy) / stock.buy) * 100).toFixed(2);
+  const dayPct = stock.prev
+    ? +(((stock.cur - stock.prev) / stock.prev) * 100).toFixed(2)
+    : 0;
+
+  if (chgPct <= -5) {
+    return {
+      action: 'BUY',
+      label: 'Accumulate on dip',
+      reason: `Down ${Math.abs(chgPct)}% from your avg ₹${stock.buy} — consider adding if fundamentals intact`,
+      confidence: 65,
+      detail: 'Suggestion only — verify on your broker before buying more.',
+    };
+  }
+  if (chgPct >= settings.profitPct) {
+    return {
+      action: 'SELL',
+      label: 'Book partial profit',
+      reason: `Up ${chgPct}% from avg — near your ${settings.profitPct}% profit target`,
+      confidence: 70,
+      detail: 'Suggestion only — consider trimming on your broker.',
+    };
+  }
+  if (chgPct <= -settings.slPct) {
+    return {
+      action: 'SELL',
+      label: 'Review stop loss',
+      reason: `Down ${Math.abs(chgPct)}% — exceeds ${settings.slPct}% loss threshold from avg`,
+      confidence: 72,
+      detail: 'Suggestion only — review whether to cut or hold.',
+    };
+  }
+  if (dayPct >= 1.5) {
+    return {
+      action: 'SELL',
+      label: 'Short-term strength — trim?',
+      reason: `Up ${dayPct}% today — momentum may fade; consider partial booking`,
+      confidence: 55,
+      detail: 'Intraday strength — not a forced sell.',
+    };
+  }
+  if (dayPct <= -1.5) {
+    return {
+      action: 'BUY',
+      label: 'Watch for entry',
+      reason: `Down ${Math.abs(dayPct)}% today — may be a dip if trend intact`,
+      confidence: 55,
+      detail: 'Wait for confirmation before adding.',
+    };
+  }
+  return {
+    action: 'HOLD',
+    label: 'Hold — no clear edge',
+    reason: `P&L ${chgPct >= 0 ? '+' : ''}${chgPct}% from avg · today ${dayPct >= 0 ? '+' : ''}${dayPct}%`,
+    confidence: 45,
+    detail: 'No strong buy or sell signal on this stock right now.',
+  };
 }
 
 export function newsMarketImpact(item) {
