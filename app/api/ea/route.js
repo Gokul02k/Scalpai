@@ -1,4 +1,4 @@
-import { geminiGenerate, getGeminiKey } from '../../lib/gemini';
+import { geminiGenerate, resolveGeminiKey, GEMINI_KEY_HINT } from '../../lib/gemini';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,12 +21,13 @@ function buildPrompt(ctx) {
 }
 
 export async function POST(request) {
-  const apiKey = getGeminiKey();
+  const { key: apiKey, error: keyError } = resolveGeminiKey();
+  if (keyError) {
+    return Response.json({ error: keyError }, { status: 503 });
+  }
   if (!apiKey) {
     return Response.json(
-      {
-        error: 'Add GEMINI_API_KEY in Vercel → Settings → Environment Variables (get a free key at Google AI Studio), then redeploy.',
-      },
+      { error: `GEMINI_API_KEY is not set. ${GEMINI_KEY_HINT}` },
       { status: 503 }
     );
   }

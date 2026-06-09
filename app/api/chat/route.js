@@ -1,4 +1,4 @@
-import { getGeminiKey } from '../../lib/gemini';
+import { resolveGeminiKey, friendlyGeminiError } from '../../lib/gemini';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,12 +19,15 @@ export async function POST(request) {
       return Response.json({ error: 'No messages provided' }, { status: 400 });
     }
 
-    const geminiKey = getGeminiKey();
+    const { key: geminiKey, error: keyError } = resolveGeminiKey();
+    if (keyError) {
+      return Response.json({ error: keyError }, { status: 503 });
+    }
     if (geminiKey) {
       const history = toGeminiMessages(messages.slice(0, -1));
       const lastUser = messages[messages.length - 1]?.content || '';
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${process.env.GEMINI_MODEL || 'gemini-1.5-flash'}:generateContent?key=${encodeURIComponent(geminiKey)}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${process.env.GEMINI_MODEL || 'gemini-2.0-flash'}:generateContent?key=${encodeURIComponent(geminiKey)}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -41,8 +44,7 @@ export async function POST(request) {
       );
       const data = await res.json();
       if (!res.ok) {
-        const msg = data?.error?.message || `Gemini error (${res.status})`;
-        return Response.json({ error: msg }, { status: res.status });
+        return Response.json({ error: friendlyGeminiError(res.status, data) }, { status: res.status });
       }
       const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text).join('')?.trim() || '';
       return Response.json({ text });
