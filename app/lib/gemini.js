@@ -1,7 +1,7 @@
 /** Google Gemini generateContent (free tier with API key from Google AI Studio). */
 
 export function getGeminiModel() {
-  return process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+  return process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 }
 
 /** AIza… = legacy keys; AQ.… = new Google AI Studio authentication keys. */
@@ -118,7 +118,10 @@ export function friendlyGeminiError(status, data) {
     return `Gemini model "${getGeminiModel()}" is unavailable. Set GEMINI_MODEL to a supported model (e.g. gemini-2.5-flash) and redeploy.`;
   }
   if (status === 429) {
-    return 'Gemini rate limit / quota exceeded. Wait a bit and try again, or check your quota in Google AI Studio.';
+    if (/limit:\s*0/i.test(raw)) {
+      return 'Gemini free-tier quota is 0 for this project/model (common on first use). Fixes: link billing in Google AI Studio to activate free quotas, set GEMINI_MODEL=gemini-2.5-flash, or switch to Groq free — set GROQ_API_KEY + AI_PROVIDER=groq in Vercel.';
+    }
+    return 'Gemini rate limit / quota exceeded. Wait and retry, check usage in Google AI Studio, or use Groq free (GROQ_API_KEY + AI_PROVIDER=groq).';
   }
   return raw || `Gemini API error (${status})`;
 }

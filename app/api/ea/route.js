@@ -1,4 +1,4 @@
-import { geminiGenerate, resolveGeminiKey, GEMINI_KEY_HINT } from '../../lib/gemini';
+import { aiGenerate, AI_SETUP_HINT } from '../../lib/ai';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,17 +21,6 @@ function buildPrompt(ctx) {
 }
 
 export async function POST(request) {
-  const { key: apiKey, error: keyError } = resolveGeminiKey();
-  if (keyError) {
-    return Response.json({ error: keyError }, { status: 503 });
-  }
-  if (!apiKey) {
-    return Response.json(
-      { error: `GEMINI_API_KEY is not set. ${GEMINI_KEY_HINT}` },
-      { status: 503 }
-    );
-  }
-
   try {
     const ctx = await request.json();
     if (!ctx?.instrument || !ctx?.finalCall) {
@@ -45,8 +34,7 @@ The user already has a rule-based BUY signal from live charts. Your job:
 3. Give 2-4 short bullet points: main reason, main risk, and what to watch before entering on Groww.
 Keep under 120 words. Plain English. This is suggestion-only, not financial advice.`;
 
-    const text = await geminiGenerate({
-      apiKey,
+    const text = await aiGenerate({
       system,
       userPrompt: buildPrompt(ctx),
       maxTokens: 450,
@@ -55,9 +43,12 @@ Keep under 120 words. Plain English. This is suggestion-only, not financial advi
     return Response.json({ text });
   } catch (error) {
     console.error('EA API error:', error);
+    const message = error.message || 'Failed to reach AI service';
+    const status = /not configured|not set/i.test(message) ? 503 : 502;
+    const needsHint = /not configured|not set|quota|rate limit/i.test(message);
     return Response.json(
-      { error: error.message || 'Failed to reach Gemini' },
-      { status: 502 }
+      { error: needsHint ? `${message} ${AI_SETUP_HINT}` : message },
+      { status }
     );
   }
 }
