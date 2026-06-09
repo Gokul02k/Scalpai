@@ -15,7 +15,7 @@ import {
 } from "./lib/marketData";
 import { analyzeFromCandles } from "./lib/indicators";
 import { generateIndexSignals, generatePortfolioSignals, parsePortfolioCSV } from "./lib/signals";
-import { getOverallSuggestion, explainAssetMove, getStockSuggestion } from "./lib/suggestion";
+import { getScalpingSuggestion, getMarketSuggestion, getWatchlistMarketSuggestion, explainAssetMove, getStockSuggestion } from "./lib/suggestion";
 import { loadPersisted, savePersisted } from "./lib/storage";
 import { getMarketStatus } from "./lib/marketHours";
 import { THEMES, cardStyle } from "./lib/themes";
@@ -226,30 +226,84 @@ function InstrumentDropdown({ instrument, setInstrument, open, setOpen, isUp, ma
   );
 }
 
-function SuggestionMiniCard({ name, suggestion, selected, onSelect, C }) {
+function HomeSuggestionBlock({ name, badge, suggestion, priceData, signals = [], scalping, C, S }) {
   if (!suggestion) return null;
   const clr = suggestion.action === "BUY" ? C.green : suggestion.action === "SELL" ? C.red : C.yellow;
+  const cp = priceData?.cur ?? 0;
+  const chg = priceData ? +(cp - priceData.prev).toFixed(2) : 0;
+  const pct = priceData?.prev ? +((chg / priceData.prev) * 100).toFixed(2) : 0;
+  const isUp = chg >= 0;
+  const priceDecimals = name === "NIFTY" ? 0 : 2;
+
   return (
-    <button
-      onClick={onSelect}
-      style={{
-        flex: 1,
-        minWidth: 0,
-        textAlign: "left",
-        padding: 10,
-        borderRadius: 10,
-        background: selected ? `${clr}14` : C.card,
-        border: `1px solid ${selected ? clr + "66" : C.border}`,
-        cursor: "pointer",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4 }}>
-        <Lightbulb size={12} color={clr} />
-        <span style={{ color: C.text, fontWeight: 800, fontSize: 11 }}>{name}</span>
+    <div style={{
+      ...S.card,
+      borderColor: `${clr}44`,
+      background: suggestion.action === "BUY" ? `${C.green}08` : suggestion.action === "SELL" ? `${C.red}08` : `${C.yellow}08`,
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, gap: 8 }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+            <Lightbulb size={14} color={clr} />
+            <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{name}</span>
+            {badge && (
+              <span style={{ background: scalping ? `${C.yellow}28` : `${C.blue}28`, color: scalping ? C.yellow : C.blue, fontSize: 9, fontWeight: 800, padding: "2px 7px", borderRadius: 4 }}>{badge}</span>
+            )}
+          </div>
+          {priceData && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ color: C.text, fontWeight: 900, fontSize: 18 }}>₹{fmt(cp, priceDecimals)}</span>
+              <span style={{ color: isUp ? C.green : C.red, fontSize: 12, fontWeight: 700 }}>
+                {isUp ? <ArrowUp size={11} style={{ verticalAlign: "middle" }} /> : <ArrowDown size={11} style={{ verticalAlign: "middle" }} />}
+                {" "}{(chg >= 0 ? "+" : "") + fmt(chg, priceDecimals)} ({pct >= 0 ? "+" : ""}{pct}%)
+              </span>
+            </div>
+          )}
+        </div>
+        <span style={{
+          background: clr,
+          color: suggestion.action === "HOLD" || suggestion.action === "WAIT" ? C.text : "#000",
+          fontSize: 10, fontWeight: 800, padding: "4px 10px", borderRadius: 4, flexShrink: 0, textAlign: "right", maxWidth: "46%",
+        }}>
+          {suggestion.label}
+        </span>
       </div>
-      <div style={{ color: clr, fontWeight: 800, fontSize: 10, marginBottom: 4 }}>{suggestion.label}</div>
-      <div style={{ color: C.muted, fontSize: 9, lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{suggestion.reason}</div>
-    </button>
+      <p style={{ color: C.text, fontSize: 13, lineHeight: 1.5, margin: "0 0 4px" }}>{suggestion.reason}</p>
+      {suggestion.detail && <p style={{ color: C.muted, fontSize: 11, margin: "0 0 8px" }}>{suggestion.detail}</p>}
+      {suggestion.confidence > 0 && (
+        <div style={{ color: C.muted, fontSize: 10, marginBottom: signals.length ? 10 : 0 }}>Confidence: {Math.round(suggestion.confidence)}%</div>
+      )}
+      {signals.length > 0 && (
+        <div style={{ borderTop: `1px solid ${C.dim}`, paddingTop: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+            <Zap size={13} color={C.yellow} />
+            <span style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: "uppercase" }}>{scalping ? "Scalp Signals" : "Signals"}</span>
+          </div>
+          {signals.map((s, i) => <SignalCard key={i} sig={s} price={cp} C={C} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WatchlistSuggestionRow({ symbol, quote, suggestion, C, S }) {
+  const clr = suggestion.action === "BUY" ? C.green : suggestion.action === "SELL" ? C.red : C.yellow;
+  const pct = quote?.changePercent ?? 0;
+  return (
+    <div style={{ ...S.card, marginBottom: 8, borderColor: `${clr}33`, padding: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 6 }}>
+        <div>
+          <div style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>{symbol}</div>
+          <div style={{ color: C.muted, fontSize: 11 }}>
+            {quote?.current ? `₹${fmt(quote.current)} · today ${pct >= 0 ? "+" : ""}${pct}%` : "Loading…"}
+          </div>
+        </div>
+        <span style={{ background: clr, color: suggestion.action === "HOLD" || suggestion.action === "WAIT" ? C.text : "#000", fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 4, flexShrink: 0 }}>
+          {suggestion.label}
+        </span>
+      </div>
+      <p style={{ color: C.text, fontSize: 12, lineHeight: 1.45, margin: 0 }}>{suggestion.reason}</p>
+    </div>
   );
 }
 
@@ -282,7 +336,6 @@ export default function App() {
 
   const [hydrated, setHydrated] = useState(false);
   const [instrument, setInstrument] = useState("NIFTY");
-  const [dropOpen, setDropOpen] = useState(false);
   const [chartsDropOpen, setChartsDropOpen] = useState(false);
   const [portfolioSubTab, setPortfolioSubTab] = useState("holdings");
   const [tab, setTab] = useState("dashboard");
@@ -312,6 +365,7 @@ export default function App() {
   const [activeWatchlist, setActiveWatchlist] = useState("My Watchlist");
   const [watchInput, setWatchInput] = useState("");
   const [watchPrices, setWatchPrices] = useState({});
+  const [watchQuotes, setWatchQuotes] = useState({});
 
   const [sett, setSett] = useState({
     riskLimit: 10000, profitPct: 1.5, slPct: 0.8,
@@ -441,17 +495,39 @@ export default function App() {
     return () => { cancelled = true; clearInterval(id); };
   }, [refresh]);
 
-  // Watchlist prices
+  // Watchlist prices (all lists — for Home suggestions)
+  const allWatchSymbols = useMemo(
+    () => [...new Set(Object.values(watchlists).flat())],
+    [watchlists]
+  );
+
+  useEffect(() => {
+    const syms = allWatchSymbols;
+    if (!syms.length) return;
+    let cancelled = false;
+    (async () => {
+      const entries = await Promise.all(syms.map(async (s) => {
+        const q = await fetchStockQuote(s);
+        return [s, q];
+      }));
+      if (!cancelled) {
+        setWatchQuotes(Object.fromEntries(entries.filter(([, q]) => q)));
+        setWatchPrices(Object.fromEntries(entries.map(([s, q]) => [s, q?.current ?? null])));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [allWatchSymbols.join(","), refresh]);
+
   useEffect(() => {
     const syms = watchlists[activeWatchlist] || [];
-    if (!syms.length) return;
+    if (!syms.length || syms.every((s) => watchPrices[s] != null)) return;
     let cancelled = false;
     (async () => {
       const entries = await Promise.all(syms.map(async (s) => {
         const q = await fetchStockQuote(s);
         return [s, q?.current ?? null];
       }));
-      if (!cancelled) setWatchPrices(Object.fromEntries(entries));
+      if (!cancelled) setWatchPrices((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
     })();
     return () => { cancelled = true; };
   }, [watchlists, activeWatchlist, refresh]);
@@ -488,25 +564,33 @@ export default function App() {
     for (const k of INSTRUMENT_KEYS) {
       const p = prices[k];
       const pct = p?.prev ? +(((p.cur - p.prev) / p.prev) * 100).toFixed(2) : 0;
-      out[k] = getOverallSuggestion(analyses[k], pct);
+      out[k] = k === "NIFTY"
+        ? getScalpingSuggestion(analyses[k], pct)
+        : getMarketSuggestion(analyses[k], pct);
     }
     return out;
   }, [analyses, prices]);
 
-  const suggestion = allSuggestions[instrument];
+  const signalsByInstrument = useMemo(() => {
+    const out = {};
+    for (const inst of INSTRUMENT_KEYS) {
+      const a = analyses[inst];
+      const cp = prices[inst]?.cur;
+      out[inst] = a && cp ? generateIndexSignals(a, cp, inst, sett) : [];
+    }
+    return out;
+  }, [analyses, prices, sett]);
 
   const niftyMove = useMemo(() => explainAssetMove(prices.NIFTY, news, "NIFTY"), [prices.NIFTY, news]);
   const goldMove = useMemo(() => explainAssetMove(prices.GOLD, news, "GOLD"), [prices.GOLD, news]);
   const silverMove = useMemo(() => explainAssetMove(prices.SILVER, news, "SILVER"), [prices.SILVER, news]);
 
   useEffect(() => {
-    const cp = prices[instrument]?.cur;
-    if (!analysis || !cp) return;
     setSignals([
-      ...generateIndexSignals(analysis, cp, instrument, sett),
+      ...INSTRUMENT_KEYS.flatMap((inst) => signalsByInstrument[inst] || []),
       ...generatePortfolioSignals(portfolio, sett),
     ]);
-  }, [analysis, prices, instrument, sett, portfolio]);
+  }, [signalsByInstrument, sett, portfolio]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -679,7 +763,6 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
   const rrCalc = calc.entry && calc.sl && calc.target
     ? (Math.abs(calc.target - calc.entry) / Math.abs(calc.entry - calc.sl)).toFixed(2) : "—";
 
-  const indexSignals = signals.filter((s) => s.scope === "index");
   const portSignals = signals.filter((s) => s.scope === "portfolio");
   const portfolioStocks = portfolio.filter((s) => !MACRO_SYMBOLS.has(s.name.toUpperCase()));
   const portfolioStockNews = news.filter((n) =>
@@ -693,135 +776,56 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
   // ── TAB COMPONENTS ──
   const Dashboard = () => (
     <div style={{ padding: "0 14px 90px" }}>
-      <InstrumentDropdown
-        instrument={instrument}
-        setInstrument={setInstrument}
-        open={dropOpen}
-        setOpen={setDropOpen}
-        isUp={isUp}
-        marketStatus={marketStatus}
+      <HomeSuggestionBlock
+        name="NIFTY"
+        badge="Scalping"
+        suggestion={allSuggestions.NIFTY}
+        priceData={prices.NIFTY}
+        signals={signalsByInstrument.NIFTY || []}
+        scalping
         C={C}
+        S={S}
       />
 
-      <div style={{ marginBottom: 10 }}>
-        <div style={{ color: C.muted, fontSize: 10, textTransform: "uppercase", marginBottom: 8, fontWeight: 700 }}>Scalping suggestions · NIFTY · Gold · Silver</div>
-        <div style={{ display: "flex", gap: 8 }}>
-          {INSTRUMENT_KEYS.map((k) => (
-            <SuggestionMiniCard
-              key={k}
-              name={k}
-              suggestion={allSuggestions[k]}
-              selected={instrument === k}
-              onSelect={() => setInstrument(k)}
+      <HomeSuggestionBlock
+        name="GOLD"
+        badge="Market"
+        suggestion={allSuggestions.GOLD}
+        priceData={prices.GOLD}
+        signals={signalsByInstrument.GOLD || []}
+        C={C}
+        S={S}
+      />
+
+      <HomeSuggestionBlock
+        name="SILVER"
+        badge="Market"
+        suggestion={allSuggestions.SILVER}
+        priceData={prices.SILVER}
+        signals={signalsByInstrument.SILVER || []}
+        C={C}
+        S={S}
+      />
+
+      <div style={{ marginTop: 4, marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+          <Star size={14} color={C.yellow} />
+          <span style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>Watchlist Suggestions</span>
+        </div>
+        {allWatchSymbols.length === 0 ? (
+          <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 16 }}>Add stocks in the Watch tab to see buy/sell suggestions here.</div>
+        ) : (
+          allWatchSymbols.map((sym) => (
+            <WatchlistSuggestionRow
+              key={sym}
+              symbol={sym}
+              quote={watchQuotes[sym]}
+              suggestion={getWatchlistMarketSuggestion(sym, watchQuotes[sym])}
               C={C}
+              S={S}
             />
-          ))}
-        </div>
-      </div>
-
-      {suggestion && (
-        <div style={{
-          ...S.card,
-          borderColor: suggestion.action === "BUY" ? `${C.green}55` : suggestion.action === "SELL" ? `${C.red}55` : `${C.yellow}55`,
-          background: suggestion.action === "BUY" ? `${C.green}0d` : suggestion.action === "SELL" ? `${C.red}0d` : `${C.yellow}0d`,
-          marginBottom: 10,
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-            <Lightbulb size={16} color={suggestion.action === "BUY" ? C.green : suggestion.action === "SELL" ? C.red : C.yellow} />
-            <span style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>{instrument} · Today&apos;s Suggestion</span>
-            <span style={{
-              marginLeft: "auto",
-              background: suggestion.action === "BUY" ? C.green : suggestion.action === "SELL" ? C.red : C.yellow,
-              color: suggestion.action === "HOLD" || suggestion.action === "WAIT" ? C.text : "#000",
-              fontSize: 10, fontWeight: 800, padding: "3px 10px", borderRadius: 4,
-            }}>
-              {suggestion.label}
-            </span>
-          </div>
-          <p style={{ color: C.text, fontSize: 13, lineHeight: 1.5, margin: "0 0 6px" }}>{suggestion.reason}</p>
-          <p style={{ color: C.muted, fontSize: 11, margin: 0 }}>{suggestion.detail}</p>
-          {suggestion.confidence > 0 && (
-            <div style={{ color: C.muted, fontSize: 10, marginTop: 8 }}>Confidence: {Math.round(suggestion.confidence)}% · Suggestion only, not a trade</div>
-          )}
-        </div>
-      )}
-
-      <div style={{ background: `linear-gradient(135deg,${C.card} 0%,${C.dim} 100%)`, border: `1px solid ${isUp ? C.green + "40" : C.red + "40"}`, borderRadius: 14, padding: 16, marginBottom: 10 }}>
-        <div style={{ color: C.muted, fontSize: 10, marginBottom: 4, textTransform: "uppercase" }}>
-          {instrument} · {isLive ? `${(dataSource || "LIVE").toUpperCase()}` : "SIMULATED"}
-          {INSTRUMENT_SUB[instrument] && (
-            <span style={{ display: "block", textTransform: "none", marginTop: 2, fontSize: 9 }}>{INSTRUMENT_SUB[instrument]}</span>
-          )}
-        </div>
-        <div style={{ color: C.text, fontSize: 31, fontWeight: 900, fontVariantNumeric: "tabular-nums" }}>₹{fmt(cp)}</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 5 }}>
-          {isUp ? <ArrowUp size={13} color={C.green} /> : <ArrowDown size={13} color={C.red} />}
-          <span style={{ color: isUp ? C.green : C.red, fontWeight: 700, fontSize: 14 }}>{fmtD(chg)} ({pct >= 0 ? "+" : ""}{pct}%)</span>
-        </div>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
-        {[
-          { l: "Active Signals", v: indexSignals.length + portSignals.length, c: C.yellow },
-          { l: "RSI", v: analysis?.rsi ?? "—", c: analysis?.rsi > 70 ? C.red : analysis?.rsi < 30 ? C.green : C.yellow },
-          { l: "Portfolio P&L", v: `₹${fmt(portPnL, 0)}`, c: portPnL >= 0 ? C.green : C.red },
-          { l: "Portfolio Value", v: `₹${fmt(portVal, 0)}`, c: C.blue },
-        ].map((s) => (
-          <div key={s.l} style={{ ...S.card, marginBottom: 0, padding: 12 }}>
-            <div style={{ color: C.muted, fontSize: 10, marginBottom: 4, textTransform: "uppercase" }}>{s.l}</div>
-            <div style={{ color: s.c, fontWeight: 900, fontSize: 20 }}>{s.v}</div>
-          </div>
-        ))}
-      </div>
-
-      <div style={{ ...S.card }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <span style={{ color: C.text, fontWeight: 700, fontSize: 13 }}>{instrument} · {tf}</span>
-          <div style={{ display: "flex", gap: 3 }}>
-            {["1m", "5m", "15m", "1h"].map((t) => (
-              <button key={t} onClick={() => setTf(t)} style={{ padding: "3px 8px", borderRadius: 5, background: t === tf ? C.green : C.dim, color: t === tf ? "#000" : C.muted, border: "none", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>{t}</button>
-            ))}
-          </div>
-        </div>
-        <CandleChart candles={instCandles.slice(-35)} height={165} C={C} />
-      </div>
-
-      {sett.ind.rsi && analysis && (
-        <div style={{ ...S.card }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-            <span style={{ color: C.muted, fontSize: 12 }}>RSI (14)</span>
-            <span style={{ color: analysis.rsi > 70 ? C.red : analysis.rsi < 30 ? C.green : C.yellow, fontWeight: 700, fontSize: 13 }}>
-              {analysis.rsi} · {analysis.rsi > 70 ? "Overbought" : analysis.rsi < 30 ? "Oversold" : "Neutral"}
-            </span>
-          </div>
-          <div style={{ background: C.dim, borderRadius: 4, height: 6 }}>
-            <div style={{ width: `${analysis.rsi}%`, height: "100%", background: analysis.rsi > 70 ? C.red : analysis.rsi < 30 ? C.green : C.yellow, borderRadius: 4 }} />
-          </div>
-        </div>
-      )}
-
-      {sett.ind.macd && analysis && (
-        <div style={{ ...S.card }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-            <span style={{ color: C.muted, fontSize: 12 }}>MACD</span>
-            <span style={{ color: analysis.macd.h > 0 ? C.green : C.red, fontWeight: 700, fontSize: 13 }}>{analysis.macd.h > 0 ? "▲ Bullish" : "▼ Bearish"}</span>
-          </div>
-          <div style={{ display: "flex", gap: 14, fontSize: 11, color: C.muted }}>
-            <span>MACD <b style={{ color: C.blue }}>{analysis.macd.v}</b></span>
-            <span>Signal <b style={{ color: C.yellow }}>{analysis.macd.s}</b></span>
-            <span>Hist <b style={{ color: analysis.macd.h > 0 ? C.green : C.red }}>{analysis.macd.h}</b></span>
-          </div>
-        </div>
-      )}
-
-      <div style={{ marginTop: 4 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-          <Zap size={14} color={C.yellow} />
-          <span style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>Index Signals</span>
-        </div>
-        {indexSignals.length
-          ? indexSignals.map((s, i) => <SignalCard key={i} sig={s} price={cp} C={C} />)
-          : <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 20 }}>Scanning…</div>}
+          ))
+        )}
       </div>
     </div>
   );

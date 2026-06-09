@@ -72,6 +72,73 @@ export function getOverallSuggestion(analysis, chgPct) {
   };
 }
 
+export function getScalpingSuggestion(analysis, chgPct) {
+  const base = getOverallSuggestion(analysis, chgPct);
+  return {
+    ...base,
+    detail: 'Scalping suggestion only — quick in-and-out on your broker (e.g. Groww) if you agree.',
+  };
+}
+
+export function getMarketSuggestion(analysis, chgPct) {
+  const base = getOverallSuggestion(analysis, chgPct);
+  return {
+    ...base,
+    detail: 'Market-based buy/sell view — not a scalping call. Use for swing or investment timing on your broker.',
+  };
+}
+
+export function getWatchlistMarketSuggestion(symbol, quote) {
+  const pct = quote?.changePercent ?? 0;
+  const price = quote?.current;
+  if (!price) {
+    return { action: 'WAIT', label: 'Loading…', reason: 'Fetching live price…', confidence: 0, detail: '' };
+  }
+  if (pct >= 2) {
+    return {
+      action: 'SELL',
+      label: 'Avoid fresh buy',
+      reason: `${symbol} up ${pct}% today — extended move, wait for pullback`,
+      confidence: 58,
+      detail: 'Market momentum suggestion based on today\'s price action.',
+    };
+  }
+  if (pct <= -2) {
+    return {
+      action: 'BUY',
+      label: 'Watch for entry',
+      reason: `${symbol} down ${Math.abs(pct)}% today — possible dip if trend intact`,
+      confidence: 58,
+      detail: 'Market momentum suggestion based on today\'s price action.',
+    };
+  }
+  if (pct >= 0.8) {
+    return {
+      action: 'HOLD',
+      label: 'Hold / wait',
+      reason: `${symbol} mildly up (${pct}%) — no strong edge to chase`,
+      confidence: 45,
+      detail: 'Neutral — wait for clearer move.',
+    };
+  }
+  if (pct <= -0.8) {
+    return {
+      action: 'BUY',
+      label: 'Mild buy bias',
+      reason: `${symbol} slightly weak (${pct}%) — may offer better entry`,
+      confidence: 50,
+      detail: 'Market momentum suggestion based on today\'s price action.',
+    };
+  }
+  return {
+    action: 'HOLD',
+    label: 'Hold — flat day',
+    reason: `${symbol} at ₹${price.toLocaleString('en-IN')} · today ${pct >= 0 ? '+' : ''}${pct}%`,
+    confidence: 40,
+    detail: 'No strong buy or sell signal from today\'s move.',
+  };
+}
+
 export function getMoveTitle(assetName, direction) {
   if (direction === 'down') return `${assetName} is falling today`;
   if (direction === 'up') return `${assetName} is rising today`;
