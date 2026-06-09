@@ -1,15 +1,6 @@
-import { resolveGeminiKey, friendlyGeminiError } from '../../lib/gemini';
+import { resolveGeminiKey, geminiChat } from '../../lib/gemini';
 
 export const dynamic = 'force-dynamic';
-
-function toGeminiMessages(messages) {
-  return messages
-    .filter((m) => m.role === 'user' || m.role === 'assistant')
-    .map((m) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }],
-    }));
-}
 
 export async function POST(request) {
   try {
@@ -24,29 +15,7 @@ export async function POST(request) {
       return Response.json({ error: keyError }, { status: 503 });
     }
     if (geminiKey) {
-      const history = toGeminiMessages(messages.slice(0, -1));
-      const lastUser = messages[messages.length - 1]?.content || '';
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${process.env.GEMINI_MODEL || 'gemini-2.0-flash'}:generateContent?key=${encodeURIComponent(geminiKey)}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: system || '' }] },
-            contents: [
-              ...history,
-              { role: 'user', parts: [{ text: lastUser }] },
-            ],
-            generationConfig: { maxOutputTokens: 1000, temperature: 0.5 },
-          }),
-          cache: 'no-store',
-        }
-      );
-      const data = await res.json();
-      if (!res.ok) {
-        return Response.json({ error: friendlyGeminiError(res.status, data) }, { status: res.status });
-      }
-      const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text).join('')?.trim() || '';
+      const text = await geminiChat({ apiKey: geminiKey, system, messages });
       return Response.json({ text });
     }
 
@@ -89,6 +58,6 @@ export async function POST(request) {
     return Response.json({ text });
   } catch (error) {
     console.error('Chat API error:', error);
-    return Response.json({ error: 'Failed to reach AI service' }, { status: 502 });
+    return Response.json({ error: error.message || 'Failed to reach AI service' }, { status: 502 });
   }
 }
