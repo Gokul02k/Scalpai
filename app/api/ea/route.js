@@ -1,4 +1,4 @@
-import { aiGenerate, AI_SETUP_HINT } from '../../lib/ai';
+import { groqGenerate, GROQ_SETUP_HINT } from '../../lib/groq';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,7 +34,7 @@ The user already has a rule-based BUY signal from live charts. Your job:
 3. Give 2-4 short bullet points: main reason, main risk, and what to watch before entering on Groww.
 Keep under 120 words. Plain English. This is suggestion-only, not financial advice.`;
 
-    const text = await aiGenerate({
+    const text = await groqGenerate({
       system,
       userPrompt: buildPrompt(ctx),
       maxTokens: 450,
@@ -43,11 +43,10 @@ Keep under 120 words. Plain English. This is suggestion-only, not financial advi
     return Response.json({ text });
   } catch (error) {
     console.error('EA API error:', error);
-    const message = error.message || 'Failed to reach AI service';
-    const status = /not configured|not set/i.test(message) ? 503 : 502;
-    const needsHint = /not configured|not set|quota|rate limit/i.test(message);
+    const message = error.message || 'Failed to reach Groq';
+    const status = /not set/i.test(message) ? 503 : 502;
     return Response.json(
-      { error: needsHint ? `${message} ${AI_SETUP_HINT}` : message },
+      { error: message.includes(GROQ_SETUP_HINT) ? message : `${message} ${GROQ_SETUP_HINT}` },
       { status }
     );
   }

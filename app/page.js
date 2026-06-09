@@ -19,6 +19,7 @@ import { buildUnifiedSuggestion, explainAssetMove, getWatchlistMarketSuggestion,
 import { loadPersisted, savePersisted } from "./lib/storage";
 import { getMarketStatus } from "./lib/marketHours";
 import { THEMES, cardStyle } from "./lib/themes";
+import { GROQ_CHAT_MODELS, DEFAULT_GROQ_MODEL } from "./lib/groqModels";
 
 const INSTRUMENTS = {
   "NIFTY":  { base: 25000, vol: 0.0012, lot: 50 },
@@ -554,6 +555,7 @@ export default function App() {
     { role: "assistant", content: "👋 Hi! I'm your AI scalping assistant.\n\nTry: \"Switch to GOLD\", \"Light mode\", \"Add RELIANCE to watchlist\", or \"What does RSI say for NIFTY?\"" },
   ]);
   const [chatInput, setChatInput] = useState("");
+  const [chatModel, setChatModel] = useState(DEFAULT_GROQ_MODEL);
   const [chatLoading, setChatLoading] = useState(false);
   const [eaState, setEaState] = useState({});
   const chatEnd = useRef(null);
@@ -579,6 +581,7 @@ export default function App() {
       if (data.refresh) setRefresh(data.refresh);
       if (data.alerts) setAlerts(data.alerts);
       if (data.activeScalp) setActiveScalp(data.activeScalp);
+      if (data.chatModel && GROQ_CHAT_MODELS.some((m) => m.id === data.chatModel)) setChatModel(data.chatModel);
     }
     setHydrated(true);
   }, []);
@@ -586,8 +589,8 @@ export default function App() {
   // Persist on change
   useEffect(() => {
     if (!hydrated) return;
-    savePersisted({ theme, portfolio, trades, watchlists, activeWatchlist, sett, refresh, alerts, activeScalp });
-  }, [hydrated, theme, portfolio, trades, watchlists, activeWatchlist, sett, refresh, alerts, activeScalp]);
+    savePersisted({ theme, portfolio, trades, watchlists, activeWatchlist, sett, refresh, alerts, activeScalp, chatModel });
+  }, [hydrated, theme, portfolio, trades, watchlists, activeWatchlist, sett, refresh, alerts, activeScalp, chatModel]);
 
   // Market status ticker
   useEffect(() => {
@@ -923,7 +926,7 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ system: sys, messages: [...msgs.slice(-8), { role: "user", content: text }] }),
+        body: JSON.stringify({ system: sys, messages: [...msgs.slice(-8), { role: "user", content: text }], model: chatModel }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -1233,7 +1236,7 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
               </button>
             </div>
             <p style={{ color: C.muted, fontSize: 11, margin: "0 0 12px", lineHeight: 1.4 }}>
-              Upload a Groww/Zerodha CSV or a portfolio screenshot — AI reads holdings (needs ANTHROPIC_API_KEY for images).
+              Upload a Groww/Zerodha CSV or a portfolio screenshot — AI reads holdings via Groq vision (needs GROQ_API_KEY).
             </p>
 
             {portfolio.map((s) => {
@@ -1569,12 +1572,21 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
 
       {chatOpen && (
         <div style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex", flexDirection: "column", background: C.bg }}>
-          <div style={{ background: C.card, borderBottom: `1px solid ${C.border}`, padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
+          <div style={{ background: C.card, borderBottom: `1px solid ${C.border}`, padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>⚡ AI Assistant</div>
-              <div style={{ color: C.muted, fontSize: 10 }}>Powered by Gemini</div>
+              <div style={{ color: C.muted, fontSize: 10, marginBottom: 8 }}>Powered by Groq</div>
+              <select
+                value={chatModel}
+                onChange={(e) => setChatModel(e.target.value)}
+                style={{ width: "100%", maxWidth: 280, padding: "6px 10px", borderRadius: 8, background: C.dim, color: C.text, border: `1px solid ${C.border}`, fontSize: 12, outline: "none" }}
+              >
+                {GROQ_CHAT_MODELS.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </select>
             </div>
-            <button onClick={() => setChatOpen(false)} style={{ background: C.dim, border: "none", color: C.muted, cursor: "pointer", borderRadius: 8, padding: 6 }}><X size={18} /></button>
+            <button onClick={() => setChatOpen(false)} style={{ background: C.dim, border: "none", color: C.muted, cursor: "pointer", borderRadius: 8, padding: 6, flexShrink: 0 }}><X size={18} /></button>
           </div>
           <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
             {msgs.map((m, i) => (
