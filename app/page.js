@@ -35,7 +35,6 @@ const INSTRUMENT_SUB = {
 };
 
 const MACRO_SYMBOLS = new Set(["NIFTY", "GOLD", "SILVER", "GOLDBEES", "SILVERBEES", "SENSEX", "BANKNIFTY"]);
-const EA_BUY_MIN_CONFIDENCE = 55;
 
 const DEFAULT_PORTFOLIO = [
   { id: 1, name: "RELIANCE",  qty: 10, buy: 2850, cur: 2920, sector: "Energy"  },
@@ -300,33 +299,37 @@ function TradeLevelsRow({ entry, target, stopLoss, rr, action, decimals, C }) {
 
 function AskEASection({ eaKey, instrument, mode, finalCall, priceData, eaState, onAskEA, C }) {
   const state = eaState?.[eaKey] || {};
-  const showBtn = finalCall?.action === "BUY" && (finalCall.confidence ?? 0) >= EA_BUY_MIN_CONFIDENCE;
-  if (!showBtn && !state.text && !state.error && !state.loading) return null;
+  if (!finalCall || finalCall.action === "WAIT") return null;
 
   const cp = priceData?.cur ?? 0;
   const chgPct = priceData?.prev ? +(((cp - priceData.prev) / priceData.prev) * 100).toFixed(2) : 0;
+  const isHighConfBuy = finalCall.action === "BUY" && (finalCall.confidence ?? 0) >= 55;
 
   return (
     <div style={{ marginBottom: 10 }}>
-      {showBtn && (
-        <button
-          type="button"
-          onClick={() => onAskEA(eaKey, { instrument, mode, price: { cur: cp, chgPct }, finalCall })}
-          disabled={state.loading}
-          style={{
-            padding: "6px 14px",
-            borderRadius: 8,
-            background: state.loading ? C.dim : `${C.blue}22`,
-            border: `1px solid ${C.blue}66`,
-            color: C.blue,
-            fontSize: 11,
-            fontWeight: 800,
-            cursor: state.loading ? "wait" : "pointer",
-          }}
-        >
-          {state.loading ? "Asking EA…" : "Ask EA"}
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={() => onAskEA(eaKey, { instrument, mode, price: { cur: cp, chgPct }, finalCall })}
+        disabled={state.loading}
+        style={{
+          width: "100%",
+          padding: "10px 14px",
+          borderRadius: 8,
+          background: state.loading ? C.dim : isHighConfBuy ? `${C.blue}28` : `${C.blue}14`,
+          border: `1px solid ${C.blue}77`,
+          color: C.blue,
+          fontSize: 12,
+          fontWeight: 800,
+          cursor: state.loading ? "wait" : "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 6,
+        }}
+      >
+        <MessageCircle size={14} />
+        {state.loading ? "Asking EA…" : "Ask EA — get AI second opinion"}
+      </button>
       {(state.text || state.error) && (
         <div style={{
           marginTop: 8,

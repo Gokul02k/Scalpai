@@ -16,7 +16,7 @@ function buildPrompt(ctx) {
     lines.push(`- [${f.type}] ${f.name}: ${f.reason}`);
   }
   lines.push('');
-  lines.push('The app shows BUY NOW with high confidence. Review the data above for Indian markets (NSE).');
+  lines.push(`The app signal is: ${ctx.finalCall?.label ?? '—'} (${ctx.finalCall?.action ?? '—'}). Review for Indian markets (NSE).`);
   return lines.join('\n');
 }
 
