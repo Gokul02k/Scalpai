@@ -35,6 +35,7 @@ const INSTRUMENT_SUB = {
 };
 
 const MACRO_SYMBOLS = new Set(["NIFTY", "GOLD", "SILVER", "GOLDBEES", "SILVERBEES", "SENSEX", "BANKNIFTY"]);
+const EA_BUY_MIN_CONFIDENCE = 55;
 
 const DEFAULT_PORTFOLIO = [
   { id: 1, name: "RELIANCE",  qty: 10, buy: 2850, cur: 2920, sector: "Energy"  },
@@ -297,7 +298,54 @@ function TradeLevelsRow({ entry, target, stopLoss, rr, action, decimals, C }) {
   );
 }
 
-function HomeSuggestionBlock({ name, badge, finalCall, priceData, C, S }) {
+function AskEASection({ eaKey, instrument, mode, finalCall, priceData, eaState, onAskEA, C }) {
+  const state = eaState?.[eaKey] || {};
+  const showBtn = finalCall?.action === "BUY" && (finalCall.confidence ?? 0) >= EA_BUY_MIN_CONFIDENCE;
+  if (!showBtn && !state.text && !state.error && !state.loading) return null;
+
+  const cp = priceData?.cur ?? 0;
+  const chgPct = priceData?.prev ? +(((cp - priceData.prev) / priceData.prev) * 100).toFixed(2) : 0;
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      {showBtn && (
+        <button
+          type="button"
+          onClick={() => onAskEA(eaKey, { instrument, mode, price: { cur: cp, chgPct }, finalCall })}
+          disabled={state.loading}
+          style={{
+            padding: "6px 14px",
+            borderRadius: 8,
+            background: state.loading ? C.dim : `${C.blue}22`,
+            border: `1px solid ${C.blue}66`,
+            color: C.blue,
+            fontSize: 11,
+            fontWeight: 800,
+            cursor: state.loading ? "wait" : "pointer",
+          }}
+        >
+          {state.loading ? "Asking EA…" : "Ask EA"}
+        </button>
+      )}
+      {(state.text || state.error) && (
+        <div style={{
+          marginTop: 8,
+          background: `${C.blue}10`,
+          border: `1px solid ${state.error ? C.red : C.blue}44`,
+          borderRadius: 10,
+          padding: 12,
+        }}>
+          <div style={{ color: C.blue, fontSize: 10, fontWeight: 800, marginBottom: 6, textTransform: "uppercase" }}>EA opinion</div>
+          <p style={{ color: state.error ? C.red : C.text, fontSize: 12, lineHeight: 1.55, margin: 0, whiteSpace: "pre-wrap" }}>
+            {state.error ? `⚠️ ${state.error}` : state.text}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HomeSuggestionBlock({ name, badge, finalCall, priceData, eaKey, eaState, onAskEA, C, S }) {
   if (!finalCall) return null;
   const { action, label, confidence, factors, entry, target, stopLoss, rr } = finalCall;
   const clr = action === "BUY" ? C.green : action === "SELL" ? C.red : C.yellow;
@@ -329,6 +377,17 @@ function HomeSuggestionBlock({ name, badge, finalCall, priceData, C, S }) {
       <FinalCallHeader label={label} confidence={confidence} action={action} C={C} />
       <TradeLevelsRow entry={entry} target={target} stopLoss={stopLoss} rr={rr} action={action} decimals={priceDecimals} C={C} />
 
+      <AskEASection
+        eaKey={eaKey || name}
+        instrument={name}
+        mode={badge || "scalp"}
+        finalCall={finalCall}
+        priceData={priceData}
+        eaState={eaState}
+        onAskEA={onAskEA}
+        C={C}
+      />
+
       {factors.length > 0 && (
         <div style={{ borderTop: `1px solid ${C.dim}`, paddingTop: 8 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
@@ -342,7 +401,7 @@ function HomeSuggestionBlock({ name, badge, finalCall, priceData, C, S }) {
   );
 }
 
-function HomeCommodityBlock({ name, priceData, swingCall, longCall, C, S }) {
+function HomeCommodityBlock({ name, priceData, swingCall, longCall, eaState, onAskEA, C, S }) {
   const cp = priceData?.cur ?? 0;
   const chg = priceData ? +(cp - priceData.prev).toFixed(2) : 0;
   const pct = priceData?.prev ? +((chg / priceData.prev) * 100).toFixed(2) : 0;
@@ -364,14 +423,23 @@ function HomeCommodityBlock({ name, priceData, swingCall, longCall, C, S }) {
         </div>
       )}
 
-      {[{ call: swingCall, title: "Swing trade" }, { call: longCall, title: "Long term (~1 month)" }].map(({ call, title }) => {
+      {[{ call: swingCall, title: "Swing trade", key: `${name}_swing`, mode: "swing" }, { call: longCall, title: "Long term (~1 month)", key: `${name}_long`, mode: "longterm" }].map(({ call, title, key, mode }) => {
         if (!call) return null;
-        const clr = call.action === "BUY" ? C.green : call.action === "SELL" ? C.red : C.yellow;
         return (
           <div key={title} style={{ marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${C.dim}` }}>
             <div style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase", marginBottom: 10 }}>{title}</div>
             <FinalCallHeader label={call.label} confidence={call.confidence} action={call.action} C={C} />
             <TradeLevelsRow entry={call.entry} target={call.target} stopLoss={call.stopLoss} rr={call.rr} action={call.action} decimals={2} C={C} />
+            <AskEASection
+              eaKey={key}
+              instrument={name}
+              mode={mode}
+              finalCall={call}
+              priceData={priceData}
+              eaState={eaState}
+              onAskEA={onAskEA}
+              C={C}
+            />
             {call.factors?.length > 0 && (
               <div style={{ marginTop: 4 }}>
                 {call.factors.slice(0, 4).map((f, i) => <SignalFactorRow key={i} factor={f} C={C} />)}
@@ -484,6 +552,7 @@ export default function App() {
   ]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+  const [eaState, setEaState] = useState({});
   const chatEnd = useRef(null);
   const csvRef = useRef(null);
   const imageRef = useRef(null);
@@ -817,6 +886,25 @@ export default function App() {
     } catch (_) {}
   }, [activeWatchlist]);
 
+  const askEA = useCallback(async (eaKey, payload) => {
+    setEaState((s) => ({ ...s, [eaKey]: { loading: true, text: "", error: null } }));
+    try {
+      const res = await fetch("/api/ea", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setEaState((s) => ({ ...s, [eaKey]: { loading: false, text: "", error: data.error || "EA unavailable" } }));
+        return;
+      }
+      setEaState((s) => ({ ...s, [eaKey]: { loading: false, text: data.text, error: null } }));
+    } catch {
+      setEaState((s) => ({ ...s, [eaKey]: { loading: false, text: "", error: "Connection error" } }));
+    }
+  }, []);
+
   const sendMsg = async () => {
     if (!chatInput.trim() || chatLoading) return;
     const text = chatInput.trim();
@@ -950,6 +1038,9 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
         badge="Scalping"
         finalCall={finalCalls.NIFTY}
         priceData={prices.NIFTY}
+        eaKey="NIFTY"
+        eaState={eaState}
+        onAskEA={askEA}
         C={C}
         S={S}
       />
@@ -959,6 +1050,8 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
         priceData={prices.GOLD}
         swingCall={finalCalls.GOLD_swing}
         longCall={finalCalls.GOLD_long}
+        eaState={eaState}
+        onAskEA={askEA}
         C={C}
         S={S}
       />
@@ -968,6 +1061,8 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
         priceData={prices.SILVER}
         swingCall={finalCalls.SILVER_swing}
         longCall={finalCalls.SILVER_long}
+        eaState={eaState}
+        onAskEA={askEA}
         C={C}
         S={S}
       />
@@ -1474,7 +1569,7 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
           <div style={{ background: C.card, borderBottom: `1px solid ${C.border}`, padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <div style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>⚡ AI Assistant</div>
-              <div style={{ color: C.muted, fontSize: 10 }}>Powered by Claude</div>
+              <div style={{ color: C.muted, fontSize: 10 }}>Powered by Gemini</div>
             </div>
             <button onClick={() => setChatOpen(false)} style={{ background: C.dim, border: "none", color: C.muted, cursor: "pointer", borderRadius: 8, padding: 6 }}><X size={18} /></button>
           </div>
