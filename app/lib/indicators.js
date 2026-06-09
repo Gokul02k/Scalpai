@@ -83,6 +83,23 @@ export function calcSupportResistance(candles, lookback = 20) {
   };
 }
 
+export function calcLiquidity(candles) {
+  const vols = candles.map((c) => c.vol).filter((v) => v > 0);
+  if (vols.length < 5) {
+    return { ratio: 1, label: 'Unknown', high: false, low: false };
+  }
+  const avg = vols.reduce((a, b) => a + b, 0) / vols.length;
+  const recent = vols.slice(-5);
+  const recentAvg = recent.reduce((a, b) => a + b, 0) / recent.length;
+  const ratio = +(recentAvg / avg).toFixed(2);
+  return {
+    ratio,
+    label: ratio >= 1.25 ? 'High' : ratio <= 0.75 ? 'Low' : 'Normal',
+    high: ratio >= 1.25,
+    low: ratio <= 0.75,
+  };
+}
+
 export function analyzeFromCandles(candles) {
   const closes = candles.map(c => c.c);
   const rsi = calcRSI(closes);
@@ -94,6 +111,7 @@ export function analyzeFromCandles(candles) {
   const atr = calcATR(candles);
   const stoch = calcStochastic(candles);
   const sr = calcSupportResistance(candles);
+  const liquidity = calcLiquidity(candles);
   const ema20v = ema20[ema20.length - 1];
   const ema50v = ema50[ema50.length - 1];
 
@@ -117,6 +135,8 @@ export function analyzeFromCandles(candles) {
     atr,
     stoch,
     sr,
+    liquidity,
+    price,
     summary: [
       { n: 'RSI (14)', v: rsi.toFixed(1), sig: rsi > 70 ? 'Overbought' : rsi < 30 ? 'Oversold' : 'Neutral', t: rsi > 70 ? 'SELL' : rsi < 30 ? 'BUY' : 'HOLD' },
       { n: 'MACD', v: macd.h.toFixed(2), sig: macd.h > 0 ? 'Bullish crossover' : 'Bearish crossover', t: macd.h > 0 ? 'BUY' : 'SELL' },

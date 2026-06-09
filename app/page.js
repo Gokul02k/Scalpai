@@ -609,14 +609,19 @@ export default function App() {
     return () => { cancelled = true; clearInterval(id); };
   }, [refresh]);
 
-  // Watchlist prices (all lists — for Home suggestions)
-  const allWatchSymbols = useMemo(
-    () => [...new Set(Object.values(watchlists).flat())],
-    [watchlists]
-  );
+  // Portfolio + watchlist only — for Home stock suggestions
+  const homeStockSymbols = useMemo(() => {
+    const port = portfolio
+      .filter((s) => !MACRO_SYMBOLS.has(s.name.toUpperCase()))
+      .map((s) => s.name.toUpperCase());
+    const watch = [...new Set(Object.values(watchlists).flat())]
+      .map((s) => s.toUpperCase())
+      .filter((s) => !MACRO_SYMBOLS.has(s));
+    return [...new Set([...port, ...watch])];
+  }, [portfolio, watchlists]);
 
   useEffect(() => {
-    const syms = allWatchSymbols;
+    const syms = homeStockSymbols;
     if (!syms.length) return;
     let cancelled = false;
     (async () => {
@@ -630,7 +635,7 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [allWatchSymbols.join(","), refresh]);
+  }, [homeStockSymbols.join(","), refresh]);
 
   useEffect(() => {
     const syms = watchlists[activeWatchlist] || [];
@@ -708,6 +713,7 @@ export default function App() {
         indexSignals: signalsByInstrument.NIFTY,
         settings: sett,
         mode: "scalp",
+        instrument: "NIFTY",
       }),
       GOLD_swing: buildUnifiedSuggestion({
         analysis: analyses.GOLD,
@@ -969,12 +975,12 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
       <div style={{ marginTop: 4, marginBottom: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
           <Star size={14} color={C.yellow} />
-          <span style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>Watchlist Suggestions</span>
+          <span style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>Portfolio & Watchlist</span>
         </div>
-        {allWatchSymbols.length === 0 ? (
-          <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 16 }}>Add stocks in the Watch tab to see buy/sell suggestions here.</div>
+        {homeStockSymbols.length === 0 ? (
+          <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 16 }}>Add holdings or watchlist stocks to see suggestions here.</div>
         ) : (
-          allWatchSymbols.map((sym) => (
+          homeStockSymbols.map((sym) => (
             <WatchlistSuggestionRow
               key={sym}
               symbol={sym}

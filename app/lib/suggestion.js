@@ -82,25 +82,123 @@ export function getMarketSuggestion(analysis, chgPct) {
 
 const STRENGTH_W = { STRONG: 3, MODERATE: 2, WEAK: 1 };
 
-function collectFactors(analysis, indexSignals = []) {
+function analyzeSRFactors(price, analysis) {
+  const { sr, atr = 0 } = analysis;
+  if (!sr?.support || !sr?.resistance || !price) return [];
+
+  const range = sr.resistance - sr.support || 1;
+  const distSupport = price - sr.support;
+  const distResistance = sr.resistance - price;
+  const nearBand = Math.max(atr * 0.6, range * 0.06);
   const factors = [];
+
+  if (distSupport <= nearBand) {
+    factors.push({
+      type: 'BUY',
+      name: 'Support zone',
+      reason: `Price at/near support ₹${sr.support.toLocaleString('en-IN')} — bounce zone`,
+      weight: 4,
+    });
+  } else if (distResistance <= nearBand) {
+    factors.push({
+      type: 'SELL',
+      name: 'Resistance zone',
+      reason: `Price at/near resistance ₹${sr.resistance.toLocaleString('en-IN')} — rejection zone`,
+      weight: 4,
+    });
+  } else {
+    const pos = distSupport / range;
+    if (pos < 0.35) {
+      factors.push({
+        type: 'BUY',
+        name: 'Support zone',
+        reason: `Lower range — support ₹${sr.support.toLocaleString('en-IN')}, resistance ₹${sr.resistance.toLocaleString('en-IN')}`,
+        weight: 2,
+      });
+    } else if (pos > 0.65) {
+      factors.push({
+        type: 'SELL',
+        name: 'Resistance zone',
+        reason: `Upper range — resistance ₹${sr.resistance.toLocaleString('en-IN')}, support ₹${sr.support.toLocaleString('en-IN')}`,
+        weight: 2,
+      });
+    } else {
+      factors.push({
+        type: 'HOLD',
+        name: 'S/R mid-range',
+        reason: `Mid-range between support ₹${sr.support.toLocaleString('en-IN')} and resistance ₹${sr.resistance.toLocaleString('en-IN')}`,
+        weight: 1,
+      });
+    }
+  }
+  return factors;
+}
+
+function analyzeLiquidityFactor(liquidity) {
+  if (!liquidity) return null;
+  const pct = Math.round(liquidity.ratio * 100);
+  if (liquidity.high) {
+    return {
+      type: 'BUY',
+      name: 'Liquidity',
+      reason: `Volume ${pct}% of average — strong participation supports the move`,
+      weight: 2,
+    };
+  }
+  if (liquidity.low) {
+    return {
+      type: 'HOLD',
+      name: 'Liquidity',
+      reason: `Volume only ${pct}% of average — thin liquidity, signals less reliable`,
+      weight: 2,
+    };
+  }
+  return {
+    type: 'HOLD',
+    name: 'Liquidity',
+    reason: `Normal volume (${pct}% of average) — adequate liquidity`,
+    weight: 1,
+  };
+}
+
+function collectFactors(analysis, indexSignals = [], { niftyScalp = false } = {}) {
+  const factors = [];
+
+  if (niftyScalp && analysis) {
+    factors.push(...analyzeSRFactors(analysis.price, analysis));
+    const liq = analyzeLiquidityFactor(analysis.liquidity);
+    if (liq) factors.push(liq);
+  }
+
   for (const row of analysis?.summary || []) {
-    if (row.t === 'HOLD' && /support|resistance|atr/i.test(row.n)) continue;
-    factors.push({ type: row.t, name: row.n, reason: `${row.sig} · ${row.v}` });
+    if (/^support$|^resistance$/i.test(row.n)) continue;
+    if (!niftyScalp && row.t === 'HOLD' && /atr/i.test(row.n)) continue;
+    factors.push({ type: row.t, name: row.n, reason: `${row.sig} · ${row.v}`, weight: 1 });
   }
-  for (const sig of indexSignals) {
-    factors.push({ type: sig.type, name: `${sig.str} setup`, reason: sig.reason });
+
+  if (!niftyScalp) {
+    for (const sig of indexSignals) {
+      factors.push({
+        type: sig.type,
+        name: `${sig.str} setup`,
+        reason: sig.reason,
+        weight: STRENGTH_W[sig.str] || 1,
+      });
+    }
   }
+
   return factors;
 }
 
 function voteFromFactors(factors, chgPct, mode) {
   let buyW = 0;
   let sellW = 0;
+  let holdPenalty = 0;
   for (const f of factors) {
-    const w = STRENGTH_W[f.name?.split(' ')[0]] || 1;
+    const w = f.weight ?? STRENGTH_W[f.name?.split(' ')[0]] ?? 1;
     if (f.type === 'BUY') buyW += w;
     if (f.type === 'SELL') sellW += w;
+    if (f.type === 'HOLD' && f.name === 'Liquidity' && f.reason?.includes('thin')) holdPenalty += 1;
   }
   const chgW = mode === 'longterm' ? 0.3 : 1;
   if (chgPct >= 0.5) buyW += chgW;
@@ -114,19 +212,23 @@ function voteFromFactors(factors, chgPct, mode) {
 
   const margin = buyW - sellW;
   let action = 'HOLD';
-  if (margin >= 2) action = 'BUY';
-  else if (margin <= -2) action = 'SELL';
+  const threshold = mode === 'scalp' ? 2 : 2;
+  if (margin >= threshold) action = 'BUY';
+  else if (margin <= -threshold) action = 'SELL';
+  if (holdPenalty >= 1 && action !== 'HOLD') {
+    action = 'HOLD';
+  }
 
   const total = buyW + sellW || 1;
-  const dominant = Math.max(buyW, sellW);
   const agreement = Math.abs(margin) / total;
   let confidence = Math.round(Math.min(90, 42 + agreement * 35 + Math.abs(margin) * 4));
   if (action === 'HOLD') confidence = Math.max(38, confidence - 12);
+  if (holdPenalty && action === 'HOLD') confidence = Math.max(35, confidence - 5);
 
   return { action, buyW, sellW, confidence };
 }
 
-function tradeLevels(price, action, mode, settings = {}) {
+function tradeLevels(price, action, mode, settings = {}, analysis = null) {
   if (!price || action === 'HOLD' || action === 'WAIT') {
     return { entry: price, target: null, stopLoss: null, rr: null };
   }
@@ -136,8 +238,19 @@ function tradeLevels(price, action, mode, settings = {}) {
   const sl = mode === 'longterm' ? 0.06 : mode === 'swing' ? slPct * 2 / 100 : slPct / 100;
   const buy = action === 'BUY';
   const entry = +price.toFixed(2);
-  const target = +(price * (buy ? 1 + pt : 1 - pt)).toFixed(2);
-  const stopLoss = +(price * (buy ? 1 - sl : 1 + sl)).toFixed(2);
+  let target = +(price * (buy ? 1 + pt : 1 - pt)).toFixed(2);
+  let stopLoss = +(price * (buy ? 1 - sl : 1 + sl)).toFixed(2);
+
+  if (mode === 'scalp' && analysis?.sr) {
+    const { support, resistance } = analysis.sr;
+    if (buy) {
+      stopLoss = +Math.min(stopLoss, support * 0.999).toFixed(2);
+      target = +Math.min(Math.max(target, price * (1 + pt)), resistance * 0.998).toFixed(2);
+    } else {
+      stopLoss = +Math.max(stopLoss, resistance * 1.001).toFixed(2);
+      target = +Math.max(Math.min(target, price * (1 - pt)), support * 1.002).toFixed(2);
+    }
+  }
   const rr = (Math.abs(target - entry) / Math.abs(entry - stopLoss)).toFixed(1);
   return { entry, target, stopLoss, rr };
 }
@@ -157,6 +270,7 @@ export function buildUnifiedSuggestion({
   indexSignals = [],
   settings = {},
   mode = 'scalp',
+  instrument = '',
 }) {
   if (!analysis || !price) {
     return {
@@ -171,9 +285,10 @@ export function buildUnifiedSuggestion({
     };
   }
 
-  const factors = collectFactors(analysis, indexSignals);
+  const niftyScalp = mode === 'scalp' && instrument === 'NIFTY';
+  const factors = collectFactors(analysis, indexSignals, { niftyScalp });
   const { action, confidence } = voteFromFactors(factors, chgPct, mode);
-  const levels = tradeLevels(price, action, mode, settings);
+  const levels = tradeLevels(price, action, mode, settings, analysis);
 
   return {
     action,
