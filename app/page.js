@@ -15,7 +15,7 @@ import {
 } from "./lib/marketData";
 import { analyzeFromCandles } from "./lib/indicators";
 import { generateIndexSignals, generatePortfolioSignals, parsePortfolioCSV } from "./lib/signals";
-import { getScalpingSuggestion, getMarketSuggestion, getWatchlistMarketSuggestion, explainAssetMove, getStockSuggestion } from "./lib/suggestion";
+import { buildUnifiedSuggestion, explainAssetMove, getWatchlistMarketSuggestion, getStockSuggestion } from "./lib/suggestion";
 import { loadPersisted, savePersisted } from "./lib/storage";
 import { getMarketStatus } from "./lib/marketHours";
 import { THEMES, cardStyle } from "./lib/themes";
@@ -226,9 +226,81 @@ function InstrumentDropdown({ instrument, setInstrument, open, setOpen, isUp, ma
   );
 }
 
-function HomeSuggestionBlock({ name, badge, suggestion, priceData, signals = [], scalping, C, S }) {
-  if (!suggestion) return null;
-  const clr = suggestion.action === "BUY" ? C.green : suggestion.action === "SELL" ? C.red : C.yellow;
+function SignalFactorRow({ factor, C }) {
+  const clr = factor.type === "BUY" ? C.green : factor.type === "SELL" ? C.red : C.muted;
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "8px 0", borderBottom: `1px solid ${C.dim}` }}>
+      <span style={{ background: `${clr}22`, color: clr, fontSize: 9, fontWeight: 800, padding: "2px 7px", borderRadius: 4, flexShrink: 0, minWidth: 36, textAlign: "center" }}>
+        {factor.type}
+      </span>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ color: C.text, fontSize: 12, fontWeight: 600 }}>{factor.name}</div>
+        <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.4 }}>{factor.reason}</div>
+      </div>
+    </div>
+  );
+}
+
+function FinalCallHeader({ label, confidence, action, C }) {
+  const clr = action === "BUY" ? C.green : action === "SELL" ? C.red : C.yellow;
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 12 }}>
+      <div style={{
+        background: clr,
+        color: action === "HOLD" || action === "WAIT" ? C.text : "#000",
+        fontWeight: 900,
+        fontSize: 18,
+        padding: "10px 18px",
+        borderRadius: 10,
+        letterSpacing: 0.5,
+        boxShadow: `0 0 20px ${clr}44`,
+      }}>
+        {label}
+      </div>
+      <div style={{
+        textAlign: "center",
+        background: `${clr}18`,
+        border: `2px solid ${clr}`,
+        borderRadius: 12,
+        padding: "8px 14px",
+        minWidth: 88,
+      }}>
+        <div style={{ color: C.muted, fontSize: 9, fontWeight: 700, textTransform: "uppercase", marginBottom: 2 }}>Confidence</div>
+        <div style={{ color: clr, fontWeight: 900, fontSize: 22, lineHeight: 1 }}>{confidence}%</div>
+      </div>
+    </div>
+  );
+}
+
+function TradeLevelsRow({ entry, target, stopLoss, rr, action, decimals, C }) {
+  if (action === "HOLD" || action === "WAIT" || !target) {
+    return (
+      <p style={{ color: C.muted, fontSize: 11, margin: "0 0 12px", fontStyle: "italic" }}>
+        No entry levels — wait for a clear BUY or SELL signal.
+      </p>
+    );
+  }
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6, marginBottom: 12 }}>
+      {[
+        { l: "Entry", v: fmt(entry, decimals), c: C.blue },
+        { l: "Target", v: fmt(target, decimals), c: C.green },
+        { l: "Stop Loss", v: fmt(stopLoss, decimals), c: C.red },
+        { l: "R:R", v: rr ? `1:${rr}` : "—", c: C.yellow },
+      ].map((x) => (
+        <div key={x.l} style={{ background: C.dim, borderRadius: 8, padding: "8px 4px", textAlign: "center" }}>
+          <div style={{ color: C.muted, fontSize: 9, marginBottom: 3, textTransform: "uppercase" }}>{x.l}</div>
+          <div style={{ color: x.c, fontWeight: 800, fontSize: 11 }}>{x.v}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function HomeSuggestionBlock({ name, badge, finalCall, priceData, C, S }) {
+  if (!finalCall) return null;
+  const { action, label, confidence, factors, entry, target, stopLoss, rr } = finalCall;
+  const clr = action === "BUY" ? C.green : action === "SELL" ? C.red : C.yellow;
   const cp = priceData?.cur ?? 0;
   const chg = priceData ? +(cp - priceData.prev).toFixed(2) : 0;
   const pct = priceData?.prev ? +((chg / priceData.prev) * 100).toFixed(2) : 0;
@@ -236,52 +308,78 @@ function HomeSuggestionBlock({ name, badge, suggestion, priceData, signals = [],
   const priceDecimals = name === "NIFTY" ? 0 : 2;
 
   return (
-    <div style={{
-      ...S.card,
-      borderColor: `${clr}44`,
-      background: suggestion.action === "BUY" ? `${C.green}08` : suggestion.action === "SELL" ? `${C.red}08` : `${C.yellow}08`,
-    }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, gap: 8 }}>
-        <div>
+    <div style={{ ...S.card, borderColor: `${clr}55`, marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+        <Lightbulb size={15} color={clr} />
+        <span style={{ color: C.text, fontWeight: 800, fontSize: 16 }}>{name}</span>
+        {badge && (
+          <span style={{ background: `${C.blue}28`, color: C.blue, fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 4 }}>{badge}</span>
+        )}
+      </div>
+      {priceData && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+          <span style={{ color: C.text, fontWeight: 900, fontSize: 20 }}>₹{fmt(cp, priceDecimals)}</span>
+          <span style={{ color: isUp ? C.green : C.red, fontSize: 12, fontWeight: 700 }}>
+            {isUp ? <ArrowUp size={11} style={{ verticalAlign: "middle" }} /> : <ArrowDown size={11} style={{ verticalAlign: "middle" }} />}
+            {" "}{(chg >= 0 ? "+" : "") + fmt(chg, priceDecimals)} ({pct >= 0 ? "+" : ""}{pct}%)
+          </span>
+        </div>
+      )}
+
+      <FinalCallHeader label={label} confidence={confidence} action={action} C={C} />
+      <TradeLevelsRow entry={entry} target={target} stopLoss={stopLoss} rr={rr} action={action} decimals={priceDecimals} C={C} />
+
+      {factors.length > 0 && (
+        <div style={{ borderTop: `1px solid ${C.dim}`, paddingTop: 8 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-            <Lightbulb size={14} color={clr} />
-            <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{name}</span>
-            {badge && (
-              <span style={{ background: scalping ? `${C.yellow}28` : `${C.blue}28`, color: scalping ? C.yellow : C.blue, fontSize: 9, fontWeight: 800, padding: "2px 7px", borderRadius: 4 }}>{badge}</span>
+            <Zap size={13} color={C.yellow} />
+            <span style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: "uppercase" }}>Signals in play</span>
+          </div>
+          {factors.map((f, i) => <SignalFactorRow key={i} factor={f} C={C} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HomeCommodityBlock({ name, priceData, swingCall, longCall, C, S }) {
+  const cp = priceData?.cur ?? 0;
+  const chg = priceData ? +(cp - priceData.prev).toFixed(2) : 0;
+  const pct = priceData?.prev ? +((chg / priceData.prev) * 100).toFixed(2) : 0;
+  const isUp = chg >= 0;
+
+  return (
+    <div style={{ ...S.card, marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+        <Lightbulb size={15} color={C.yellow} />
+        <span style={{ color: C.text, fontWeight: 800, fontSize: 16 }}>{name}</span>
+      </div>
+      {priceData && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+          <span style={{ color: C.text, fontWeight: 900, fontSize: 20 }}>₹{fmt(cp, 2)}</span>
+          <span style={{ color: isUp ? C.green : C.red, fontSize: 12, fontWeight: 700 }}>
+            {isUp ? <ArrowUp size={11} style={{ verticalAlign: "middle" }} /> : <ArrowDown size={11} style={{ verticalAlign: "middle" }} />}
+            {" "}{(chg >= 0 ? "+" : "") + fmt(chg, 2)} ({pct >= 0 ? "+" : ""}{pct}%)
+          </span>
+        </div>
+      )}
+
+      {[{ call: swingCall, title: "Swing trade" }, { call: longCall, title: "Long term (~1 month)" }].map(({ call, title }) => {
+        if (!call) return null;
+        const clr = call.action === "BUY" ? C.green : call.action === "SELL" ? C.red : C.yellow;
+        return (
+          <div key={title} style={{ marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${C.dim}` }}>
+            <div style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase", marginBottom: 10 }}>{title}</div>
+            <FinalCallHeader label={call.label} confidence={call.confidence} action={call.action} C={C} />
+            <TradeLevelsRow entry={call.entry} target={call.target} stopLoss={call.stopLoss} rr={call.rr} action={call.action} decimals={2} C={C} />
+            {call.factors?.length > 0 && (
+              <div style={{ marginTop: 4 }}>
+                {call.factors.slice(0, 4).map((f, i) => <SignalFactorRow key={i} factor={f} C={C} />)}
+              </div>
             )}
           </div>
-          {priceData && (
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ color: C.text, fontWeight: 900, fontSize: 18 }}>₹{fmt(cp, priceDecimals)}</span>
-              <span style={{ color: isUp ? C.green : C.red, fontSize: 12, fontWeight: 700 }}>
-                {isUp ? <ArrowUp size={11} style={{ verticalAlign: "middle" }} /> : <ArrowDown size={11} style={{ verticalAlign: "middle" }} />}
-                {" "}{(chg >= 0 ? "+" : "") + fmt(chg, priceDecimals)} ({pct >= 0 ? "+" : ""}{pct}%)
-              </span>
-            </div>
-          )}
-        </div>
-        <span style={{
-          background: clr,
-          color: suggestion.action === "HOLD" || suggestion.action === "WAIT" ? C.text : "#000",
-          fontSize: 10, fontWeight: 800, padding: "4px 10px", borderRadius: 4, flexShrink: 0, textAlign: "right", maxWidth: "46%",
-        }}>
-          {suggestion.label}
-        </span>
-      </div>
-      <p style={{ color: C.text, fontSize: 13, lineHeight: 1.5, margin: "0 0 4px" }}>{suggestion.reason}</p>
-      {suggestion.detail && <p style={{ color: C.muted, fontSize: 11, margin: "0 0 8px" }}>{suggestion.detail}</p>}
-      {suggestion.confidence > 0 && (
-        <div style={{ color: C.muted, fontSize: 10, marginBottom: signals.length ? 10 : 0 }}>Confidence: {Math.round(suggestion.confidence)}%</div>
-      )}
-      {signals.length > 0 && (
-        <div style={{ borderTop: `1px solid ${C.dim}`, paddingTop: 10 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-            <Zap size={13} color={C.yellow} />
-            <span style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: "uppercase" }}>{scalping ? "Scalp Signals" : "Signals"}</span>
-          </div>
-          {signals.map((s, i) => <SignalCard key={i} sig={s} price={cp} C={C} />)}
-        </div>
-      )}
+        );
+      })}
     </div>
   );
 }
@@ -344,6 +442,7 @@ export default function App() {
 
   const [prices, setPrices] = useState(initPrices);
   const [candles, setCandles] = useState({});
+  const [candlesDaily, setCandlesDaily] = useState({});
   const [isLive, setIsLive] = useState(false);
   const [dataSource, setDataSource] = useState(null);
   const [liveError, setLiveError] = useState(null);
@@ -481,6 +580,21 @@ export default function App() {
     return () => { cancelled = true; };
   }, [tf]);
 
+  // Daily candles for Gold/Silver long-term view
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await Promise.all(["GOLD", "SILVER"].map(async (inst) => {
+        const data = await fetchCandles(inst, "1d");
+        if (cancelled) return;
+        if (data?.length) {
+          setCandlesDaily((prev) => ({ ...prev, [inst]: data }));
+        }
+      }));
+    })();
+    return () => { cancelled = true; };
+  }, [refresh]);
+
   // Portfolio live prices
   useEffect(() => {
     let cancelled = false;
@@ -559,17 +673,14 @@ export default function App() {
   }, [candles]);
   const analysis = analyses[instrument];
 
-  const allSuggestions = useMemo(() => {
+  const dailyAnalyses = useMemo(() => {
     const out = {};
-    for (const k of INSTRUMENT_KEYS) {
-      const p = prices[k];
-      const pct = p?.prev ? +(((p.cur - p.prev) / p.prev) * 100).toFixed(2) : 0;
-      out[k] = k === "NIFTY"
-        ? getScalpingSuggestion(analyses[k], pct)
-        : getMarketSuggestion(analyses[k], pct);
+    for (const k of ["GOLD", "SILVER"]) {
+      const c = candlesDaily[k] || [];
+      out[k] = c.length ? analyzeFromCandles(c) : null;
     }
     return out;
-  }, [analyses, prices]);
+  }, [candlesDaily]);
 
   const signalsByInstrument = useMemo(() => {
     const out = {};
@@ -580,6 +691,58 @@ export default function App() {
     }
     return out;
   }, [analyses, prices, sett]);
+
+  const finalCalls = useMemo(() => {
+    const niftyPct = prices.NIFTY?.prev
+      ? +(((prices.NIFTY.cur - prices.NIFTY.prev) / prices.NIFTY.prev) * 100).toFixed(2) : 0;
+    const goldPct = prices.GOLD?.prev
+      ? +(((prices.GOLD.cur - prices.GOLD.prev) / prices.GOLD.prev) * 100).toFixed(2) : 0;
+    const silverPct = prices.SILVER?.prev
+      ? +(((prices.SILVER.cur - prices.SILVER.prev) / prices.SILVER.prev) * 100).toFixed(2) : 0;
+
+    return {
+      NIFTY: buildUnifiedSuggestion({
+        analysis: analyses.NIFTY,
+        price: prices.NIFTY?.cur,
+        chgPct: niftyPct,
+        indexSignals: signalsByInstrument.NIFTY,
+        settings: sett,
+        mode: "scalp",
+      }),
+      GOLD_swing: buildUnifiedSuggestion({
+        analysis: analyses.GOLD,
+        price: prices.GOLD?.cur,
+        chgPct: goldPct,
+        indexSignals: signalsByInstrument.GOLD,
+        settings: sett,
+        mode: "swing",
+      }),
+      GOLD_long: buildUnifiedSuggestion({
+        analysis: dailyAnalyses.GOLD || analyses.GOLD,
+        price: prices.GOLD?.cur,
+        chgPct: goldPct,
+        indexSignals: [],
+        settings: sett,
+        mode: "longterm",
+      }),
+      SILVER_swing: buildUnifiedSuggestion({
+        analysis: analyses.SILVER,
+        price: prices.SILVER?.cur,
+        chgPct: silverPct,
+        indexSignals: signalsByInstrument.SILVER,
+        settings: sett,
+        mode: "swing",
+      }),
+      SILVER_long: buildUnifiedSuggestion({
+        analysis: dailyAnalyses.SILVER || analyses.SILVER,
+        price: prices.SILVER?.cur,
+        chgPct: silverPct,
+        indexSignals: [],
+        settings: sett,
+        mode: "longterm",
+      }),
+    };
+  }, [analyses, dailyAnalyses, prices, signalsByInstrument, sett]);
 
   const niftyMove = useMemo(() => explainAssetMove(prices.NIFTY, news, "NIFTY"), [prices.NIFTY, news]);
   const goldMove = useMemo(() => explainAssetMove(prices.GOLD, news, "GOLD"), [prices.GOLD, news]);
@@ -779,30 +942,26 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
       <HomeSuggestionBlock
         name="NIFTY"
         badge="Scalping"
-        suggestion={allSuggestions.NIFTY}
+        finalCall={finalCalls.NIFTY}
         priceData={prices.NIFTY}
-        signals={signalsByInstrument.NIFTY || []}
-        scalping
         C={C}
         S={S}
       />
 
-      <HomeSuggestionBlock
+      <HomeCommodityBlock
         name="GOLD"
-        badge="Market"
-        suggestion={allSuggestions.GOLD}
         priceData={prices.GOLD}
-        signals={signalsByInstrument.GOLD || []}
+        swingCall={finalCalls.GOLD_swing}
+        longCall={finalCalls.GOLD_long}
         C={C}
         S={S}
       />
 
-      <HomeSuggestionBlock
+      <HomeCommodityBlock
         name="SILVER"
-        badge="Market"
-        suggestion={allSuggestions.SILVER}
         priceData={prices.SILVER}
-        signals={signalsByInstrument.SILVER || []}
+        swingCall={finalCalls.SILVER_swing}
+        longCall={finalCalls.SILVER_long}
         C={C}
         S={S}
       />

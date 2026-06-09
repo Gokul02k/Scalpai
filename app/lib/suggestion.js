@@ -73,18 +73,114 @@ export function getOverallSuggestion(analysis, chgPct) {
 }
 
 export function getScalpingSuggestion(analysis, chgPct) {
-  const base = getOverallSuggestion(analysis, chgPct);
-  return {
-    ...base,
-    detail: 'Scalping suggestion only — quick in-and-out on your broker (e.g. Groww) if you agree.',
-  };
+  return getOverallSuggestion(analysis, chgPct);
 }
 
 export function getMarketSuggestion(analysis, chgPct) {
-  const base = getOverallSuggestion(analysis, chgPct);
+  return getOverallSuggestion(analysis, chgPct);
+}
+
+const STRENGTH_W = { STRONG: 3, MODERATE: 2, WEAK: 1 };
+
+function collectFactors(analysis, indexSignals = []) {
+  const factors = [];
+  for (const row of analysis?.summary || []) {
+    if (row.t === 'HOLD' && /support|resistance|atr/i.test(row.n)) continue;
+    factors.push({ type: row.t, name: row.n, reason: `${row.sig} · ${row.v}` });
+  }
+  for (const sig of indexSignals) {
+    factors.push({ type: sig.type, name: `${sig.str} setup`, reason: sig.reason });
+  }
+  return factors;
+}
+
+function voteFromFactors(factors, chgPct, mode) {
+  let buyW = 0;
+  let sellW = 0;
+  for (const f of factors) {
+    const w = STRENGTH_W[f.name?.split(' ')[0]] || 1;
+    if (f.type === 'BUY') buyW += w;
+    if (f.type === 'SELL') sellW += w;
+  }
+  const chgW = mode === 'longterm' ? 0.3 : 1;
+  if (chgPct >= 0.5) buyW += chgW;
+  if (chgPct <= -0.5) sellW += chgW;
+
+  if (mode === 'longterm' && factors.length) {
+    const ema = factors.find((f) => f.name === 'EMA 20/50');
+    if (ema?.type === 'BUY') buyW += 2;
+    if (ema?.type === 'SELL') sellW += 2;
+  }
+
+  const margin = buyW - sellW;
+  let action = 'HOLD';
+  if (margin >= 2) action = 'BUY';
+  else if (margin <= -2) action = 'SELL';
+
+  const total = buyW + sellW || 1;
+  const dominant = Math.max(buyW, sellW);
+  const agreement = Math.abs(margin) / total;
+  let confidence = Math.round(Math.min(90, 42 + agreement * 35 + Math.abs(margin) * 4));
+  if (action === 'HOLD') confidence = Math.max(38, confidence - 12);
+
+  return { action, buyW, sellW, confidence };
+}
+
+function tradeLevels(price, action, mode, settings = {}) {
+  if (!price || action === 'HOLD' || action === 'WAIT') {
+    return { entry: price, target: null, stopLoss: null, rr: null };
+  }
+  const profitPct = settings.profitPct ?? 1.5;
+  const slPct = settings.slPct ?? 0.8;
+  const pt = mode === 'longterm' ? 0.1 : mode === 'swing' ? profitPct * 2.5 / 100 : profitPct / 100;
+  const sl = mode === 'longterm' ? 0.06 : mode === 'swing' ? slPct * 2 / 100 : slPct / 100;
+  const buy = action === 'BUY';
+  const entry = +price.toFixed(2);
+  const target = +(price * (buy ? 1 + pt : 1 - pt)).toFixed(2);
+  const stopLoss = +(price * (buy ? 1 - sl : 1 + sl)).toFixed(2);
+  const rr = (Math.abs(target - entry) / Math.abs(entry - stopLoss)).toFixed(1);
+  return { entry, target, stopLoss, rr };
+}
+
+const FINAL_LABELS = {
+  BUY: 'BUY NOW',
+  SELL: 'SELL NOW',
+  HOLD: 'HOLD',
+  WAIT: 'ANALYZING…',
+};
+
+/** One final call + factor list + levels aligned to the final action. */
+export function buildUnifiedSuggestion({
+  analysis,
+  price,
+  chgPct = 0,
+  indexSignals = [],
+  settings = {},
+  mode = 'scalp',
+}) {
+  if (!analysis || !price) {
+    return {
+      action: 'WAIT',
+      label: FINAL_LABELS.WAIT,
+      confidence: 0,
+      factors: [],
+      entry: null,
+      target: null,
+      stopLoss: null,
+      rr: null,
+    };
+  }
+
+  const factors = collectFactors(analysis, indexSignals);
+  const { action, confidence } = voteFromFactors(factors, chgPct, mode);
+  const levels = tradeLevels(price, action, mode, settings);
+
   return {
-    ...base,
-    detail: 'Market-based buy/sell view — not a scalping call. Use for swing or investment timing on your broker.',
+    action,
+    label: FINAL_LABELS[action] || action,
+    confidence,
+    factors,
+    ...levels,
   };
 }
 
