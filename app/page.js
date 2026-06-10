@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
-  AreaChart, Area, BarChart, Bar, YAxis,
+  AreaChart, Area, BarChart, Bar, Cell, YAxis,
   ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import {
@@ -133,7 +133,7 @@ function filterTradesByPeriod(trades, period) {
   });
 }
 
-function CandleChart({ candles = [], height = 200, C }) {
+function CandleChart({ candles = [], height = 200, C, overlays = null }) {
   if (!candles.length) return null;
   const W = 800, PAD = 10, H = height, ch = H - PAD * 2;
   const maxP = Math.max(...candles.map((c) => c.h));
@@ -142,10 +142,27 @@ function CandleChart({ candles = [], height = 200, C }) {
   const toY = (p) => PAD + ((maxP - p) / range) * ch;
   const sw = W / candles.length;
   const bw = Math.max(2, sw * 0.6);
+  const inRange = (p) => p != null && p >= minP && p <= maxP;
+
+  // Horizontal overlay lines (EMA / support / resistance / last price). Lines don't
+  // distort under preserveAspectRatio="none"; labels are rendered in the legend below.
+  const levelLines = overlays
+    ? [
+        { v: overlays.ema20, c: C.blue, dash: "5 4" },
+        { v: overlays.ema50, c: C.yellow, dash: "5 4" },
+        { v: overlays.support, c: C.green, dash: "2 4" },
+        { v: overlays.resistance, c: C.red, dash: "2 4" },
+        { v: overlays.price, c: overlays.priceUp ? C.green : C.red, dash: "0" },
+      ].filter((l) => inRange(l.v))
+    : [];
+
   return (
     <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: "block" }}>
       {[0.25, 0.5, 0.75].map((f) => (
         <line key={f} x1={0} y1={PAD + f * ch} x2={W} y2={PAD + f * ch} stroke={C.border} strokeWidth={0.6} />
+      ))}
+      {levelLines.map((l, i) => (
+        <line key={`lvl-${i}`} x1={0} y1={toY(l.v)} x2={W} y2={toY(l.v)} stroke={l.c} strokeWidth={l.dash === "0" ? 1.4 : 1} strokeDasharray={l.dash === "0" ? undefined : l.dash} opacity={l.dash === "0" ? 0.9 : 0.55} />
       ))}
       {candles.map((c, i) => {
         const up = c.c >= c.o, clr = up ? C.green : C.red;
@@ -159,6 +176,28 @@ function CandleChart({ candles = [], height = 200, C }) {
         );
       })}
     </svg>
+  );
+}
+
+function ChartLegend({ overlays, decimals, C }) {
+  if (!overlays) return null;
+  const items = [
+    { l: "Price", v: overlays.price, c: overlays.priceUp ? C.green : C.red },
+    { l: "EMA20", v: overlays.ema20, c: C.blue },
+    { l: "EMA50", v: overlays.ema50, c: C.yellow },
+    { l: "Support", v: overlays.support, c: C.green },
+    { l: "Resistance", v: overlays.resistance, c: C.red },
+  ].filter((x) => x.v != null);
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 10 }}>
+      {items.map((x) => (
+        <div key={x.l} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ width: 14, height: 3, borderRadius: 2, background: x.c, display: "inline-block" }} />
+          <span style={{ color: C.muted, fontSize: 10 }}>{x.l}</span>
+          <span style={{ color: C.text, fontSize: 11, fontWeight: 700 }}>{fmt(x.v, decimals)}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -1686,8 +1725,40 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
         ))}
       </div>
       <div style={{ ...S.card }}>
-        <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>{instrument} · {tf}</div>
-        <CandleChart candles={instCandles.slice(-45)} height={230} C={C} />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 13 }}>{instrument} · {tf}</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+            <span style={{ color: C.text, fontWeight: 800, fontSize: 16 }}>₹{fmt(cp, instrument === "NIFTY" ? 0 : 2)}</span>
+            <span style={{ color: isUp ? C.green : C.red, fontSize: 12, fontWeight: 700 }}>
+              {isUp ? "+" : ""}{fmt(chg, instrument === "NIFTY" ? 0 : 2)} ({pct >= 0 ? "+" : ""}{pct}%)
+            </span>
+          </div>
+        </div>
+        <CandleChart
+          candles={instCandles.slice(-45)}
+          height={230}
+          C={C}
+          overlays={analysis ? {
+            ema20: analysis.ema20,
+            ema50: analysis.ema50,
+            support: analysis.sr?.support,
+            resistance: analysis.sr?.resistance,
+            price: cp,
+            priceUp: isUp,
+          } : null}
+        />
+        <ChartLegend
+          overlays={analysis ? {
+            ema20: analysis.ema20,
+            ema50: analysis.ema50,
+            support: analysis.sr?.support,
+            resistance: analysis.sr?.resistance,
+            price: cp,
+            priceUp: isUp,
+          } : null}
+          decimals={instrument === "NIFTY" ? 0 : 2}
+          C={C}
+        />
       </div>
 
       {sett.ind.bb && analysis && (
@@ -1724,6 +1795,25 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
               <ReferenceLine y={30} stroke={C.green} strokeDasharray="3 3" />
               <Area type="monotone" dataKey="rsi" stroke={C.yellow} fill={`${C.yellow}22`} dot={false} strokeWidth={1.5} />
             </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {sett.ind.macd && analysis?.macdHist?.length > 0 && (
+        <div style={{ ...S.card }}>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>
+            MACD — <span style={{ color: analysis.macd.h >= 0 ? C.green : C.red }}>{analysis.macd.h}</span>
+            <span style={{ color: C.muted, fontWeight: 400, fontSize: 11 }}> ({analysis.macd.h >= 0 ? "bullish" : "bearish"})</span>
+          </div>
+          <ResponsiveContainer width="100%" height={70}>
+            <BarChart data={analysis.macdHist} margin={{ top: 0, right: 0, left: -30, bottom: 0 }}>
+              <ReferenceLine y={0} stroke={C.border} />
+              <Bar dataKey="h" radius={[2, 2, 0, 0]}>
+                {analysis.macdHist.map((d, i) => (
+                  <Cell key={i} fill={d.h >= 0 ? C.green : C.red} opacity={0.7} />
+                ))}
+              </Bar>
+            </BarChart>
           </ResponsiveContainer>
         </div>
       )}

@@ -42,6 +42,18 @@ export function calcMACD(closes) {
   return { v: +v.toFixed(3), s: +s.toFixed(3), h: +((v - s).toFixed(3)) };
 }
 
+export function calcMACDHistory(closes) {
+  if (closes.length < 26) return [];
+  const ema12 = calcEMA(closes, 12);
+  const ema26 = calcEMA(closes, 26);
+  const macdLine = ema12.map((v, i) => v - ema26[i]);
+  const signalLine = calcEMA(macdLine, 9);
+  return macdLine
+    .map((v, i) => ({ i, h: +((v - signalLine[i]).toFixed(3)) }))
+    .slice(-40)
+    .map((d, i) => ({ i, h: d.h }));
+}
+
 export function calcBollinger(closes, period = 20) {
   if (closes.length < period) return { upper: 0, mid: 0, lower: 0 };
   const slice = closes.slice(-period);
@@ -128,6 +140,7 @@ export function analyzeFromCandles(candles) {
   return {
     rsi,
     rsiHist: calcRSIHistory(closes),
+    macdHist: calcMACDHistory(closes),
     macd,
     bb,
     ema20: ema20v,
