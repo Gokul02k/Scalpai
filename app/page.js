@@ -26,7 +26,7 @@ import {
   NIFTY_LOG_MIN_CONFIDENCE,
 } from "./lib/signalLog";
 import { getMarketStatus } from "./lib/marketHours";
-import { THEMES, cardStyle } from "./lib/themes";
+import { THEMES, cardStyle, glassStyle } from "./lib/themes";
 import { GROQ_CHAT_MODELS, DEFAULT_GROQ_MODEL } from "./lib/groqModels";
 
 const INSTRUMENTS = {
@@ -273,13 +273,13 @@ function Toggle({ on, onToggle, C }) {
 function InstrumentDropdown({ instrument, setInstrument, open, setOpen, isUp, marketStatus, C }) {
   return (
     <div style={{ position: "relative", marginBottom: 12 }}>
-      <button onClick={() => setOpen(!open)} style={{ display: "flex", alignItems: "center", gap: 8, background: C.card, border: `1px solid ${isUp ? C.green + "60" : C.red + "60"}`, borderRadius: 10, padding: "10px 14px", color: C.text, fontSize: 15, fontWeight: 800, cursor: "pointer", width: "100%" }}>
+      <button onClick={() => setOpen(!open)} style={{ ...glassStyle(C), display: "flex", alignItems: "center", gap: 8, border: `1px solid ${isUp ? C.green + "55" : C.red + "55"}`, borderRadius: 14, padding: "12px 16px", color: C.text, fontSize: 15, fontWeight: 800, cursor: "pointer", width: "100%", boxShadow: `${C.glow} ${isUp ? C.green : C.red}22` }}>
         <span style={{ width: 8, height: 8, borderRadius: "50%", background: marketStatus.open ? C.green : C.yellow, boxShadow: `0 0 6px ${marketStatus.open ? C.green : C.yellow}` }} />
         {instrument}
         <ChevronDown size={15} style={{ marginLeft: "auto", color: C.muted }} />
       </button>
       {open && (
-        <div style={{ position: "absolute", top: "105%", left: 0, right: 0, background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, zIndex: 100 }}>
+        <div style={{ ...glassStyle(C), position: "absolute", top: "105%", left: 0, right: 0, borderRadius: 14, zIndex: 100, overflow: "hidden", boxShadow: C.shadow }}>
           {INSTRUMENT_KEYS.map((k) => (
             <button key={k} onClick={() => { setInstrument(k); setOpen(false); }} style={{ display: "flex", width: "100%", padding: "12px 16px", background: k === instrument ? `${C.green}18` : "transparent", color: k === instrument ? C.green : C.text, border: "none", cursor: "pointer", fontSize: 14, fontWeight: k === instrument ? 800 : 400, borderBottom: `1px solid ${C.border}` }}>{k}</button>
           ))}
@@ -2169,32 +2169,35 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
   const ActiveTab = CONTENT[tab];
 
   return (
-    <div style={{ background: C.bg, minHeight: "100dvh", width: "100%", maxWidth: "min(100%, 960px)", margin: "0 auto", position: "relative", fontFamily: "'SF Pro Display',-apple-system,sans-serif", paddingBottom: 72 }}>
-      <div style={{ background: `linear-gradient(135deg, ${C.card}, ${C.dim})`, borderBottom: `1px solid ${C.border}`, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", position: "sticky", top: 0, zIndex: 50 }}>
+    <div style={{ background: "transparent", minHeight: "100dvh", width: "100%", maxWidth: "min(100%, 960px)", margin: "0 auto", position: "relative", fontFamily: "'SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif", paddingBottom: 96, color: C.text }}>
+      <div style={{ ...glassStyle(C), borderTop: "none", borderLeft: "none", borderRight: "none", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", position: "sticky", top: 0, zIndex: 50 }}>
         <div>
-          <div style={{ color: C.green, fontWeight: 900, fontSize: 19 }}>⚡ ScalpAI</div>
+          <div style={{ fontWeight: 900, fontSize: 20, letterSpacing: -0.3, background: `linear-gradient(95deg, ${C.green}, ${C.blue})`, WebkitBackgroundClip: "text", backgroundClip: "text", WebkitTextFillColor: "transparent", display: "inline-block" }}>⚡ ScalpAI</div>
           <div style={{ color: C.muted, fontSize: 10 }}>{marketStatus.label} · {marketStatus.detail}</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <div title={liveError || ""} style={{ display: "flex", alignItems: "center", gap: 5, background: isLive ? `${C.green}18` : `${C.yellow}18`, border: `1px solid ${isLive ? C.green : C.yellow}45`, borderRadius: 7, padding: "4px 10px" }}>
+          <div title={liveError || ""} style={{ display: "flex", alignItems: "center", gap: 5, background: isLive ? `${C.green}18` : `${C.yellow}18`, border: `1px solid ${isLive ? C.green : C.yellow}45`, borderRadius: 999, padding: "5px 11px", boxShadow: `${C.glow} ${isLive ? C.green : C.yellow}33` }}>
             <div style={{ width: 6, height: 6, borderRadius: "50%", background: isLive ? C.green : C.yellow }} />
             <span style={{ color: isLive ? C.green : C.yellow, fontSize: 11, fontWeight: 700 }}>{isLive ? "LIVE" : "DEMO"}</span>
           </div>
-          <button onClick={() => setTab("news")} aria-label="News" style={{ background: tab === "news" ? `${C.yellow}28` : `${C.yellow}18`, border: `1px solid ${C.yellow}55`, borderRadius: 8, padding: "6px 10px", color: C.yellow, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+          <button onClick={() => setTab("news")} aria-label="News" style={{ background: tab === "news" ? `${C.yellow}2e` : `${C.yellow}14`, border: `1px solid ${C.yellow}55`, borderRadius: 999, padding: "6px 11px", color: C.yellow, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
             <Newspaper size={14} /><span style={{ fontSize: 11, fontWeight: 700 }}>News</span>
           </button>
-          <button onClick={() => setChatOpen(true)} style={{ background: `${C.blue}22`, border: `1px solid ${C.blue}55`, borderRadius: 8, padding: "6px 12px", color: C.blue, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+          <button onClick={() => setChatOpen(true)} style={{ background: `linear-gradient(135deg, ${C.blue}33, ${C.blue}1a)`, border: `1px solid ${C.blue}66`, borderRadius: 999, padding: "6px 13px", color: C.blue, cursor: "pointer", display: "flex", alignItems: "center", gap: 5, boxShadow: `${C.glow} ${C.blue}33` }}>
             <MessageCircle size={14} /><span style={{ fontSize: 11, fontWeight: 700 }}>AI</span>
           </button>
         </div>
       </div>
 
-      <div style={{ padding: "12px 16px 4px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ color: C.text, fontWeight: 900, fontSize: 21 }}>{TABS.find((t) => t.id === tab)?.label}</span>
-        <div style={{ display: "flex", alignItems: "center", gap: 5, color: C.muted, fontSize: 11 }}><RefreshCw size={11} /> {refresh}s</div>
+      <div style={{ padding: "14px 16px 6px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ width: 4, height: 22, borderRadius: 4, background: `linear-gradient(180deg, ${C.green}, ${C.blue})` }} />
+          <span style={{ color: C.text, fontWeight: 900, fontSize: 22, letterSpacing: -0.3 }}>{TABS.find((t) => t.id === tab)?.label}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 5, color: C.muted, fontSize: 11, background: `${C.dim}99`, border: `1px solid ${C.glassBorder}`, borderRadius: 999, padding: "4px 10px" }}><RefreshCw size={11} /> {refresh}s</div>
       </div>
 
-      <div style={{ paddingTop: 8 }}>
+      <div key={tab} style={{ paddingTop: 8, animation: "saIn .28s ease" }}>
         {tab === "watchlist" ? (
           <WatchlistTab
             watchlists={watchlists}
@@ -2238,18 +2241,21 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
         )}
       </div>
 
-      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, margin: "0 auto", width: "100%", maxWidth: "min(100%, 960px)", background: C.card, borderTop: `1px solid ${C.border}`, display: "flex", justifyContent: "space-around", padding: "8px 0 max(12px, env(safe-area-inset-bottom))", zIndex: 50 }}>
-        {TABS.filter((t) => t.id !== "news").map(({ id, Icon, label }) => (
-          <button key={id} onClick={() => setTab(id)} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "4px 4px", background: "none", border: "none", cursor: "pointer", minWidth: 0 }}>
-            <Icon size={20} color={tab === id ? C.green : C.muted} />
-            <span style={{ fontSize: 9, color: tab === id ? C.green : C.muted, fontWeight: tab === id ? 800 : 400 }}>{label}</span>
-          </button>
-        ))}
+      <div style={{ position: "fixed", bottom: "max(14px, env(safe-area-inset-bottom))", left: 0, right: 0, margin: "0 auto", width: "calc(100% - 28px)", maxWidth: "min(calc(100% - 28px), 460px)", zIndex: 50, ...glassStyle(C), borderRadius: 22, display: "flex", justifyContent: "space-around", padding: "8px 6px", boxShadow: C.shadow }}>
+        {TABS.filter((t) => t.id !== "news").map(({ id, Icon, label }) => {
+          const active = tab === id;
+          return (
+            <button key={id} onClick={() => setTab(id)} style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "8px 12px", borderRadius: 16, background: active ? `linear-gradient(135deg, ${C.green}26, ${C.blue}14)` : "transparent", border: active ? `1px solid ${C.green}44` : "1px solid transparent", cursor: "pointer", minWidth: 0, boxShadow: active ? `${C.glow} ${C.green}33` : "none" }}>
+              <Icon size={19} color={active ? C.green : C.muted} />
+              <span style={{ fontSize: 9, color: active ? C.green : C.muted, fontWeight: active ? 800 : 500 }}>{label}</span>
+            </button>
+          );
+        })}
       </div>
 
       {selNews && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)", zIndex: 200, display: "flex", alignItems: "flex-end" }} onClick={() => setSelNews(null)}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: "18px 18px 0 0", padding: 20, width: "100%", maxHeight: "72vh", overflowY: "auto" }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", zIndex: 200, display: "flex", alignItems: "flex-end" }} onClick={() => setSelNews(null)}>
+          <div onClick={(e) => e.stopPropagation()} style={{ ...glassStyle(C), borderRadius: "22px 22px 0 0", padding: 20, width: "100%", maxHeight: "72vh", overflowY: "auto", boxShadow: C.shadow }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
               <span style={{ color: C.green, fontSize: 11, fontWeight: 700 }}>{selNews.cat} · {selNews.impact}</span>
               <button onClick={() => setSelNews(null)} style={{ background: C.dim, border: "none", color: C.muted, cursor: "pointer", borderRadius: 6, padding: 4 }}><X size={16} /></button>
@@ -2267,8 +2273,8 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
       )}
 
       {chatOpen && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex", flexDirection: "column", background: C.bg }}>
-          <div style={{ background: C.card, borderBottom: `1px solid ${C.border}`, padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+        <div style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex", flexDirection: "column", background: C.bg, backgroundImage: C.bgGrad }}>
+          <div style={{ ...glassStyle(C), borderTop: "none", borderLeft: "none", borderRight: "none", padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>⚡ AI Assistant</div>
               <div style={{ color: C.muted, fontSize: 10, marginBottom: 8 }}>Powered by Groq</div>
@@ -2295,19 +2301,23 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
             {chatLoading && <div style={{ color: C.muted, fontSize: 12 }}>Thinking…</div>}
             <div ref={chatEnd} />
           </div>
-          <div style={{ padding: "8px 16px 16px", background: C.card, borderTop: `1px solid ${C.border}`, display: "flex", gap: 8 }}>
-            <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && sendMsg()} placeholder="Ask or control the app…" style={{ flex: 1, padding: 12, borderRadius: 12, background: C.dim, color: C.text, border: `1px solid ${C.border}`, fontSize: 14, outline: "none" }} />
-            <button onClick={sendMsg} disabled={chatLoading} style={{ padding: 12, borderRadius: 12, background: chatLoading ? C.dim : C.green, border: "none", cursor: chatLoading ? "not-allowed" : "pointer" }}><Send size={18} color={chatLoading ? C.muted : "#000"} /></button>
+          <div style={{ ...glassStyle(C), borderBottom: "none", borderLeft: "none", borderRight: "none", padding: "10px 16px max(16px, env(safe-area-inset-bottom))", display: "flex", gap: 8 }}>
+            <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && sendMsg()} placeholder="Ask or control the app…" style={{ flex: 1, padding: 12, borderRadius: 14, background: C.dim, color: C.text, border: `1px solid ${C.glassBorder}`, fontSize: 14, outline: "none" }} />
+            <button onClick={sendMsg} disabled={chatLoading} style={{ padding: "12px 14px", borderRadius: 14, background: chatLoading ? C.dim : `linear-gradient(135deg, ${C.green}, ${C.blue})`, border: "none", cursor: chatLoading ? "not-allowed" : "pointer", boxShadow: chatLoading ? "none" : `${C.glow} ${C.green}44` }}><Send size={18} color={chatLoading ? C.muted : "#000"} /></button>
           </div>
         </div>
       )}
 
       <style>{`
-        html, body { margin: 0; padding: 0; min-height: 100%; overflow-x: hidden; overflow-y: auto; -webkit-overflow-scrolling: touch; background: ${C.bg}; }
+        html, body { margin: 0; padding: 0; min-height: 100%; overflow-x: hidden; overflow-y: auto; -webkit-overflow-scrolling: touch; background: ${C.bg}; background-image: ${C.bgGrad}; background-attachment: fixed; background-repeat: no-repeat; color: ${C.text}; }
         * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
-        ::-webkit-scrollbar { width: 3px; }
-        ::-webkit-scrollbar-thumb { background: ${C.border}; }
-        input[type=range] { cursor: pointer; }
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        input[type=range] { cursor: pointer; accent-color: ${C.green}; }
+        button { transition: transform .12s ease, background .2s ease, border-color .2s ease, box-shadow .2s ease; }
+        button:active { transform: scale(0.97); }
+        @keyframes saIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
       `}</style>
     </div>
   );
