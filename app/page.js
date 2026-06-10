@@ -2108,7 +2108,7 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
 
   return (
     <div style={{ background: C.bg, minHeight: "100dvh", width: "100%", maxWidth: "min(100%, 960px)", margin: "0 auto", position: "relative", fontFamily: "'SF Pro Display',-apple-system,sans-serif", paddingBottom: 72 }}>
-      <div style={{ background: C.card, borderBottom: `1px solid ${C.border}`, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", position: "sticky", top: 0, zIndex: 50 }}>
+      <div style={{ background: `linear-gradient(135deg, ${C.card}, ${C.dim})`, borderBottom: `1px solid ${C.border}`, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", position: "sticky", top: 0, zIndex: 50 }}>
         <div>
           <div style={{ color: C.green, fontWeight: 900, fontSize: 19 }}>⚡ ScalpAI</div>
           <div style={{ color: C.muted, fontSize: 10 }}>{marketStatus.label} · {marketStatus.detail}</div>
@@ -2118,6 +2118,9 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
             <div style={{ width: 6, height: 6, borderRadius: "50%", background: isLive ? C.green : C.yellow }} />
             <span style={{ color: isLive ? C.green : C.yellow, fontSize: 11, fontWeight: 700 }}>{isLive ? "LIVE" : "DEMO"}</span>
           </div>
+          <button onClick={() => setTab("news")} aria-label="News" style={{ background: tab === "news" ? `${C.yellow}28` : `${C.yellow}18`, border: `1px solid ${C.yellow}55`, borderRadius: 8, padding: "6px 10px", color: C.yellow, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+            <Newspaper size={14} /><span style={{ fontSize: 11, fontWeight: 700 }}>News</span>
+          </button>
           <button onClick={() => setChatOpen(true)} style={{ background: `${C.blue}22`, border: `1px solid ${C.blue}55`, borderRadius: 8, padding: "6px 12px", color: C.blue, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
             <MessageCircle size={14} /><span style={{ fontSize: 11, fontWeight: 700 }}>AI</span>
           </button>
@@ -2172,10 +2175,10 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
       </div>
 
       <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, margin: "0 auto", width: "100%", maxWidth: "min(100%, 960px)", background: C.card, borderTop: `1px solid ${C.border}`, display: "flex", justifyContent: "space-around", padding: "8px 0 max(12px, env(safe-area-inset-bottom))", zIndex: 50 }}>
-        {TABS.map(({ id, Icon, label }) => (
+        {TABS.filter((t) => t.id !== "news").map(({ id, Icon, label }) => (
           <button key={id} onClick={() => setTab(id)} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "4px 4px", background: "none", border: "none", cursor: "pointer", minWidth: 0 }}>
             <Icon size={20} color={tab === id ? C.green : C.muted} />
-            <span style={{ fontSize: 8, color: tab === id ? C.green : C.muted, fontWeight: tab === id ? 800 : 400 }}>{label}</span>
+            <span style={{ fontSize: 9, color: tab === id ? C.green : C.muted, fontWeight: tab === id ? 800 : 400 }}>{label}</span>
           </button>
         ))}
       </div>
