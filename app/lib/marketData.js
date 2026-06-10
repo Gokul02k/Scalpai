@@ -69,6 +69,17 @@ export async function fetchCandles(instrument, tf = '5m') {
   }
 }
 
+export async function fetchStockCandles(symbol, tf = '1d') {
+  const ySym = symbol.includes('.') ? symbol : `${symbol}.NS`;
+  try {
+    const res = await fetch(`/api/candles?symbol=${encodeURIComponent(ySym)}&tf=${tf}`, { cache: 'no-store' });
+    const data = await res.json();
+    return data.candles?.length ? data.candles : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchStockQuote(symbol) {
   try {
     const res = await fetch(`/api/stock?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });

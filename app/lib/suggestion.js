@@ -495,6 +495,74 @@ export function getStockSuggestion(stock, settings = { profitPct: 1.5, slPct: 0.
   };
 }
 
+/**
+ * Portfolio holding suggestion driven by live chart indicators + recent news,
+ * NOT by the user's profit/loss. Returns a final call with factors and levels.
+ */
+export function getPortfolioSuggestion({ stock, analysis, newsItems = [], quote, settings = {} }) {
+  const price = quote?.current ?? stock?.cur ?? null;
+  if (!analysis || !price) {
+    return {
+      action: 'WAIT',
+      label: 'Analyzing…',
+      confidence: 0,
+      reason: 'Loading chart indicators and recent news for this holding…',
+      detail: 'Suggestion is based on chart + news, not your P&L.',
+      factors: [],
+      newsCount: 0,
+    };
+  }
+
+  const dayPct = quote?.changePercent
+    ?? (stock?.prev ? +(((price - stock.prev) / stock.prev) * 100).toFixed(2) : 0);
+
+  // Technical base from indicators (swing horizon) — independent of buy price.
+  const base = buildUnifiedSuggestion({ analysis, price, chgPct: dayPct, settings, mode: 'swing' });
+
+  // Recent news sentiment for this stock.
+  const recent = (newsItems || []).slice(0, 8);
+  const pos = recent.filter((n) => n.sentiment === 'positive').length;
+  const neg = recent.filter((n) => n.sentiment === 'negative').length;
+  const newsScore = pos - neg;
+
+  let action = base.action;
+  let confidence = base.confidence;
+  const factors = [...base.factors];
+
+  if (recent.length) {
+    const type = newsScore > 0 ? 'BUY' : newsScore < 0 ? 'SELL' : 'HOLD';
+    factors.unshift({
+      type,
+      name: 'Recent news',
+      reason: `${pos} positive / ${neg} negative recent headline${recent.length === 1 ? '' : 's'}`,
+      weight: 2,
+    });
+    if (newsScore <= -2 && action === 'BUY') { action = 'HOLD'; confidence = Math.max(40, confidence - 15); }
+    else if (newsScore >= 2 && action === 'BUY') { confidence = Math.min(92, confidence + 8); }
+    else if (newsScore <= -2 && action === 'SELL') { confidence = Math.min(92, confidence + 8); }
+    else if (newsScore >= 2 && action === 'SELL') { action = 'HOLD'; confidence = Math.max(40, confidence - 12); }
+  }
+
+  const labelMap = { BUY: 'Add / Buy', SELL: 'Trim / Sell', HOLD: 'Hold', WAIT: 'Analyzing…' };
+  const techReason = base.factors.slice(0, 2).map((f) => f.name).join(' · ') || 'Technical setup';
+  const newsReason = recent.length ? `News ${pos}↑/${neg}↓` : 'No recent news';
+
+  return {
+    action,
+    label: labelMap[action] || action,
+    confidence,
+    reason: `${techReason} · ${newsReason}`,
+    detail: 'Based on live chart indicators and recent news — not your buy price.',
+    factors: factors.slice(0, 6),
+    entry: base.entry,
+    target: base.target,
+    stopLoss: base.stopLoss,
+    rr: base.rr,
+    dayPct,
+    newsCount: recent.length,
+  };
+}
+
 export function newsMarketImpact(item) {
   const h = (item.headline || '').toLowerCase();
   const sent = item.sentiment;

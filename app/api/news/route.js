@@ -64,12 +64,18 @@ export async function GET(request) {
       items.push(...stockNewsLists[i].slice(0, 3).map(n => mapNewsItem(n, [stocks[i]])));
     }
 
-    const seen = new Set();
-    const unique = items.filter(n => {
-      if (seen.has(n.headline)) return false;
-      seen.add(n.headline);
-      return true;
-    }).map(n => ({ ...n, marketImpact: newsMarketImpact(n) }));
+    // Dedup by headline but merge stock tags so per-stock items keep their symbol
+    // (otherwise the first market-tagged copy wins and portfolio matching fails).
+    const byHeadline = new Map();
+    for (const n of items) {
+      const existing = byHeadline.get(n.headline);
+      if (existing) {
+        existing.stocks = [...new Set([...(existing.stocks || []), ...(n.stocks || [])])];
+      } else {
+        byHeadline.set(n.headline, { ...n, stocks: [...(n.stocks || [])] });
+      }
+    }
+    const unique = [...byHeadline.values()].map(n => ({ ...n, marketImpact: newsMarketImpact(n) }));
 
     const pos = unique.filter(n => n.sentiment === 'positive').length;
     const neg = unique.filter(n => n.sentiment === 'negative').length;

@@ -11,11 +11,11 @@ import {
   Upload, Plus, Trash2, Bell, Sun, Moon, Lightbulb, ScrollText,
 } from "lucide-react";
 import {
-  fetchAllMarketData, fetchCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, genFallbackCandles,
+  fetchAllMarketData, fetchCandles, fetchStockCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, genFallbackCandles,
 } from "./lib/marketData";
 import { analyzeFromCandles } from "./lib/indicators";
 import { generateIndexSignals, generatePortfolioSignals, parsePortfolioCSV } from "./lib/signals";
-import { buildUnifiedSuggestion, explainAssetMove, getWatchlistMarketSuggestion, getStockSuggestion } from "./lib/suggestion";
+import { buildUnifiedSuggestion, explainAssetMove, getWatchlistMarketSuggestion, getPortfolioSuggestion } from "./lib/suggestion";
 import { loadPersisted, savePersisted } from "./lib/storage";
 import {
   buildNiftySignalLogEntry,
@@ -844,7 +844,9 @@ function PortfolioTab({
   portPnL,
   portCost,
   portfolioStocks,
-  portSignals,
+  portfolioAnalyses,
+  portfolioNewsBySymbol,
+  watchQuotes,
   portfolioStockNews,
   cp,
   sett,
@@ -1046,38 +1048,68 @@ function PortfolioTab({
 
       {portfolioSubTab === "suggestions" && (
         <>
-          {portfolioStocks.length === 0 && (
-            <div style={{ ...S.card, textAlign: "center", color: C.muted }}>Add stocks to your portfolio to see buy/sell suggestions.</div>
+          {portfolioStocks.length === 0 ? (
+            <div style={{ ...S.card, textAlign: "center", color: C.muted }}>Add stocks to your portfolio to see chart + news based suggestions.</div>
+          ) : (
+            <p style={{ color: C.muted, fontSize: 11, margin: "0 0 10px", lineHeight: 1.4 }}>
+              Based on live chart indicators and recent news for each holding — not your profit/loss.
+            </p>
           )}
           {portfolioStocks.map((s) => {
-            const sug = getStockSuggestion(s, sett);
+            const sym = s.name.toUpperCase();
+            const q = watchQuotes?.[sym];
+            const sug = getPortfolioSuggestion({
+              stock: s,
+              analysis: portfolioAnalyses?.[sym],
+              newsItems: portfolioNewsBySymbol?.[sym],
+              quote: q,
+              settings: sett,
+            });
             const clr = sug.action === "BUY" ? C.green : sug.action === "SELL" ? C.red : C.yellow;
+            const dayPct = q?.changePercent ?? 0;
+            const hasLevels = sug.target && sug.action !== "HOLD" && sug.action !== "WAIT";
             return (
               <div key={s.id} style={{ ...S.card, borderColor: `${clr}44` }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
                   <div>
                     <div style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{s.name}</div>
-                    <div style={{ color: C.muted, fontSize: 11 }}>₹{fmt(s.cur)} · Avg ₹{fmt(s.buy)}</div>
+                    <div style={{ color: C.muted, fontSize: 11 }}>
+                      ₹{fmt(q?.current ?? s.cur)} · today <span style={{ color: dayPct >= 0 ? C.green : C.red }}>{dayPct >= 0 ? "+" : ""}{dayPct}%</span>
+                    </div>
                   </div>
-                  <span style={{ background: clr, color: sug.action === "HOLD" || sug.action === "WAIT" ? C.text : "#000", fontSize: 10, fontWeight: 800, padding: "3px 10px", borderRadius: 4 }}>
-                    {sug.label}
-                  </span>
+                  <div style={{ textAlign: "right" }}>
+                    <span style={{ background: clr, color: sug.action === "HOLD" || sug.action === "WAIT" ? C.text : "#000", fontSize: 10, fontWeight: 800, padding: "3px 10px", borderRadius: 4 }}>
+                      {sug.label}
+                    </span>
+                    {sug.confidence > 0 && <div style={{ color: clr, fontSize: 11, fontWeight: 800, marginTop: 3 }}>{sug.confidence}%</div>}
+                  </div>
                 </div>
-                <p style={{ color: C.text, fontSize: 12, lineHeight: 1.5, margin: "0 0 4px" }}>{sug.reason}</p>
-                <p style={{ color: C.muted, fontSize: 11, margin: 0 }}>{sug.detail}</p>
+                <p style={{ color: C.text, fontSize: 12, lineHeight: 1.5, margin: "0 0 8px" }}>{sug.reason}</p>
+                {hasLevels && (
+                  <TradeLevelsRow entry={sug.entry} target={sug.target} stopLoss={sug.stopLoss} rr={sug.rr} action={sug.action} decimals={2} C={C} />
+                )}
+                {sug.factors?.length > 0 && (
+                  <div style={{ borderTop: `1px solid ${C.dim}`, paddingTop: 6 }}>
+                    {sug.factors.slice(0, 4).map((f, i) => <SignalFactorRow key={i} factor={f} C={C} />)}
+                  </div>
+                )}
+                <p style={{ color: C.muted, fontSize: 10, margin: "8px 0 0" }}>
+                  {sug.newsCount > 0 ? `${sug.newsCount} recent headline${sug.newsCount === 1 ? "" : "s"} factored in` : "No recent news found"}
+                </p>
               </div>
             );
           })}
-          {portSignals.filter((sig) => portfolioStocks.some((s) => s.name === sig.instrument)).map((sig, i) => (
-            <SignalCard key={`sig-${i}`} sig={sig} price={sig.target || cp} C={C} />
-          ))}
         </>
       )}
 
       {portfolioSubTab === "news" && (
         <>
-          {portfolioStockNews.length === 0 ? (
-            <div style={{ ...S.card, textAlign: "center", color: C.muted }}>No news found for your portfolio stocks.</div>
+          {portfolioStocks.length === 0 ? (
+            <div style={{ ...S.card, textAlign: "center", color: C.muted }}>Add holdings to see news about your stocks here.</div>
+          ) : portfolioStockNews.length === 0 ? (
+            <div style={{ ...S.card, textAlign: "center", color: C.muted }}>
+              No stock-specific headlines right now. News refreshes every couple of minutes — check the News tab for broad market coverage.
+            </div>
           ) : (
             portfolioStockNews.map((n) => <NewsCard key={n.id} n={n} onClick={onNewsSelect} C={C} />)
           )}
@@ -1143,6 +1175,8 @@ export default function App() {
   const [newsOverview, setNewsOverview] = useState("");
   const [selNews, setSelNews] = useState(null);
   const [newsFilter, setNewsFilter] = useState("All");
+
+  const [portfolioAnalyses, setPortfolioAnalyses] = useState({});
 
   const [watchlists, setWatchlists] = useState(DEFAULT_WATCHLISTS);
   const [activeWatchlist, setActiveWatchlist] = useState("My Watchlist");
@@ -1297,6 +1331,26 @@ export default function App() {
     const id = setInterval(refreshPortfolio, refresh * 1000 + 5000);
     return () => { cancelled = true; clearInterval(id); };
   }, [refresh, stockNamesKey]);
+
+  // Daily candles + indicators for each portfolio holding (for chart/indicator suggestions)
+  const portfolioSymbolsKey = useMemo(
+    () => portfolio.filter((s) => !MACRO_SYMBOLS.has(s.name.toUpperCase())).map((s) => s.name.toUpperCase()).sort().join(","),
+    [portfolio]
+  );
+
+  useEffect(() => {
+    const syms = portfolioSymbolsKey ? portfolioSymbolsKey.split(",") : [];
+    if (!syms.length) { setPortfolioAnalyses({}); return; }
+    let cancelled = false;
+    (async () => {
+      const entries = await Promise.all(syms.map(async (sym) => {
+        const c = await fetchStockCandles(sym, "1d");
+        return [sym, c?.length ? analyzeFromCandles(c) : null];
+      }));
+      if (!cancelled) setPortfolioAnalyses(Object.fromEntries(entries.filter(([, a]) => a)));
+    })();
+    return () => { cancelled = true; };
+  }, [portfolioSymbolsKey]);
 
   // Portfolio + watchlist only — for Home stock suggestions
   const homeStockSymbols = useMemo(() => {
@@ -1678,14 +1732,22 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
     }
   };
 
-  const portSignals = signals.filter((s) => s.scope === "portfolio");
   const portfolioStocks = portfolio.filter((s) => !MACRO_SYMBOLS.has(s.name.toUpperCase()));
-  const portfolioStockNews = news.filter((n) =>
-    portfolioStocks.some((s) =>
-      (n.stocks || []).some((st) => st.toUpperCase() === s.name.toUpperCase())
-      || (n.headline || "").toUpperCase().includes(s.name.toUpperCase())
-    )
-  );
+
+  const matchesSymbol = (n, sym) => {
+    const S = sym.toUpperCase();
+    return (n.stocks || []).some((st) => st.toUpperCase() === S)
+      || (n.headline || "").toUpperCase().includes(S);
+  };
+  const portfolioStockNews = news.filter((n) => portfolioStocks.some((s) => matchesSymbol(n, s.name)));
+  const portfolioNewsBySymbol = useMemo(() => {
+    const map = {};
+    for (const s of portfolioStocks) {
+      map[s.name.toUpperCase()] = news.filter((n) => matchesSymbol(n, s.name));
+    }
+    return map;
+  }, [portfolioSymbolsKey, news]);
+
   const filteredNews = newsFilter === "All" ? news : news.filter((n) => n.cat === newsFilter);
 
   // ── TAB COMPONENTS ──
@@ -2159,7 +2221,9 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
             portPnL={portPnL}
             portCost={portCost}
             portfolioStocks={portfolioStocks}
-            portSignals={portSignals}
+            portfolioAnalyses={portfolioAnalyses}
+            portfolioNewsBySymbol={portfolioNewsBySymbol}
+            watchQuotes={watchQuotes}
             portfolioStockNews={portfolioStockNews}
             cp={cp}
             sett={sett}
