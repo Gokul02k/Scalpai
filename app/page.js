@@ -556,53 +556,93 @@ function HomeSuggestionBlock({ name, badge, finalCall, priceData, eaKey, eaState
   );
 }
 
+function CompactCallRow({ title, call, eaKey, instrument, mode, priceData, eaState, onAskEA, C }) {
+  const clr = call.action === "BUY" ? C.green : call.action === "SELL" ? C.red : C.yellow;
+  const hasLevels = call.target && call.action !== "HOLD" && call.action !== "WAIT";
+  return (
+    <div style={{ background: C.dim, borderRadius: 10, padding: 10, marginBottom: 8, border: `1px solid ${clr}33` }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: hasLevels ? 8 : 0 }}>
+        <span style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>{title}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ background: clr, color: call.action === "HOLD" || call.action === "WAIT" ? C.text : "#000", fontSize: 11, fontWeight: 800, padding: "3px 10px", borderRadius: 6 }}>{call.label}</span>
+          <span style={{ color: clr, fontWeight: 900, fontSize: 14, minWidth: 38, textAlign: "right" }}>{call.confidence}%</span>
+        </div>
+      </div>
+      {hasLevels && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 11, marginBottom: 8 }}>
+          <span style={{ color: C.muted }}>Entry <b style={{ color: C.blue }}>₹{fmt(call.entry, 2)}</b></span>
+          <span style={{ color: C.muted }}>Target <b style={{ color: C.green }}>₹{fmt(call.target, 2)}</b></span>
+          <span style={{ color: C.muted }}>SL <b style={{ color: C.red }}>₹{fmt(call.stopLoss, 2)}</b></span>
+          {call.rr && <span style={{ color: C.muted }}>R:R <b style={{ color: C.yellow }}>1:{call.rr}</b></span>}
+        </div>
+      )}
+      <AskEASection
+        eaKey={eaKey}
+        instrument={instrument}
+        mode={mode}
+        finalCall={call}
+        priceData={priceData}
+        eaState={eaState}
+        onAskEA={onAskEA}
+        C={C}
+      />
+    </div>
+  );
+}
+
 function HomeCommodityBlock({ name, priceData, swingCall, longCall, eaState, onAskEA, C, S }) {
   const cp = priceData?.cur ?? 0;
   const chg = priceData ? +(cp - priceData.prev).toFixed(2) : 0;
   const pct = priceData?.prev ? +((chg / priceData.prev) * 100).toFixed(2) : 0;
   const isUp = chg >= 0;
+  const rows = [
+    { call: swingCall, title: "Swing", key: `${name}_swing`, mode: "swing" },
+    { call: longCall, title: "Long term (~1 month)", key: `${name}_long`, mode: "longterm" },
+  ].filter((r) => r.call);
+  // Show indicators once for the whole commodity (signal is shown per mode above).
+  const factors = (swingCall?.factors?.length ? swingCall.factors : longCall?.factors || []).slice(0, 4);
 
   return (
     <div style={{ ...S.card, marginBottom: 12 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-        <Lightbulb size={15} color={C.yellow} />
-        <span style={{ color: C.text, fontWeight: 800, fontSize: 16 }}>{name}</span>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <Lightbulb size={15} color={C.yellow} />
+          <span style={{ color: C.text, fontWeight: 800, fontSize: 16 }}>{name}</span>
+        </div>
+        {priceData && (
+          <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+            <span style={{ color: C.text, fontWeight: 900, fontSize: 17 }}>₹{fmt(cp, 2)}</span>
+            <span style={{ color: isUp ? C.green : C.red, fontSize: 11, fontWeight: 700 }}>
+              {(chg >= 0 ? "+" : "") + fmt(chg, 2)} ({pct >= 0 ? "+" : ""}{pct}%)
+            </span>
+          </div>
+        )}
       </div>
-      {priceData && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
-          <span style={{ color: C.text, fontWeight: 900, fontSize: 20 }}>₹{fmt(cp, 2)}</span>
-          <span style={{ color: isUp ? C.green : C.red, fontSize: 12, fontWeight: 700 }}>
-            {isUp ? <ArrowUp size={11} style={{ verticalAlign: "middle" }} /> : <ArrowDown size={11} style={{ verticalAlign: "middle" }} />}
-            {" "}{(chg >= 0 ? "+" : "") + fmt(chg, 2)} ({pct >= 0 ? "+" : ""}{pct}%)
-          </span>
+
+      {rows.map(({ call, title, key, mode }) => (
+        <CompactCallRow
+          key={title}
+          title={title}
+          call={call}
+          eaKey={key}
+          instrument={name}
+          mode={mode}
+          priceData={priceData}
+          eaState={eaState}
+          onAskEA={onAskEA}
+          C={C}
+        />
+      ))}
+
+      {factors.length > 0 && (
+        <div style={{ borderTop: `1px solid ${C.dim}`, paddingTop: 8, marginTop: 2 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+            <Zap size={13} color={C.yellow} />
+            <span style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: "uppercase" }}>Signals in play</span>
+          </div>
+          {factors.map((f, i) => <SignalFactorRow key={i} factor={f} C={C} />)}
         </div>
       )}
-
-      {[{ call: swingCall, title: "Swing trade", key: `${name}_swing`, mode: "swing" }, { call: longCall, title: "Long term (~1 month)", key: `${name}_long`, mode: "longterm" }].map(({ call, title, key, mode }) => {
-        if (!call) return null;
-        return (
-          <div key={title} style={{ marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${C.dim}` }}>
-            <div style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase", marginBottom: 10 }}>{title}</div>
-            <FinalCallHeader label={call.label} confidence={call.confidence} action={call.action} C={C} />
-            <TradeLevelsRow entry={call.entry} target={call.target} stopLoss={call.stopLoss} rr={call.rr} action={call.action} decimals={2} C={C} />
-            <AskEASection
-              eaKey={key}
-              instrument={name}
-              mode={mode}
-              finalCall={call}
-              priceData={priceData}
-              eaState={eaState}
-              onAskEA={onAskEA}
-              C={C}
-            />
-            {call.factors?.length > 0 && (
-              <div style={{ marginTop: 4 }}>
-                {call.factors.slice(0, 4).map((f, i) => <SignalFactorRow key={i} factor={f} C={C} />)}
-              </div>
-            )}
-          </div>
-        );
-      })}
     </div>
   );
 }
