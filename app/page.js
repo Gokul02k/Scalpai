@@ -8,7 +8,7 @@ import {
 import {
   Settings, ChevronDown,   MessageCircle, X, Send, Newspaper, BarChart2,
   Briefcase, Home, ArrowUp, ArrowDown, Zap, RefreshCw, Star,
-  Upload, Plus, Trash2, Bell, Sun, Moon, Lightbulb,
+  Upload, Plus, Trash2, Bell, Sun, Moon, Lightbulb, ScrollText,
 } from "lucide-react";
 import {
   fetchAllMarketData, fetchCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, genFallbackCandles,
@@ -17,6 +17,13 @@ import { analyzeFromCandles } from "./lib/indicators";
 import { generateIndexSignals, generatePortfolioSignals, parsePortfolioCSV } from "./lib/signals";
 import { buildUnifiedSuggestion, explainAssetMove, getWatchlistMarketSuggestion, getStockSuggestion } from "./lib/suggestion";
 import { loadPersisted, savePersisted } from "./lib/storage";
+import {
+  buildNiftySignalLogEntry,
+  shouldAppendSignalLog,
+  isLoggableNiftySignal,
+  NIFTY_LOG_MAX_ENTRIES,
+  NIFTY_LOG_MIN_CONFIDENCE,
+} from "./lib/signalLog";
 import { getMarketStatus } from "./lib/marketHours";
 import { THEMES, cardStyle } from "./lib/themes";
 import { GROQ_CHAT_MODELS, DEFAULT_GROQ_MODEL } from "./lib/groqModels";
@@ -253,6 +260,89 @@ function SignalFactorRow({ factor, C }) {
         <div style={{ color: C.text, fontSize: 12, fontWeight: 600 }}>{factor.name}</div>
         <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.4 }}>{factor.reason}</div>
       </div>
+    </div>
+  );
+}
+
+function NiftySignalLogRow({ entry, C, S }) {
+  const [open, setOpen] = useState(false);
+  const clr = entry.action === "BUY" ? C.green : C.red;
+  const strengthClr = entry.strengthTier >= 3 ? C.green : entry.strengthTier >= 2 ? C.yellow : C.muted;
+
+  return (
+    <div style={{ ...S.card, borderColor: `${clr}44`, marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
+            <span style={{ background: clr, color: "#000", fontSize: 10, fontWeight: 800, padding: "3px 10px", borderRadius: 4 }}>{entry.action}</span>
+            <span style={{ background: `${strengthClr}22`, color: strengthClr, fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 4 }}>{entry.strength}</span>
+            <span style={{ color: C.text, fontSize: 12, fontWeight: 800 }}>{entry.confidence}%</span>
+          </div>
+          <div style={{ color: C.muted, fontSize: 11 }}>{entry.date} · {entry.time}</div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>₹{fmt(entry.price, 0)}</div>
+          <div style={{ color: entry.chgPct >= 0 ? C.green : C.red, fontSize: 11, fontWeight: 700 }}>
+            {entry.chgPct >= 0 ? "+" : ""}{entry.chgPct}%
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, marginBottom: 8 }}>
+        {[
+          { l: "Entry", v: entry.entry },
+          { l: "Target", v: entry.target },
+          { l: "Stop", v: entry.stopLoss },
+          { l: "R:R", v: entry.rr ? `1:${entry.rr}` : "—" },
+        ].map(({ l, v }) => (
+          <div key={l} style={{ background: C.dim, borderRadius: 6, padding: "6px 8px" }}>
+            <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase" }}>{l}</div>
+            <div style={{ color: C.text, fontSize: 11, fontWeight: 700 }}>{v != null ? (l === "R:R" ? v : `₹${fmt(v, 0)}`) : "—"}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ color: C.muted, fontSize: 11, marginBottom: 8 }}>
+        Score · Buy {entry.scores.buyW} vs Sell {entry.scores.sellW} (margin {entry.scores.margin >= 0 ? "+" : ""}{entry.scores.margin})
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        style={{ width: "100%", padding: 8, borderRadius: 8, background: C.dim, border: `1px solid ${C.border}`, color: C.muted, fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+      >
+        {open ? "Hide details" : "Show signal metadata"}
+      </button>
+
+      {open && (
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.dim}` }}>
+          {entry.technical && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase", marginBottom: 6 }}>Technical snapshot</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, fontSize: 11 }}>
+                <div style={{ color: C.text }}>RSI: {entry.technical.rsi?.toFixed?.(1) ?? entry.technical.rsi ?? "—"}</div>
+                <div style={{ color: C.text }}>MACD hist: {entry.technical.macdHist?.toFixed?.(2) ?? entry.technical.macdHist ?? "—"}</div>
+                <div style={{ color: C.text }}>EMA20: ₹{fmt(entry.technical.ema20, 0)}</div>
+                <div style={{ color: C.text }}>EMA50: ₹{fmt(entry.technical.ema50, 0)}</div>
+                <div style={{ color: C.text }}>Support: ₹{fmt(entry.technical.support, 0)}</div>
+                <div style={{ color: C.text }}>Resistance: ₹{fmt(entry.technical.resistance, 0)}</div>
+                <div style={{ color: C.text, gridColumn: "1 / -1" }}>Liquidity: {entry.technical.liquidity ?? "—"} ({Math.round((entry.technical.liquidityRatio ?? 1) * 100)}% avg vol)</div>
+              </div>
+            </div>
+          )}
+          {entry.factors?.length > 0 && (
+            <div>
+              <div style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Signal factors</div>
+              {entry.factors.map((f, i) => <SignalFactorRow key={i} factor={f} C={C} />)}
+            </div>
+          )}
+          {entry.marketStatus && (
+            <div style={{ color: C.muted, fontSize: 11, marginTop: 8 }}>
+              Market: {entry.marketStatus.label} · {entry.marketStatus.detail}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -942,6 +1032,8 @@ export default function App() {
   const [instrument, setInstrument] = useState("NIFTY");
   const [chartsDropOpen, setChartsDropOpen] = useState(false);
   const [portfolioSubTab, setPortfolioSubTab] = useState("holdings");
+  const [settingsSubTab, setSettingsSubTab] = useState("general");
+  const [niftySignalLog, setNiftySignalLog] = useState([]);
   const [tab, setTab] = useState("dashboard");
   const [tf, setTf] = useState("5m");
   const [refresh, setRefresh] = useState(5);
@@ -995,6 +1087,7 @@ export default function App() {
   const [newStock, setNewStock] = useState({ name: "", qty: "", buy: "" });
   const portfolioRef = useRef(portfolio);
   const pricesRef = useRef(prices);
+  const prevNiftyLogRef = useRef(null);
   portfolioRef.current = portfolio;
   pricesRef.current = prices;
   const stockNamesKey = portfolio.map((p) => p.name).sort().join(",");
@@ -1013,6 +1106,10 @@ export default function App() {
       if (data.alerts) setAlerts(data.alerts);
       if (data.activeScalp) setActiveScalp(data.activeScalp);
       if (data.chatModel && GROQ_CHAT_MODELS.some((m) => m.id === data.chatModel)) setChatModel(data.chatModel);
+      if (data.niftySignalLog?.length) {
+        setNiftySignalLog(data.niftySignalLog);
+        prevNiftyLogRef.current = data.niftySignalLog[0];
+      }
     }
     setHydrated(true);
   }, []);
@@ -1020,8 +1117,8 @@ export default function App() {
   // Persist on change
   useEffect(() => {
     if (!hydrated) return;
-    savePersisted({ theme, portfolio, trades, watchlists, activeWatchlist, sett, refresh, alerts, activeScalp, chatModel });
-  }, [hydrated, theme, portfolio, trades, watchlists, activeWatchlist, sett, refresh, alerts, activeScalp, chatModel]);
+    savePersisted({ theme, portfolio, trades, watchlists, activeWatchlist, sett, refresh, alerts, activeScalp, chatModel, niftySignalLog });
+  }, [hydrated, theme, portfolio, trades, watchlists, activeWatchlist, sett, refresh, alerts, activeScalp, chatModel, niftySignalLog]);
 
   // Market status ticker
   useEffect(() => {
@@ -1255,6 +1352,28 @@ export default function App() {
       }),
     };
   }, [analyses, dailyAnalyses, prices, signalsByInstrument, sett]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const call = finalCalls.NIFTY;
+    if (!isLoggableNiftySignal(call)) return;
+
+    const niftyPct = prices.NIFTY?.prev
+      ? +(((prices.NIFTY.cur - prices.NIFTY.prev) / prices.NIFTY.prev) * 100).toFixed(2)
+      : 0;
+    const entry = buildNiftySignalLogEntry({
+      finalCall: call,
+      priceData: prices.NIFTY,
+      analysis: analyses.NIFTY,
+      chgPct: niftyPct,
+      indexSignals: signalsByInstrument.NIFTY,
+      marketStatus,
+    });
+
+    if (!shouldAppendSignalLog(prevNiftyLogRef.current, entry)) return;
+    prevNiftyLogRef.current = entry;
+    setNiftySignalLog((prev) => [entry, ...prev].slice(0, NIFTY_LOG_MAX_ENTRIES));
+  }, [hydrated, finalCalls.NIFTY, prices.NIFTY, analyses.NIFTY, signalsByInstrument.NIFTY, marketStatus]);
 
   const niftyMove = useMemo(() => explainAssetMove(prices.NIFTY, news, "NIFTY"), [prices.NIFTY, news]);
   const goldMove = useMemo(() => explainAssetMove(prices.GOLD, news, "GOLD"), [prices.GOLD, news]);
@@ -1731,32 +1850,104 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
     </div>
   );
 
-  const SettingsTab = () => (
-    <div style={{ padding: "0 14px 90px" }}>
-      <div style={{ ...S.card, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {theme === "dark" ? <Moon size={16} color={C.muted} /> : <Sun size={16} color={C.yellow} />}
-          <span style={{ color: C.text, fontWeight: 700 }}>Theme</span>
+  const SettingsTab = () => {
+    const subTabs = [
+      { id: "general", label: "General" },
+      { id: "nifty-log", label: "NIFTY Log" },
+    ];
+
+    return (
+      <div style={{ padding: "0 14px 90px" }}>
+        <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+          {subTabs.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setSettingsSubTab(t.id)}
+              style={{
+                flex: 1,
+                padding: "9px 8px",
+                borderRadius: 8,
+                background: settingsSubTab === t.id ? C.green : C.card,
+                color: settingsSubTab === t.id ? "#000" : C.muted,
+                border: `1px solid ${C.border}`,
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 5,
+              }}
+            >
+              {t.id === "nifty-log" ? <ScrollText size={13} /> : <Settings size={13} />}
+              {t.label}
+            </button>
+          ))}
         </div>
-        <Toggle on={theme === "light"} onToggle={() => setTheme(theme === "dark" ? "light" : "dark")} C={C} />
-      </div>
 
-      <div style={S.card}>
-        <div style={{ color: C.text, fontWeight: 700, marginBottom: 8 }}>Refresh · <span style={{ color: C.green }}>{refresh}s</span></div>
-        <input type="range" min={3} max={60} value={refresh} onChange={(e) => setRefresh(+e.target.value)} style={{ width: "100%", accentColor: C.green }} />
-      </div>
+        {settingsSubTab === "general" && (
+          <>
+            <div style={{ ...S.card, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {theme === "dark" ? <Moon size={16} color={C.muted} /> : <Sun size={16} color={C.yellow} />}
+                <span style={{ color: C.text, fontWeight: 700 }}>Theme</span>
+              </div>
+              <Toggle on={theme === "light"} onToggle={() => setTheme(theme === "dark" ? "light" : "dark")} C={C} />
+            </div>
 
-      <div style={S.card}>
-        <div style={{ color: C.text, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><Bell size={14} /> Alerts</div>
-        {[{ k: "sound", l: "Sound" }, { k: "notification", l: "Notification" }].map(({ k, l }) => (
-          <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.dim}` }}>
-            <span style={{ color: C.text, fontSize: 13 }}>{l}</span>
-            <Toggle on={alerts[k]} onToggle={() => { if (k === "notification") requestNotifPerm(); setAlerts((p) => ({ ...p, [k]: !p[k] })); }} C={C} />
-          </div>
-        ))}
+            <div style={S.card}>
+              <div style={{ color: C.text, fontWeight: 700, marginBottom: 8 }}>Refresh · <span style={{ color: C.green }}>{refresh}s</span></div>
+              <input type="range" min={3} max={60} value={refresh} onChange={(e) => setRefresh(+e.target.value)} style={{ width: "100%", accentColor: C.green }} />
+            </div>
+
+            <div style={S.card}>
+              <div style={{ color: C.text, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><Bell size={14} /> Alerts</div>
+              {[{ k: "sound", l: "Sound" }, { k: "notification", l: "Notification" }].map(({ k, l }) => (
+                <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.dim}` }}>
+                  <span style={{ color: C.text, fontSize: 13 }}>{l}</span>
+                  <Toggle on={alerts[k]} onToggle={() => { if (k === "notification") requestNotifPerm(); setAlerts((p) => ({ ...p, [k]: !p[k] })); }} C={C} />
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {settingsSubTab === "nifty-log" && (
+          <>
+            <div style={{ ...S.card, marginBottom: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <Zap size={16} color={C.yellow} />
+                <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>NIFTY signal log</span>
+              </div>
+              <p style={{ color: C.muted, fontSize: 11, lineHeight: 1.5, margin: "0 0 10px" }}>
+                Auto-saves BUY/SELL signals at {NIFTY_LOG_MIN_CONFIDENCE}%+ confidence with price, levels, strength, and full technical metadata.
+              </p>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ color: C.muted, fontSize: 11 }}>{niftySignalLog.length} entries saved</span>
+                {niftySignalLog.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => { if (window.confirm("Clear all NIFTY signal log entries?")) { setNiftySignalLog([]); prevNiftyLogRef.current = null; } }}
+                    style={{ padding: "6px 10px", borderRadius: 6, background: `${C.red}18`, border: `1px solid ${C.red}44`, color: C.red, fontSize: 11, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
+                  >
+                    <Trash2 size={12} /> Clear log
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {niftySignalLog.length === 0 ? (
+              <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 24 }}>
+                No NIFTY BUY/SELL signals logged yet. Keep the app open during market hours — entries appear when confidence reaches {NIFTY_LOG_MIN_CONFIDENCE}%+.
+              </div>
+            ) : (
+              niftySignalLog.map((entry) => <NiftySignalLogRow key={entry.id} entry={entry} C={C} S={S} />)
+            )}
+          </>
+        )}
       </div>
-    </div>
-  );
+    );
+  };
 
   const TABS = [
     { id: "dashboard", Icon: Home, label: "Home" },
