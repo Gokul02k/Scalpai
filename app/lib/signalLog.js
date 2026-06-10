@@ -1,10 +1,13 @@
-export const NIFTY_LOG_MIN_CONFIDENCE = 50;
+export const NIFTY_LOG_MIN_CONFIDENCE = 80;
 export const NIFTY_LOG_MAX_ENTRIES = 300;
+// Within this window, fluctuations are merged into the same entry instead of
+// creating a new row. A new row is only added once this much time has passed.
+export const NIFTY_LOG_SESSION_MS = 20 * 60 * 1000;
 
 export function getSignalStrength(confidence) {
-  if (confidence >= 75) return { label: 'Strong', tier: 3 };
-  if (confidence >= 62) return { label: 'Moderate', tier: 2 };
-  return { label: 'Developing', tier: 1 };
+  if (confidence >= 90) return { label: 'Very Strong', tier: 3 };
+  if (confidence >= 85) return { label: 'Strong', tier: 2 };
+  return { label: 'High', tier: 1 };
 }
 
 function scoreFactors(factors = []) {
@@ -30,17 +33,22 @@ export function buildNiftySignalLogEntry({
   const dt = new Date(ts);
   const { buyW, sellW, margin } = scoreFactors(finalCall.factors);
   const strength = getSignalStrength(finalCall.confidence);
+  const time = dt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
   return {
-    id: `${dt.getTime()}-${finalCall.action}-${finalCall.confidence}`,
+    id: `${dt.getTime()}-${finalCall.action}`,
     ts,
-    time: dt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+    time,
     date: dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+    firstTs: ts,
+    firstTime: time,
+    updates: 1,
     instrument: 'NIFTY',
     mode: 'scalp',
     action: finalCall.action,
     label: finalCall.label,
     confidence: finalCall.confidence,
+    peakConfidence: finalCall.confidence,
     strength: strength.label,
     strengthTier: strength.tier,
     price: priceData?.cur ?? finalCall.entry ?? null,
@@ -75,14 +83,42 @@ export function buildNiftySignalLogEntry({
   };
 }
 
-/** Avoid duplicate rows on every refresh tick. */
-export function shouldAppendSignalLog(lastEntry, nextEntry) {
-  if (!lastEntry) return true;
-  if (lastEntry.action !== nextEntry.action) return true;
-  if (nextEntry.confidence >= lastEntry.confidence + 5) return true;
-  const elapsed = Date.now() - new Date(lastEntry.ts).getTime();
-  if (elapsed > 5 * 60 * 1000 && nextEntry.confidence > lastEntry.confidence) return true;
-  return false;
+/**
+ * Decide what to do with a fresh high-confidence signal:
+ *  - 'append': start a new log row
+ *  - 'update': merge into the most recent row (same action, within the session window)
+ *  - 'skip'  : ignore (nothing meaningful changed yet)
+ */
+export function decideSignalLog(lastEntry, nextEntry) {
+  if (!lastEntry) return 'append';
+  // Opposite direction is always a brand-new signal worth its own row.
+  if (lastEntry.action !== nextEntry.action) return 'append';
+
+  const elapsed = new Date(nextEntry.ts).getTime() - new Date(lastEntry.ts).getTime();
+  // Same direction but a real gap in time → treat as a separate signal.
+  if (elapsed > NIFTY_LOG_SESSION_MS) return 'append';
+
+  // Same direction within the window: only refresh the row if the read changed
+  // (higher peak, or a different confidence reading). Avoids identical re-logs.
+  const peak = lastEntry.peakConfidence ?? lastEntry.confidence;
+  if (nextEntry.confidence !== lastEntry.confidence || nextEntry.confidence > peak) return 'update';
+  return 'skip';
+}
+
+/** Fold a new reading into an existing row, keeping the peak and first-seen time. */
+export function mergeSignalLogEntry(prev, next) {
+  const peakConfidence = Math.max(prev.peakConfidence ?? prev.confidence, next.confidence);
+  const strength = getSignalStrength(peakConfidence);
+  return {
+    ...next,
+    id: prev.id,
+    firstTs: prev.firstTs ?? prev.ts,
+    firstTime: prev.firstTime ?? prev.time,
+    updates: (prev.updates ?? 1) + 1,
+    peakConfidence,
+    strength: strength.label,
+    strengthTier: strength.tier,
+  };
 }
 
 export function isLoggableNiftySignal(finalCall) {

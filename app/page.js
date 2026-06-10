@@ -19,7 +19,8 @@ import { buildUnifiedSuggestion, explainAssetMove, getWatchlistMarketSuggestion,
 import { loadPersisted, savePersisted } from "./lib/storage";
 import {
   buildNiftySignalLogEntry,
-  shouldAppendSignalLog,
+  decideSignalLog,
+  mergeSignalLogEntry,
   isLoggableNiftySignal,
   NIFTY_LOG_MAX_ENTRIES,
   NIFTY_LOG_MIN_CONFIDENCE,
@@ -277,8 +278,14 @@ function NiftySignalLogRow({ entry, C, S }) {
             <span style={{ background: clr, color: "#000", fontSize: 10, fontWeight: 800, padding: "3px 10px", borderRadius: 4 }}>{entry.action}</span>
             <span style={{ background: `${strengthClr}22`, color: strengthClr, fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 4 }}>{entry.strength}</span>
             <span style={{ color: C.text, fontSize: 12, fontWeight: 800 }}>{entry.confidence}%</span>
+            {entry.peakConfidence > entry.confidence && (
+              <span style={{ color: C.muted, fontSize: 10, fontWeight: 700 }}>peak {entry.peakConfidence}%</span>
+            )}
           </div>
-          <div style={{ color: C.muted, fontSize: 11 }}>{entry.date} · {entry.time}</div>
+          <div style={{ color: C.muted, fontSize: 11 }}>
+            {entry.date} · {entry.firstTime && entry.firstTime !== entry.time ? `${entry.firstTime}–${entry.time}` : entry.time}
+            {entry.updates > 1 && ` · ${entry.updates}×`}
+          </div>
         </div>
         <div style={{ textAlign: "right" }}>
           <div style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>₹{fmt(entry.price, 0)}</div>
@@ -1370,9 +1377,16 @@ export default function App() {
       marketStatus,
     });
 
-    if (!shouldAppendSignalLog(prevNiftyLogRef.current, entry)) return;
-    prevNiftyLogRef.current = entry;
-    setNiftySignalLog((prev) => [entry, ...prev].slice(0, NIFTY_LOG_MAX_ENTRIES));
+    const decision = decideSignalLog(prevNiftyLogRef.current, entry);
+    if (decision === "skip") return;
+    if (decision === "update") {
+      const merged = mergeSignalLogEntry(prevNiftyLogRef.current, entry);
+      prevNiftyLogRef.current = merged;
+      setNiftySignalLog((prev) => (prev.length ? [merged, ...prev.slice(1)] : [merged]));
+    } else {
+      prevNiftyLogRef.current = entry;
+      setNiftySignalLog((prev) => [entry, ...prev].slice(0, NIFTY_LOG_MAX_ENTRIES));
+    }
   }, [hydrated, finalCalls.NIFTY, prices.NIFTY, analyses.NIFTY, signalsByInstrument.NIFTY, marketStatus]);
 
   const niftyMove = useMemo(() => explainAssetMove(prices.NIFTY, news, "NIFTY"), [prices.NIFTY, news]);
@@ -1920,7 +1934,7 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
                 <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>NIFTY signal log</span>
               </div>
               <p style={{ color: C.muted, fontSize: 11, lineHeight: 1.5, margin: "0 0 10px" }}>
-                Auto-saves BUY/SELL signals at {NIFTY_LOG_MIN_CONFIDENCE}%+ confidence with price, levels, strength, and full technical metadata.
+                Logs only high-conviction BUY/SELL signals ({NIFTY_LOG_MIN_CONFIDENCE}%+). Rapid swings in the same direction update one entry (peak kept); a new row is added only after a real time gap, when direction flips, or confidence climbs higher.
               </p>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ color: C.muted, fontSize: 11 }}>{niftySignalLog.length} entries saved</span>
