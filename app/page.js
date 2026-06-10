@@ -8,7 +8,7 @@ import {
 import {
   Settings, ChevronDown,   MessageCircle, X, Send, Newspaper, BarChart2,
   Briefcase, Home, ArrowUp, ArrowDown, Zap, RefreshCw, Star,
-  Upload, Plus, Trash2, Bell, Sun, Moon, Calculator, Lightbulb,
+  Upload, Plus, Trash2, Bell, Sun, Moon, Lightbulb,
 } from "lucide-react";
 import {
   fetchAllMarketData, fetchCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, genFallbackCandles,
@@ -982,8 +982,6 @@ export default function App() {
   const [scalpElapsed, setScalpElapsed] = useState(0);
   const [marketStatus, setMarketStatus] = useState(() => getMarketStatus());
 
-  const [calc, setCalc] = useState({ risk: 5000, entry: 25000, sl: 24900, exit: 25200, target: 25300 });
-
   const [chatOpen, setChatOpen] = useState(false);
   const [msgs, setMsgs] = useState([
     { role: "assistant", content: "👋 Hi! I'm your EA assistant.\n\nTry: \"Add RELIANCE 10 shares at 2850\", \"Remove TCS from portfolio\", \"Switch to GOLD\", or \"What does RSI say for NIFTY?\"" },
@@ -1468,11 +1466,6 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
     }
   };
 
-  const posSize = calc.entry && calc.sl ? Math.floor(calc.risk / Math.abs(calc.entry - calc.sl)) : 0;
-  const pnlCalc = calc.entry && calc.exit ? +((calc.exit - calc.entry) * posSize).toFixed(0) : 0;
-  const rrCalc = calc.entry && calc.sl && calc.target
-    ? (Math.abs(calc.target - calc.entry) / Math.abs(calc.entry - calc.sl)).toFixed(2) : "—";
-
   const portSignals = signals.filter((s) => s.scope === "portfolio");
   const portfolioStocks = portfolio.filter((s) => !MACRO_SYMBOLS.has(s.name.toUpperCase()));
   const portfolioStockNews = news.filter((n) =>
@@ -1748,61 +1741,19 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
         <Toggle on={theme === "light"} onToggle={() => setTheme(theme === "dark" ? "light" : "dark")} C={C} />
       </div>
 
-      {[
-        { l: "Daily Risk Limit (₹)", k: "riskLimit" },
-        { l: "Profit Target (%)", k: "profitPct" },
-        { l: "Stop Loss (%)", k: "slPct" },
-      ].map((s) => (
-        <div key={s.k} style={S.card}>
-          <div style={{ color: C.muted, fontSize: 10, marginBottom: 6, textTransform: "uppercase" }}>{s.l}</div>
-          <input type="number" value={sett[s.k]} onChange={(e) => setSett((p) => ({ ...p, [s.k]: +e.target.value }))} style={{ width: "100%", padding: 10, borderRadius: 7, background: C.dim, color: C.green, border: `1px solid ${C.border}`, fontSize: 19, fontWeight: 900, boxSizing: "border-box" }} />
-        </div>
-      ))}
-
-      <div style={S.card}>
-        <div style={{ color: C.text, fontWeight: 700, marginBottom: 10 }}>Indicators</div>
-        {Object.entries(sett.ind).map(([k, v]) => (
-          <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.dim}` }}>
-            <span style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>{k.toUpperCase()}</span>
-            <Toggle on={v} onToggle={() => setSett((p) => ({ ...p, ind: { ...p.ind, [k]: !v } }))} C={C} />
-          </div>
-        ))}
-      </div>
-
-      <div style={S.card}>
-        <div style={{ color: C.text, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><Bell size={14} /> Alerts</div>
-        {[{ k: "sound", l: "Sound Beep" }, { k: "notification", l: "Browser Notification" }].map(({ k, l }) => (
-          <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.dim}` }}>
-            <span style={{ color: C.text, fontSize: 13 }}>{l}</span>
-            <Toggle on={alerts[k]} onToggle={() => { if (k === "notification") requestNotifPerm(); setAlerts((p) => ({ ...p, [k]: !p[k] })); }} C={C} />
-          </div>
-        ))}
-      </div>
-
       <div style={S.card}>
         <div style={{ color: C.text, fontWeight: 700, marginBottom: 8 }}>Refresh · <span style={{ color: C.green }}>{refresh}s</span></div>
         <input type="range" min={3} max={60} value={refresh} onChange={(e) => setRefresh(+e.target.value)} style={{ width: "100%", accentColor: C.green }} />
       </div>
 
       <div style={S.card}>
-        <div style={{ color: C.text, fontWeight: 700, marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}><Calculator size={14} /> Calculators</div>
-        <div style={{ color: C.muted, fontSize: 10, marginBottom: 4 }}>Position Size (Risk / SL distance)</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 10 }}>
-          <input type="number" placeholder="Risk ₹" value={calc.risk} onChange={(e) => setCalc((p) => ({ ...p, risk: +e.target.value }))} style={{ padding: 8, borderRadius: 6, background: C.dim, color: C.text, border: `1px solid ${C.border}` }} />
-          <input type="number" placeholder="Entry" value={calc.entry} onChange={(e) => setCalc((p) => ({ ...p, entry: +e.target.value }))} style={{ padding: 8, borderRadius: 6, background: C.dim, color: C.text, border: `1px solid ${C.border}` }} />
-          <input type="number" placeholder="SL" value={calc.sl} onChange={(e) => setCalc((p) => ({ ...p, sl: +e.target.value }))} style={{ padding: 8, borderRadius: 6, background: C.dim, color: C.text, border: `1px solid ${C.border}` }} />
-        </div>
-        <div style={{ color: C.green, fontWeight: 800, fontSize: 16, marginBottom: 12 }}>Qty: {posSize} units</div>
-
-        <div style={{ color: C.muted, fontSize: 10, marginBottom: 4 }}>P&L Calculator</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 8 }}>
-          <input type="number" placeholder="Exit" value={calc.exit} onChange={(e) => setCalc((p) => ({ ...p, exit: +e.target.value }))} style={{ padding: 8, borderRadius: 6, background: C.dim, color: C.text, border: `1px solid ${C.border}` }} />
-        </div>
-        <div style={{ color: pnlCalc >= 0 ? C.green : C.red, fontWeight: 800, fontSize: 16, marginBottom: 12 }}>P&L: ₹{fmt(pnlCalc, 0)}</div>
-
-        <div style={{ color: C.muted, fontSize: 10, marginBottom: 4 }}>Risk:Reward</div>
-        <input type="number" placeholder="Target" value={calc.target} onChange={(e) => setCalc((p) => ({ ...p, target: +e.target.value }))} style={{ width: "100%", padding: 8, borderRadius: 6, background: C.dim, color: C.text, border: `1px solid ${C.border}`, marginBottom: 8, boxSizing: "border-box" }} />
-        <div style={{ color: C.yellow, fontWeight: 800, fontSize: 16 }}>R:R = 1:{rrCalc}</div>
+        <div style={{ color: C.text, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><Bell size={14} /> Alerts</div>
+        {[{ k: "sound", l: "Sound" }, { k: "notification", l: "Notification" }].map(({ k, l }) => (
+          <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.dim}` }}>
+            <span style={{ color: C.text, fontSize: 13 }}>{l}</span>
+            <Toggle on={alerts[k]} onToggle={() => { if (k === "notification") requestNotifPerm(); setAlerts((p) => ({ ...p, [k]: !p[k] })); }} C={C} />
+          </div>
+        ))}
       </div>
     </div>
   );
