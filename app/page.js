@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, memo } from "react";
 import {
   AreaChart, Area, BarChart, Bar, Cell, YAxis,
   ResponsiveContainer, ReferenceLine,
@@ -285,6 +285,190 @@ function InstrumentDropdown({ instrument, setInstrument, open, setOpen, isUp, ma
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/** RSI / MACD / Volume + BB / EMA — memoized so live price ticks don't remount charts. */
+const ChartIndicatorPanels = memo(function ChartIndicatorPanels({ analysis, instCandles, sett, C, S }) {
+  const rsiData = analysis?.rsiHist ?? [];
+  const macdData = analysis?.macdHist ?? [];
+  const volData = useMemo(() => instCandles.slice(-20), [instCandles]);
+  const chartBox = { width: "100%", height: 80, minHeight: 80 };
+
+  return (
+    <>
+      {sett.ind.rsi && (
+        <div style={S.card}>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>
+            RSI (14) — {analysis?.rsi ?? "—"}
+          </div>
+          <div style={chartBox}>
+            {rsiData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={rsiData} margin={{ top: 5, right: 0, left: -30, bottom: 0 }}>
+                  <YAxis domain={[0, 100]} tick={{ fill: C.muted, fontSize: 10 }} />
+                  <ReferenceLine y={70} stroke={C.red} strokeDasharray="3 3" />
+                  <ReferenceLine y={30} stroke={C.green} strokeDasharray="3 3" />
+                  <Area type="monotone" dataKey="rsi" stroke={C.yellow} fill={`${C.yellow}22`} dot={false} strokeWidth={1.5} isAnimationActive={false} />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontSize: 11 }}>Loading RSI…</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {sett.ind.macd && (
+        <div style={S.card}>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>
+            MACD — <span style={{ color: (analysis?.macd?.h ?? 0) >= 0 ? C.green : C.red }}>{analysis?.macd?.h ?? "—"}</span>
+            {analysis?.macd && (
+              <span style={{ color: C.muted, fontWeight: 400, fontSize: 11 }}> ({analysis.macd.h >= 0 ? "bullish" : "bearish"})</span>
+            )}
+          </div>
+          <div style={{ ...chartBox, height: 70, minHeight: 70 }}>
+            {macdData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={macdData} margin={{ top: 0, right: 0, left: -30, bottom: 0 }}>
+                  <ReferenceLine y={0} stroke={C.border} />
+                  <Bar dataKey="h" radius={[2, 2, 0, 0]} isAnimationActive={false}>
+                    {macdData.map((d, i) => (
+                      <Cell key={i} fill={d.h >= 0 ? C.green : C.red} opacity={0.7} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontSize: 11 }}>Loading MACD…</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {sett.ind.vol && (
+        <div style={S.card}>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Volume</div>
+          <div style={{ ...chartBox, height: 70, minHeight: 70 }}>
+            {volData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={volData} margin={{ top: 0, right: 0, left: -30, bottom: 0 }}>
+                  <Bar dataKey="vol" fill={C.blue} opacity={0.65} radius={[2, 2, 0, 0]} isAnimationActive={false} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontSize: 11 }}>Loading volume…</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {sett.ind.bb && analysis && (
+        <div style={S.card}>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Bollinger Bands</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, textAlign: "center" }}>
+            {[{ l: "Upper", v: analysis.bb.upper, c: C.red }, { l: "Mid", v: analysis.bb.mid, c: C.yellow }, { l: "Lower", v: analysis.bb.lower, c: C.green }].map((x) => (
+              <div key={x.l} style={{ background: C.dim, borderRadius: 8, padding: 10 }}>
+                <div style={{ color: C.muted, fontSize: 10 }}>{x.l}</div>
+                <div style={{ color: x.c, fontWeight: 800, fontSize: 14 }}>{fmt(x.v)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {(sett.ind.ema20 || sett.ind.ema50) && analysis && (
+        <div style={S.card}>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>EMA Values</div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+            {sett.ind.ema20 && <span style={{ color: C.muted, fontSize: 12 }}>EMA 20: <b style={{ color: C.blue }}>{fmt(analysis.ema20)}</b></span>}
+            {sett.ind.ema50 && <span style={{ color: C.muted, fontSize: 12 }}>EMA 50: <b style={{ color: C.yellow }}>{fmt(analysis.ema50)}</b></span>}
+          </div>
+        </div>
+      )}
+
+      {analysis && (
+        <div style={S.card}>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Technical Summary</div>
+          {analysis.summary.map((row) => (
+            <div key={row.n} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.dim}` }}>
+              <div>
+                <div style={{ color: C.text, fontSize: 12, fontWeight: 600 }}>{row.n}</div>
+                <div style={{ color: C.muted, fontSize: 10 }}>{row.sig}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ color: C.muted, fontSize: 11 }}>{row.v}</span>
+                <span style={{ background: row.t === "BUY" ? `${C.green}22` : row.t === "SELL" ? `${C.red}22` : `${C.muted}22`, color: row.t === "BUY" ? C.green : row.t === "SELL" ? C.red : C.muted, padding: "2px 9px", borderRadius: 4, fontSize: 10, fontWeight: 800 }}>{row.t}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+});
+
+function ChartsTab({
+  instrument,
+  setInstrument,
+  chartsDropOpen,
+  setChartsDropOpen,
+  isUp,
+  marketStatus,
+  tf,
+  setTf,
+  cp,
+  chg,
+  pct,
+  instCandles,
+  analysis,
+  sett,
+  C,
+  S,
+}) {
+  const priceDecimals = instrument === "NIFTY" ? 0 : 2;
+  const candleSlice = useMemo(() => instCandles.slice(-45), [instCandles]);
+  const overlays = analysis ? {
+    ema20: analysis.ema20,
+    ema50: analysis.ema50,
+    support: analysis.sr?.support,
+    resistance: analysis.sr?.resistance,
+    price: cp,
+    priceUp: isUp,
+  } : null;
+
+  return (
+    <div style={{ padding: "0 14px 90px" }}>
+      <InstrumentDropdown
+        instrument={instrument}
+        setInstrument={setInstrument}
+        open={chartsDropOpen}
+        setOpen={setChartsDropOpen}
+        isUp={isUp}
+        marketStatus={marketStatus}
+        C={C}
+      />
+      <div style={{ display: "flex", gap: 4, marginBottom: 10, flexWrap: "wrap" }}>
+        {["1m", "5m", "15m", "1h", "1d"].map((t) => (
+          <button key={t} onClick={() => setTf(t)} style={{ padding: "6px 14px", borderRadius: 8, background: t === tf ? C.green : C.card, color: t === tf ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 12, cursor: "pointer", fontWeight: 700 }}>{t}</button>
+        ))}
+      </div>
+      <div style={S.card}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 13 }}>{instrument} · {tf}</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+            <span style={{ color: C.text, fontWeight: 800, fontSize: 16 }}>₹{fmt(cp, priceDecimals)}</span>
+            <span style={{ color: isUp ? C.green : C.red, fontSize: 12, fontWeight: 700 }}>
+              {isUp ? "+" : ""}{fmt(chg, priceDecimals)} ({pct >= 0 ? "+" : ""}{pct}%)
+            </span>
+          </div>
+        </div>
+        <CandleChart candles={candleSlice} height={230} C={C} overlays={overlays} />
+        <ChartLegend overlays={overlays} decimals={priceDecimals} C={C} />
+      </div>
+
+      <ChartIndicatorPanels analysis={analysis} instCandles={instCandles} sett={sett} C={C} S={S} />
     </div>
   );
 }
@@ -1810,147 +1994,6 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
     </div>
   );
 
-  const Charts = () => (
-    <div style={{ padding: "0 14px 90px" }}>
-      <InstrumentDropdown
-        instrument={instrument}
-        setInstrument={setInstrument}
-        open={chartsDropOpen}
-        setOpen={setChartsDropOpen}
-        isUp={isUp}
-        marketStatus={marketStatus}
-        C={C}
-      />
-      <div style={{ display: "flex", gap: 4, marginBottom: 10, flexWrap: "wrap" }}>
-        {["1m", "5m", "15m", "1h", "1d"].map((t) => (
-          <button key={t} onClick={() => setTf(t)} style={{ padding: "6px 14px", borderRadius: 8, background: t === tf ? C.green : C.card, color: t === tf ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 12, cursor: "pointer", fontWeight: 700 }}>{t}</button>
-        ))}
-      </div>
-      <div style={{ ...S.card }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
-          <div style={{ color: C.text, fontWeight: 700, fontSize: 13 }}>{instrument} · {tf}</div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-            <span style={{ color: C.text, fontWeight: 800, fontSize: 16 }}>₹{fmt(cp, instrument === "NIFTY" ? 0 : 2)}</span>
-            <span style={{ color: isUp ? C.green : C.red, fontSize: 12, fontWeight: 700 }}>
-              {isUp ? "+" : ""}{fmt(chg, instrument === "NIFTY" ? 0 : 2)} ({pct >= 0 ? "+" : ""}{pct}%)
-            </span>
-          </div>
-        </div>
-        <CandleChart
-          candles={instCandles.slice(-45)}
-          height={230}
-          C={C}
-          overlays={analysis ? {
-            ema20: analysis.ema20,
-            ema50: analysis.ema50,
-            support: analysis.sr?.support,
-            resistance: analysis.sr?.resistance,
-            price: cp,
-            priceUp: isUp,
-          } : null}
-        />
-        <ChartLegend
-          overlays={analysis ? {
-            ema20: analysis.ema20,
-            ema50: analysis.ema50,
-            support: analysis.sr?.support,
-            resistance: analysis.sr?.resistance,
-            price: cp,
-            priceUp: isUp,
-          } : null}
-          decimals={instrument === "NIFTY" ? 0 : 2}
-          C={C}
-        />
-      </div>
-
-      {sett.ind.bb && analysis && (
-        <div style={{ ...S.card }}>
-          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Bollinger Bands</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, textAlign: "center" }}>
-            {[{ l: "Upper", v: analysis.bb.upper, c: C.red }, { l: "Mid", v: analysis.bb.mid, c: C.yellow }, { l: "Lower", v: analysis.bb.lower, c: C.green }].map((x) => (
-              <div key={x.l} style={{ background: C.dim, borderRadius: 8, padding: 10 }}>
-                <div style={{ color: C.muted, fontSize: 10 }}>{x.l}</div>
-                <div style={{ color: x.c, fontWeight: 800, fontSize: 14 }}>{fmt(x.v)}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {(sett.ind.ema20 || sett.ind.ema50) && analysis && (
-        <div style={{ ...S.card }}>
-          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>EMA Values</div>
-          <div style={{ display: "flex", gap: 16 }}>
-            {sett.ind.ema20 && <span style={{ color: C.muted, fontSize: 12 }}>EMA 20: <b style={{ color: C.blue }}>{fmt(analysis.ema20)}</b></span>}
-            {sett.ind.ema50 && <span style={{ color: C.muted, fontSize: 12 }}>EMA 50: <b style={{ color: C.yellow }}>{fmt(analysis.ema50)}</b></span>}
-          </div>
-        </div>
-      )}
-
-      {sett.ind.rsi && analysis && (
-        <div style={{ ...S.card }}>
-          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>RSI (14) — {analysis.rsi}</div>
-          <ResponsiveContainer width="100%" height={80}>
-            <AreaChart data={analysis.rsiHist} margin={{ top: 5, right: 0, left: -30, bottom: 0 }}>
-              <YAxis domain={[0, 100]} tick={{ fill: C.muted, fontSize: 10 }} />
-              <ReferenceLine y={70} stroke={C.red} strokeDasharray="3 3" />
-              <ReferenceLine y={30} stroke={C.green} strokeDasharray="3 3" />
-              <Area type="monotone" dataKey="rsi" stroke={C.yellow} fill={`${C.yellow}22`} dot={false} strokeWidth={1.5} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {sett.ind.macd && analysis?.macdHist?.length > 0 && (
-        <div style={{ ...S.card }}>
-          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>
-            MACD — <span style={{ color: analysis.macd.h >= 0 ? C.green : C.red }}>{analysis.macd.h}</span>
-            <span style={{ color: C.muted, fontWeight: 400, fontSize: 11 }}> ({analysis.macd.h >= 0 ? "bullish" : "bearish"})</span>
-          </div>
-          <ResponsiveContainer width="100%" height={70}>
-            <BarChart data={analysis.macdHist} margin={{ top: 0, right: 0, left: -30, bottom: 0 }}>
-              <ReferenceLine y={0} stroke={C.border} />
-              <Bar dataKey="h" radius={[2, 2, 0, 0]}>
-                {analysis.macdHist.map((d, i) => (
-                  <Cell key={i} fill={d.h >= 0 ? C.green : C.red} opacity={0.7} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {sett.ind.vol && (
-        <div style={{ ...S.card }}>
-          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Volume</div>
-          <ResponsiveContainer width="100%" height={70}>
-            <BarChart data={instCandles.slice(-20)} margin={{ top: 0, right: 0, left: -30, bottom: 0 }}>
-              <Bar dataKey="vol" fill={C.blue} opacity={0.65} radius={[2, 2, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {analysis && (
-        <div style={{ ...S.card }}>
-          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Technical Summary</div>
-          {analysis.summary.map((row) => (
-            <div key={row.n} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.dim}` }}>
-              <div>
-                <div style={{ color: C.text, fontSize: 12, fontWeight: 600 }}>{row.n}</div>
-                <div style={{ color: C.muted, fontSize: 10 }}>{row.sig}</div>
-              </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <span style={{ color: C.muted, fontSize: 11 }}>{row.v}</span>
-                <span style={{ background: row.t === "BUY" ? `${C.green}22` : row.t === "SELL" ? `${C.red}22` : `${C.muted}22`, color: row.t === "BUY" ? C.green : row.t === "SELL" ? C.red : C.muted, padding: "2px 9px", borderRadius: 4, fontSize: 10, fontWeight: 800 }}>{row.t}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-
   const TradesTab = () => (
     <div style={{ padding: "0 14px 90px" }}>
       <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
@@ -2165,7 +2208,7 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
     { id: "settings", Icon: Settings, label: "Settings" },
   ];
 
-  const CONTENT = { dashboard: Dashboard, charts: Charts, news: NewsTab, settings: SettingsTab };
+  const CONTENT = { dashboard: Dashboard, news: NewsTab, settings: SettingsTab };
   const ActiveTab = CONTENT[tab];
 
   return (
@@ -2233,6 +2276,25 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
             csvRef={csvRef}
             onCsvChange={handleCSV}
             onNewsSelect={setSelNews}
+            C={C}
+            S={S}
+          />
+        ) : tab === "charts" ? (
+          <ChartsTab
+            instrument={instrument}
+            setInstrument={setInstrument}
+            chartsDropOpen={chartsDropOpen}
+            setChartsDropOpen={setChartsDropOpen}
+            isUp={isUp}
+            marketStatus={marketStatus}
+            tf={tf}
+            setTf={setTf}
+            cp={cp}
+            chg={chg}
+            pct={pct}
+            instCandles={instCandles}
+            analysis={analysis}
+            sett={sett}
             C={C}
             S={S}
           />
