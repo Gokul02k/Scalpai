@@ -992,7 +992,7 @@ function PortfolioTab({
       {portfolioSubTab === "suggestions" && (
         <>
           <p style={{ color: C.muted, fontSize: 11, margin: "0 0 10px", lineHeight: 1.4 }}>
-            Swing & long-term view — sorted by strongest BUY, then SELL. Add holdings in the Holdings tab.
+            Your holdings — swing view, sorted by strongest BUY, then SELL. Add stocks in the Holdings tab.
           </p>
           {suggestionItems.length === 0 ? (
             <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 20 }}>
@@ -1793,58 +1793,6 @@ Tabs: dashboard|charts|portfolio|news|settings`;
 
   const portfolioSuggestionItems = useMemo(() => {
     const items = [];
-    const niftyPct = prices.NIFTY?.prev
-      ? +(((prices.NIFTY.cur - prices.NIFTY.prev) / prices.NIFTY.prev) * 100).toFixed(2)
-      : 0;
-    const niftySwing = buildUnifiedSuggestion({
-      analysis: analyses.NIFTY,
-      price: prices.NIFTY?.cur,
-      chgPct: niftyPct,
-      indexSignals: signalsByInstrument.NIFTY,
-      settings: sett,
-      mode: "swing",
-      instrument: "NIFTY",
-    });
-    pushSuggestionItem(items, {
-      id: "nifty-swing",
-      name: "NIFTY",
-      mode: "Swing",
-      call: niftySwing,
-      priceData: prices.NIFTY,
-      newsHeadline: latestNewsHeadline("NIFTY", news),
-    });
-    pushSuggestionItem(items, {
-      id: "gold-swing",
-      name: "GOLD",
-      mode: "Swing",
-      call: finalCalls.GOLD_swing,
-      priceData: prices.GOLD,
-      newsHeadline: latestNewsHeadline("GOLD", news),
-    });
-    pushSuggestionItem(items, {
-      id: "gold-long",
-      name: "GOLD",
-      mode: "Long term",
-      call: finalCalls.GOLD_long,
-      priceData: prices.GOLD,
-      newsHeadline: latestNewsHeadline("GOLD", news),
-    });
-    pushSuggestionItem(items, {
-      id: "silver-swing",
-      name: "SILVER",
-      mode: "Swing",
-      call: finalCalls.SILVER_swing,
-      priceData: prices.SILVER,
-      newsHeadline: latestNewsHeadline("SILVER", news),
-    });
-    pushSuggestionItem(items, {
-      id: "silver-long",
-      name: "SILVER",
-      mode: "Long term",
-      call: finalCalls.SILVER_long,
-      priceData: prices.SILVER,
-      newsHeadline: latestNewsHeadline("SILVER", news),
-    });
     for (const stock of portfolioStocks) {
       const sym = stock.name.toUpperCase();
       const quote = stockQuotes[sym];
@@ -1869,10 +1817,6 @@ Tabs: dashboard|charts|portfolio|news|settings`;
     }
     return sortPortfolioSuggestions(items);
   }, [
-    finalCalls,
-    prices,
-    analyses,
-    signalsByInstrument,
     sett,
     news,
     portfolioStocks,
@@ -1886,60 +1830,39 @@ Tabs: dashboard|charts|portfolio|news|settings`;
   // ── TAB COMPONENTS ──
   const Dashboard = () => (
     <div style={{ padding: "0 14px 90px" }}>
-      <div style={{ ...S.card, marginBottom: 12, borderColor: `${C.green}44` }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-          <Lightbulb size={16} color={C.green} />
-          <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>Swing & long-term ideas</span>
-        </div>
-        <p style={{ color: C.muted, fontSize: 12, lineHeight: 1.5, margin: "0 0 12px" }}>
-          Buy/sell suggestions for NIFTY, gold, silver, and your holdings live under Portfolio → Suggestions (sorted by strongest BUY, then SELL).
-        </p>
-        <button
-          type="button"
-          onClick={() => { setTab("portfolio"); setPortfolioSubTab("suggestions"); }}
-          style={{ width: "100%", padding: 11, borderRadius: 10, background: C.green, color: "#000", fontWeight: 800, border: "none", cursor: "pointer", fontSize: 13 }}
-        >
-          Open Portfolio Suggestions
-        </button>
-      </div>
+      <HomeSuggestionBlock
+        name="NIFTY"
+        badge="Scalping"
+        finalCall={finalCalls.NIFTY}
+        priceData={prices.NIFTY}
+        eaKey="NIFTY"
+        eaState={eaState}
+        onAskEA={askEA}
+        C={C}
+        S={S}
+      />
 
-      <div style={{ ...S.card, marginBottom: 12 }}>
-        <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Markets at a glance</div>
-        {INSTRUMENT_KEYS.map((name) => {
-          const p = prices[name];
-          if (!p) return null;
-          const ch = +(p.cur - p.prev).toFixed(2);
-          const pc = +((ch / p.prev) * 100).toFixed(2);
-          return (
-            <div key={name} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: `1px solid ${C.dim}` }}>
-              <div>
-                <span style={{ color: C.text, fontWeight: 700 }}>{name}</span>
-                {INSTRUMENT_SUB[name] && <div style={{ color: C.muted, fontSize: 9 }}>{INSTRUMENT_SUB[name]}</div>}
-              </div>
-              <div style={{ textAlign: "right" }}>
-                <div style={{ color: C.text }}>₹{fmt(p.cur, name === "NIFTY" ? 0 : 2)}</div>
-                <div style={{ color: ch >= 0 ? C.green : C.red, fontSize: 11 }}>{ch >= 0 ? "+" : ""}{fmt(ch, name === "NIFTY" ? 0 : 2)} ({pc >= 0 ? "+" : ""}{pc}%)</div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      <HomeCommodityBlock
+        name="GOLD"
+        priceData={prices.GOLD}
+        swingCall={finalCalls.GOLD_swing}
+        longCall={finalCalls.GOLD_long}
+        eaState={eaState}
+        onAskEA={askEA}
+        C={C}
+        S={S}
+      />
 
-      {niftySignalLog.length > 0 && (
-        <>
-          <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, marginBottom: 8, textTransform: "uppercase" }}>Recent NIFTY scalp signals</div>
-          {niftySignalLog.slice(0, 3).map((entry) => (
-            <NiftySignalLogRow key={entry.id} entry={entry} C={C} S={S} />
-          ))}
-          <button
-            type="button"
-            onClick={() => { setTab("settings"); setSettingsSubTab("nifty-log"); }}
-            style={{ width: "100%", marginTop: 4, padding: 10, borderRadius: 8, background: C.dim, border: `1px solid ${C.border}`, color: C.muted, fontWeight: 700, fontSize: 12, cursor: "pointer" }}
-          >
-            View full NIFTY log
-          </button>
-        </>
-      )}
+      <HomeCommodityBlock
+        name="SILVER"
+        priceData={prices.SILVER}
+        swingCall={finalCalls.SILVER_swing}
+        longCall={finalCalls.SILVER_long}
+        eaState={eaState}
+        onAskEA={askEA}
+        C={C}
+        S={S}
+      />
     </div>
   );
 
