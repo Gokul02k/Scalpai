@@ -1,8 +1,8 @@
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
 
-import { authorizeCron } from '../../lib/cronAuth';
-import { runNiftyLogTick } from '../../lib/niftyLogTick';
+import { authorizeCron } from '../../../lib/cronAuth';
+import { runNiftyLogTick } from '../../../lib/niftyLogTick';
 
 export async function GET(request) {
   if (!authorizeCron(request)) {

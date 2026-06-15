@@ -2120,7 +2120,7 @@ Tabs: dashboard|charts|portfolio|news|settings`;
               <p style={{ color: C.muted, fontSize: 11, lineHeight: 1.5, margin: "0 0 10px" }}>
                 Logs only high-conviction BUY/SELL signals ({NIFTY_LOG_MIN_CONFIDENCE}%+). Rapid swings in the same direction update one entry (peak kept); a new row is added only after a real time gap, when direction flips, or confidence climbs higher.
                 {serverLogConfigured
-                  ? " Background logging is active — signals are recorded on the server every 2 minutes during market hours, even when this app is closed."
+                  ? " Upstash sync is on — signals save to the server while you use the app. For automatic 2-minute logging when the app is closed, use Vercel Pro (see vercel.cron.pro.example.json)."
                   : " Add Upstash Redis + CRON_SECRET on Vercel to log in the background when the app is closed."}
               </p>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
