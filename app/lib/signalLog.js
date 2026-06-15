@@ -126,3 +126,49 @@ export function isLoggableNiftySignal(finalCall) {
   if (finalCall.action !== 'BUY' && finalCall.action !== 'SELL') return false;
   return finalCall.confidence >= NIFTY_LOG_MIN_CONFIDENCE;
 }
+
+/** Apply merge/append rules to a log list (client + server). */
+export function applyNiftyLogUpdate(logs, entry) {
+  const last = logs[0] ?? null;
+  const decision = decideSignalLog(last, entry);
+  if (decision === 'skip') return { logs, changed: false, decision };
+
+  if (decision === 'update') {
+    const merged = mergeSignalLogEntry(last, entry);
+    return {
+      logs: [merged, ...logs.slice(1)].slice(0, NIFTY_LOG_MAX_ENTRIES),
+      changed: true,
+      decision,
+    };
+  }
+
+  return {
+    logs: [entry, ...logs].slice(0, NIFTY_LOG_MAX_ENTRIES),
+    changed: true,
+    decision: 'append',
+  };
+}
+
+/** Merge server and local logs, keeping the richer version of each row. */
+export function mergeNiftyLogLists(serverLogs = [], localLogs = []) {
+  const byId = new Map();
+
+  for (const e of [...serverLogs, ...localLogs]) {
+    const existing = byId.get(e.id);
+    if (!existing) {
+      byId.set(e.id, e);
+      continue;
+    }
+    const eUpdates = e.updates ?? 1;
+    const exUpdates = existing.updates ?? 1;
+    const ePeak = e.peakConfidence ?? e.confidence ?? 0;
+    const exPeak = existing.peakConfidence ?? existing.confidence ?? 0;
+    if (eUpdates > exUpdates || ePeak > exPeak || new Date(e.ts) > new Date(existing.ts)) {
+      byId.set(e.id, e);
+    }
+  }
+
+  return [...byId.values()]
+    .sort((a, b) => new Date(b.ts) - new Date(a.ts))
+    .slice(0, NIFTY_LOG_MAX_ENTRIES);
+}

@@ -7,7 +7,7 @@ import {
 } from "recharts";
 import {
   Settings, ChevronDown,   MessageCircle, X, Send, Newspaper, BarChart2,
-  Briefcase, Home, ArrowUp, ArrowDown, Zap, RefreshCw, Star,
+  Briefcase, Home, ArrowUp, ArrowDown, Zap, RefreshCw,
   Upload, Plus, Trash2, Bell, Sun, Moon, Lightbulb, ScrollText,
 } from "lucide-react";
 import {
@@ -15,12 +15,12 @@ import {
 } from "./lib/marketData";
 import { analyzeFromCandles } from "./lib/indicators";
 import { generateIndexSignals, generatePortfolioSignals, parsePortfolioCSV } from "./lib/signals";
-import { buildUnifiedSuggestion, explainAssetMove, getWatchlistMarketSuggestion, getPortfolioSuggestion } from "./lib/suggestion";
+import { buildUnifiedSuggestion, explainAssetMove, getPortfolioSuggestion } from "./lib/suggestion";
 import { loadPersisted, savePersisted } from "./lib/storage";
 import {
   buildNiftySignalLogEntry,
-  decideSignalLog,
-  mergeSignalLogEntry,
+  applyNiftyLogUpdate,
+  mergeNiftyLogLists,
   isLoggableNiftySignal,
   NIFTY_LOG_MAX_ENTRIES,
   NIFTY_LOG_MIN_CONFIDENCE,
@@ -81,6 +81,46 @@ function filterStockSuggestions(query, exclude = [], limit = 8) {
       return a.localeCompare(b);
     })
     .slice(0, limit);
+}
+
+function sortPortfolioSuggestions(items) {
+  const group = (action) => (action === "BUY" ? 0 : action === "SELL" ? 1 : 2);
+  return [...items].sort((a, b) => {
+    const g = group(a.action) - group(b.action);
+    if (g !== 0) return g;
+    return (b.confidence || 0) - (a.confidence || 0);
+  });
+}
+
+function latestNewsHeadline(name, newsList = []) {
+  const sym = name.toUpperCase();
+  const item = newsList.find(
+    (n) => (n.stocks || []).some((s) => String(s).toUpperCase() === sym)
+      || (n.headline || "").toUpperCase().includes(sym)
+  );
+  return item?.headline || null;
+}
+
+function pushSuggestionItem(items, { id, name, mode, call, priceData, newsHeadline }) {
+  if (!call || call.action === "WAIT" || !call.confidence) return;
+  const dayPct = priceData?.prev
+    ? +(((priceData.cur - priceData.prev) / priceData.prev) * 100).toFixed(2)
+    : 0;
+  const reason = call.factors?.[0]?.reason
+    || call.reason?.split(" · ")[0]
+    || call.label;
+  items.push({
+    id,
+    name,
+    mode,
+    action: call.action,
+    label: call.label,
+    confidence: call.confidence,
+    reason,
+    price: priceData?.cur,
+    dayPct,
+    newsHeadline: (call.action === "BUY" || call.action === "SELL") ? newsHeadline : null,
+  });
 }
 
 const fmt  = (n, d = 2) => n?.toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d }) ?? "—";
@@ -831,186 +871,35 @@ function HomeCommodityBlock({ name, priceData, swingCall, longCall, eaState, onA
   );
 }
 
-function WatchlistSuggestionRow({ symbol, quote, suggestion, C, S }) {
-  const clr = suggestion.action === "BUY" ? C.green : suggestion.action === "SELL" ? C.red : C.yellow;
-  const pct = quote?.changePercent ?? 0;
+function PortfolioSuggestionCard({ item, C, S }) {
+  const clr = item.action === "BUY" ? C.green : item.action === "SELL" ? C.red : C.yellow;
+  const decimals = item.name === "NIFTY" ? 0 : 2;
   return (
-    <div style={{ ...S.card, marginBottom: 8, borderColor: `${clr}33`, padding: 12 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 6 }}>
+    <div style={{ ...S.card, borderColor: `${clr}44`, padding: 12, marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
         <div>
-          <div style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>{symbol}</div>
-          <div style={{ color: C.muted, fontSize: 11 }}>
-            {quote?.current ? `₹${fmt(quote.current)} · today ${pct >= 0 ? "+" : ""}${pct}%` : "Loading…"}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{item.name}</span>
+            <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 4, background: `${C.blue}28`, color: C.blue }}>{item.mode}</span>
           </div>
+          {item.price != null && (
+            <div style={{ color: C.muted, fontSize: 11, marginTop: 3 }}>
+              ₹{fmt(item.price, decimals)} · today {item.dayPct >= 0 ? "+" : ""}{item.dayPct}%
+            </div>
+          )}
         </div>
-        <span style={{ background: clr, color: suggestion.action === "HOLD" || suggestion.action === "WAIT" ? C.text : "#000", fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 4, flexShrink: 0 }}>
-          {suggestion.label}
-        </span>
-      </div>
-      <p style={{ color: C.text, fontSize: 12, lineHeight: 1.45, margin: 0 }}>{suggestion.reason}</p>
-    </div>
-  );
-}
-
-function WatchlistTab({
-  watchlists,
-  activeWatchlist,
-  onActiveWatchlistChange,
-  watchInput,
-  onWatchInputChange,
-  watchPrices,
-  onAdd,
-  onRemove,
-  C,
-  S,
-}) {
-  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
-  const inputRef = useRef(null);
-  const currentSymbols = watchlists[activeWatchlist] || [];
-
-  const suggestions = useMemo(
-    () => filterStockSuggestions(watchInput, currentSymbols),
-    [watchInput, currentSymbols.join(",")]
-  );
-
-  const submitSymbol = (symbol) => {
-    const sym = (symbol || watchInput).trim().toUpperCase();
-    if (!sym) return;
-    onAdd(sym);
-    onWatchInputChange("");
-    setSuggestionsOpen(false);
-    inputRef.current?.blur();
-  };
-
-  return (
-    <div style={{ padding: "0 14px 90px" }}>
-      <div style={{ display: "flex", gap: 6, marginBottom: 10, overflowX: "auto" }}>
-        {Object.keys(watchlists).map((name) => (
-          <button
-            key={name}
-            type="button"
-            onClick={() => onActiveWatchlistChange(name)}
-            style={{
-              padding: "6px 12px",
-              borderRadius: 8,
-              background: activeWatchlist === name ? C.green : C.card,
-              color: activeWatchlist === name ? "#000" : C.muted,
-              border: `1px solid ${C.border}`,
-              fontSize: 11,
-              cursor: "pointer",
-              whiteSpace: "nowrap",
-              fontWeight: 700,
-            }}
-          >
-            {name}
-          </button>
-        ))}
-      </div>
-
-      <div style={{ ...S.card, position: "relative" }}>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input
-            ref={inputRef}
-            type="text"
-            value={watchInput}
-            onChange={(e) => {
-              onWatchInputChange(e.target.value.toUpperCase());
-              setSuggestionsOpen(true);
-            }}
-            onFocus={() => setSuggestionsOpen(true)}
-            onBlur={() => setTimeout(() => setSuggestionsOpen(false), 150)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                if (suggestions.length) submitSymbol(suggestions[0]);
-                else submitSymbol();
-              }
-            }}
-            placeholder="Search stock (e.g. RELIANCE)"
-            autoComplete="off"
-            autoCorrect="off"
-            spellCheck={false}
-            enterKeyHint="done"
-            style={{
-              flex: 1,
-              padding: 10,
-              borderRadius: 8,
-              background: C.dim,
-              color: C.text,
-              border: `1px solid ${C.border}`,
-              fontSize: 16,
-              outline: "none",
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => submitSymbol()}
-            style={{ padding: "10px 14px", background: C.green, border: "none", borderRadius: 8, cursor: "pointer", flexShrink: 0 }}
-          >
-            <Plus size={16} color="#000" />
-          </button>
+        <div style={{ textAlign: "right", flexShrink: 0 }}>
+          <span style={{ background: clr, color: item.action === "HOLD" || item.action === "WAIT" ? C.text : "#000", fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 4 }}>
+            {item.label}
+          </span>
+          <div style={{ color: clr, fontWeight: 900, fontSize: 13, marginTop: 4 }}>{item.confidence}%</div>
         </div>
-
-        {suggestionsOpen && watchInput.trim() && suggestions.length > 0 && (
-          <div
-            style={{
-              position: "absolute",
-              left: 12,
-              right: 12,
-              top: "calc(100% - 4px)",
-              zIndex: 20,
-              background: C.card,
-              border: `1px solid ${C.border}`,
-              borderRadius: 8,
-              maxHeight: 220,
-              overflowY: "auto",
-              boxShadow: `0 8px 24px ${C.bg}88`,
-            }}
-          >
-            {suggestions.map((sym) => (
-              <button
-                key={sym}
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => submitSymbol(sym)}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  textAlign: "left",
-                  padding: "10px 12px",
-                  background: "transparent",
-                  border: "none",
-                  borderBottom: `1px solid ${C.dim}`,
-                  color: C.text,
-                  fontSize: 13,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                {sym}
-              </button>
-            ))}
-          </div>
-        )}
       </div>
-
-      {currentSymbols.map((sym) => (
-        <div key={sym} style={{ ...S.card, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>{sym}</div>
-            <div style={{ color: C.muted, fontSize: 11 }}>{watchPrices[sym] ? `₹${fmt(watchPrices[sym])}` : "Loading…"}</div>
-          </div>
-          <button
-            type="button"
-            onClick={() => onRemove(sym)}
-            style={{ background: `${C.red}18`, border: "none", borderRadius: 6, padding: 6, cursor: "pointer" }}
-          >
-            <Trash2 size={14} color={C.red} />
-          </button>
-        </div>
-      ))}
-      {!currentSymbols.length && (
-        <div style={{ ...S.card, textAlign: "center", color: C.muted }}>Watchlist empty</div>
+      <p style={{ color: C.text, fontSize: 12, lineHeight: 1.45, margin: 0 }}>{item.reason}</p>
+      {item.newsHeadline && (
+        <p style={{ color: C.muted, fontSize: 11, margin: "8px 0 0", lineHeight: 1.4 }}>
+          📰 {item.newsHeadline}
+        </p>
       )}
     </div>
   );
@@ -1019,6 +908,7 @@ function WatchlistTab({
 function PortfolioTab({
   portfolioSubTab,
   onPortfolioSubTabChange,
+  suggestionItems,
   portfolio,
   newStock,
   onNewStockChange,
@@ -1027,37 +917,51 @@ function PortfolioTab({
   portVal,
   portPnL,
   portCost,
-  portfolioStocks,
-  portfolioAnalyses,
-  portfolioNewsBySymbol,
-  watchQuotes,
-  portfolioStockNews,
-  cp,
-  sett,
   csvRef,
   onCsvChange,
-  onNewsSelect,
   C,
   S,
 }) {
   const [symbolSuggestionsOpen, setSymbolSuggestionsOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
   const symbolInputRef = useRef(null);
   const retPct = portCost ? +((portPnL / portCost) * 100).toFixed(2) : 0;
   const subTabs = [
-    { id: "holdings", label: "Holdings" },
     { id: "suggestions", label: "Suggestions" },
-    { id: "news", label: "Stock News" },
+    { id: "holdings", label: "Holdings" },
   ];
   const heldSymbols = portfolio.map((s) => s.name);
   const symbolSuggestions = useMemo(
-    () => filterStockSuggestions(newStock.name, heldSymbols),
-    [newStock.name, heldSymbols.join(",")]
+    () => (newStock.type === "mf" ? [] : filterStockSuggestions(newStock.name, heldSymbols)),
+    [newStock.name, newStock.type, heldSymbols.join(",")]
   );
 
   const pickSymbol = (sym) => {
     onNewStockChange({ ...newStock, name: sym });
     setSymbolSuggestionsOpen(false);
     symbolInputRef.current?.focus();
+  };
+
+  const startEdit = (s) => {
+    setEditingId(s.id);
+    onNewStockChange({
+      name: s.name,
+      qty: String(s.qty),
+      buy: String(s.buy),
+      type: s.type === "mf" ? "mf" : "stock",
+    });
+    onPortfolioSubTabChange("holdings");
+    symbolInputRef.current?.focus();
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    onNewStockChange({ name: "", qty: "", buy: "", type: "stock" });
+  };
+
+  const handleSubmit = () => {
+    onAddStock(editingId);
+    setEditingId(null);
   };
 
   return (
@@ -1085,55 +989,90 @@ function PortfolioTab({
         ))}
       </div>
 
+      {portfolioSubTab === "suggestions" && (
+        <>
+          <p style={{ color: C.muted, fontSize: 11, margin: "0 0 10px", lineHeight: 1.4 }}>
+            Swing & long-term view — sorted by strongest BUY, then SELL. Add holdings in the Holdings tab.
+          </p>
+          {suggestionItems.length === 0 ? (
+            <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 20 }}>
+              No suggestions yet. Add stocks in Holdings or wait for live data.
+            </div>
+          ) : (
+            suggestionItems.map((item) => (
+              <PortfolioSuggestionCard key={item.id} item={item} C={C} S={S} />
+            ))
+          )}
+        </>
+      )}
+
       {portfolioSubTab === "holdings" && (
         <>
-          <div style={{ ...S.card, background: `linear-gradient(135deg,${C.card},${C.dim})` }}>
-            <div style={{ color: C.muted, fontSize: 10, marginBottom: 4, textTransform: "uppercase" }}>Total Value</div>
-            <div style={{ color: C.text, fontSize: 27, fontWeight: 900 }}>₹{fmt(portVal, 0)}</div>
-            <div style={{ color: portPnL >= 0 ? C.green : C.red, fontSize: 14, fontWeight: 700 }}>{portPnL >= 0 ? "+" : ""}₹{fmt(portPnL, 0)} ({retPct >= 0 ? "+" : ""}{retPct}%)</div>
-          </div>
+          {portfolio.length > 0 && (
+            <div style={{ ...S.card, background: `linear-gradient(135deg,${C.card},${C.dim})`, marginBottom: 12 }}>
+              <div style={{ color: C.muted, fontSize: 10, marginBottom: 4, textTransform: "uppercase" }}>Total value</div>
+              <div style={{ color: C.text, fontSize: 22, fontWeight: 900 }}>₹{fmt(portVal, 0)}</div>
+              <div style={{ color: portPnL >= 0 ? C.green : C.red, fontSize: 13, fontWeight: 700 }}>
+                {portPnL >= 0 ? "+" : ""}₹{fmt(portPnL, 0)} ({retPct >= 0 ? "+" : ""}{retPct}%)
+              </div>
+            </div>
+          )}
 
           <input ref={csvRef} type="file" accept=".csv,.txt" style={{ display: "none" }} onChange={onCsvChange} />
           <button type="button" onClick={() => csvRef.current?.click()} style={{ width: "100%", padding: 12, borderRadius: 10, marginBottom: 10, background: `${C.blue}18`, border: `1px dashed ${C.blue}55`, color: C.blue, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
             <Upload size={14} /> Import CSV
           </button>
-          <p style={{ color: C.muted, fontSize: 11, margin: "0 0 12px", lineHeight: 1.4 }}>
-            Upload a Groww/Zerodha CSV to load holdings, or add stocks below. Ask EA in chat to add/remove stocks by name.
-          </p>
 
           <div style={{ ...S.card, marginBottom: 12, position: "relative" }}>
-            <div style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>Add stock</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>
+                {editingId ? "Edit holding" : "Add holding"}
+              </div>
+              <div style={{ display: "flex", gap: 4 }}>
+                {["stock", "mf"].map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => onNewStockChange({ ...newStock, type: t, name: "" })}
+                    style={{
+                      padding: "4px 8px",
+                      borderRadius: 6,
+                      fontSize: 10,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      border: `1px solid ${C.border}`,
+                      background: newStock.type === t ? C.green : C.dim,
+                      color: newStock.type === t ? "#000" : C.muted,
+                    }}
+                  >
+                    {t === "stock" ? "Stock" : "Mutual fund"}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
               <input
                 ref={symbolInputRef}
                 type="text"
                 value={newStock.name}
                 onChange={(e) => {
-                  onNewStockChange({ ...newStock, name: e.target.value.toUpperCase() });
+                  onNewStockChange({ ...newStock, name: newStock.type === "mf" ? e.target.value : e.target.value.toUpperCase() });
                   setSymbolSuggestionsOpen(true);
                 }}
                 onFocus={() => setSymbolSuggestionsOpen(true)}
                 onBlur={() => setTimeout(() => setSymbolSuggestionsOpen(false), 150)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    if (symbolSuggestions.length) pickSymbol(symbolSuggestions[0]);
-                  }
-                }}
-                placeholder="Symbol"
+                placeholder={newStock.type === "mf" ? "Fund name" : "Symbol"}
                 autoComplete="off"
                 autoCorrect="off"
                 spellCheck={false}
-                enterKeyHint="next"
                 style={{ flex: 2, padding: 10, borderRadius: 8, background: C.dim, border: `1px solid ${C.border}`, color: C.text, fontSize: 16, outline: "none" }}
               />
               <input
                 type="number"
                 value={newStock.qty}
                 onChange={(e) => onNewStockChange({ ...newStock, qty: e.target.value })}
-                placeholder="Qty"
+                placeholder={newStock.type === "mf" ? "Units" : "Qty"}
                 autoComplete="off"
-                enterKeyHint="next"
                 style={{ flex: 1, padding: 10, borderRadius: 8, background: C.dim, border: `1px solid ${C.border}`, color: C.text, fontSize: 16, outline: "none" }}
               />
               <input
@@ -1142,161 +1081,69 @@ function PortfolioTab({
                 onChange={(e) => onNewStockChange({ ...newStock, buy: e.target.value })}
                 placeholder="Avg ₹"
                 autoComplete="off"
-                enterKeyHint="done"
                 style={{ flex: 1, padding: 10, borderRadius: 8, background: C.dim, border: `1px solid ${C.border}`, color: C.text, fontSize: 16, outline: "none" }}
               />
             </div>
 
-            {symbolSuggestionsOpen && newStock.name.trim() && symbolSuggestions.length > 0 && (
-              <div
-                style={{
-                  position: "absolute",
-                  left: 12,
-                  right: 12,
-                  top: 72,
-                  zIndex: 20,
-                  background: C.card,
-                  border: `1px solid ${C.border}`,
-                  borderRadius: 8,
-                  maxHeight: 200,
-                  overflowY: "auto",
-                  boxShadow: `0 8px 24px ${C.bg}88`,
-                }}
-              >
+            {symbolSuggestionsOpen && newStock.type === "stock" && newStock.name.trim() && symbolSuggestions.length > 0 && (
+              <div style={{ position: "absolute", left: 12, right: 12, top: 88, zIndex: 20, background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, maxHeight: 180, overflowY: "auto", boxShadow: `0 8px 24px ${C.bg}88` }}>
                 {symbolSuggestions.map((sym) => (
-                  <button
-                    key={sym}
-                    type="button"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => pickSymbol(sym)}
-                    style={{
-                      display: "block",
-                      width: "100%",
-                      textAlign: "left",
-                      padding: "10px 12px",
-                      background: "transparent",
-                      border: "none",
-                      borderBottom: `1px solid ${C.dim}`,
-                      color: C.text,
-                      fontSize: 13,
-                      fontWeight: 700,
-                      cursor: "pointer",
-                    }}
-                  >
+                  <button key={sym} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => pickSymbol(sym)} style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 12px", background: "transparent", border: "none", borderBottom: `1px solid ${C.dim}`, color: C.text, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
                     {sym}
                   </button>
                 ))}
               </div>
             )}
 
-            <button type="button" onClick={onAddStock} style={{ width: "100%", padding: 10, borderRadius: 8, background: C.green, color: "#000", fontWeight: 800, fontSize: 12, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-              <Plus size={14} /> Add to portfolio
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="button" onClick={handleSubmit} style={{ flex: 1, padding: 10, borderRadius: 8, background: C.green, color: "#000", fontWeight: 800, fontSize: 12, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                <Plus size={14} /> {editingId ? "Save" : "Add"}
+              </button>
+              {editingId && (
+                <button type="button" onClick={cancelEdit} style={{ padding: "10px 14px", borderRadius: 8, background: C.dim, color: C.muted, border: `1px solid ${C.border}`, cursor: "pointer", fontWeight: 700, fontSize: 12 }}>
+                  Cancel
+                </button>
+              )}
+            </div>
           </div>
 
           {portfolio.length === 0 && (
-            <div style={{ ...S.card, textAlign: "center", color: C.muted, marginBottom: 12 }}>No holdings yet. Import a CSV or add stocks manually.</div>
+            <div style={{ ...S.card, textAlign: "center", color: C.muted, marginBottom: 12 }}>No holdings yet. Add stocks or mutual funds above.</div>
           )}
 
           {portfolio.map((s) => {
-            const pnl = (s.cur - s.buy) * s.qty;
-            const pnlPct = s.buy ? +((s.cur - s.buy) / s.buy * 100).toFixed(2) : 0;
+            const isMf = s.type === "mf";
+            const pnl = isMf ? 0 : (s.cur - s.buy) * s.qty;
+            const pnlPct = !isMf && s.buy ? +((s.cur - s.buy) / s.buy * 100).toFixed(2) : 0;
             const up = pnl >= 0;
             return (
-              <div key={s.id} style={{ ...S.card, borderColor: up ? `${C.green}35` : `${C.red}35` }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div key={s.id} style={{ ...S.card, borderColor: isMf ? `${C.blue}33` : up ? `${C.green}35` : `${C.red}35` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
                   <div>
-                    <div style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{s.name}</div>
-                    <div style={{ color: C.muted, fontSize: 11 }}>{s.sector} · {s.qty} shares · Avg ₹{fmt(s.buy)}</div>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>₹{fmt(s.cur)}</div>
-                      <div style={{ color: up ? C.green : C.red, fontSize: 12, fontWeight: 700 }}>{up ? "+" : ""}₹{fmt(pnl, 0)} ({pnlPct >= 0 ? "+" : ""}{pnlPct}%)</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{s.name}</span>
+                      {isMf && <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 4, background: `${C.blue}22`, color: C.blue }}>MF</span>}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => onRemoveStock(s.id)}
-                      aria-label={`Remove ${s.name}`}
-                      style={{ padding: 6, borderRadius: 6, background: `${C.red}18`, border: `1px solid ${C.red}44`, color: C.red, cursor: "pointer" }}
-                    >
-                      <Trash2 size={14} />
+                    <div style={{ color: C.muted, fontSize: 11 }}>
+                      {isMf ? `${s.qty} units · Avg NAV ₹${fmt(s.buy)}` : `${s.sector || "Stock"} · ${s.qty} shares · Avg ₹${fmt(s.buy)}`}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                    {!isMf && (
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>₹{fmt(s.cur)}</div>
+                        <div style={{ color: up ? C.green : C.red, fontSize: 11, fontWeight: 700 }}>{up ? "+" : ""}₹{fmt(pnl, 0)} ({pnlPct >= 0 ? "+" : ""}{pnlPct}%)</div>
+                      </div>
+                    )}
+                    <button type="button" onClick={() => startEdit(s)} style={{ padding: 6, borderRadius: 6, background: `${C.blue}18`, border: "none", cursor: "pointer", color: C.blue, fontSize: 10, fontWeight: 700 }}>Edit</button>
+                    <button type="button" onClick={() => onRemoveStock(s.id)} aria-label={`Remove ${s.name}`} style={{ padding: 6, borderRadius: 6, background: `${C.red}18`, border: "none", cursor: "pointer" }}>
+                      <Trash2 size={14} color={C.red} />
                     </button>
                   </div>
                 </div>
               </div>
             );
           })}
-        </>
-      )}
-
-      {portfolioSubTab === "suggestions" && (
-        <>
-          {portfolioStocks.length === 0 ? (
-            <div style={{ ...S.card, textAlign: "center", color: C.muted }}>Add stocks to your portfolio to see chart + news based suggestions.</div>
-          ) : (
-            <p style={{ color: C.muted, fontSize: 11, margin: "0 0 10px", lineHeight: 1.4 }}>
-              Based on live chart indicators and recent news for each holding — not your profit/loss.
-            </p>
-          )}
-          {portfolioStocks.map((s) => {
-            const sym = s.name.toUpperCase();
-            const q = watchQuotes?.[sym];
-            const sug = getPortfolioSuggestion({
-              stock: s,
-              analysis: portfolioAnalyses?.[sym],
-              newsItems: portfolioNewsBySymbol?.[sym],
-              quote: q,
-              settings: sett,
-            });
-            const clr = sug.action === "BUY" ? C.green : sug.action === "SELL" ? C.red : C.yellow;
-            const dayPct = q?.changePercent ?? 0;
-            const hasLevels = sug.target && sug.action !== "HOLD" && sug.action !== "WAIT";
-            return (
-              <div key={s.id} style={{ ...S.card, borderColor: `${clr}44` }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
-                  <div>
-                    <div style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{s.name}</div>
-                    <div style={{ color: C.muted, fontSize: 11 }}>
-                      ₹{fmt(q?.current ?? s.cur)} · today <span style={{ color: dayPct >= 0 ? C.green : C.red }}>{dayPct >= 0 ? "+" : ""}{dayPct}%</span>
-                    </div>
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    <span style={{ background: clr, color: sug.action === "HOLD" || sug.action === "WAIT" ? C.text : "#000", fontSize: 10, fontWeight: 800, padding: "3px 10px", borderRadius: 4 }}>
-                      {sug.label}
-                    </span>
-                    {sug.confidence > 0 && <div style={{ color: clr, fontSize: 11, fontWeight: 800, marginTop: 3 }}>{sug.confidence}%</div>}
-                  </div>
-                </div>
-                <p style={{ color: C.text, fontSize: 12, lineHeight: 1.5, margin: "0 0 8px" }}>{sug.reason}</p>
-                {hasLevels && (
-                  <TradeLevelsRow entry={sug.entry} target={sug.target} stopLoss={sug.stopLoss} rr={sug.rr} action={sug.action} decimals={2} C={C} />
-                )}
-                {sug.factors?.length > 0 && (
-                  <div style={{ borderTop: `1px solid ${C.dim}`, paddingTop: 6 }}>
-                    {sug.factors.slice(0, 4).map((f, i) => <SignalFactorRow key={i} factor={f} C={C} />)}
-                  </div>
-                )}
-                <p style={{ color: C.muted, fontSize: 10, margin: "8px 0 0" }}>
-                  {sug.newsCount > 0 ? `${sug.newsCount} recent headline${sug.newsCount === 1 ? "" : "s"} factored in` : "No recent news found"}
-                </p>
-              </div>
-            );
-          })}
-        </>
-      )}
-
-      {portfolioSubTab === "news" && (
-        <>
-          {portfolioStocks.length === 0 ? (
-            <div style={{ ...S.card, textAlign: "center", color: C.muted }}>Add holdings to see news about your stocks here.</div>
-          ) : portfolioStockNews.length === 0 ? (
-            <div style={{ ...S.card, textAlign: "center", color: C.muted }}>
-              No stock-specific headlines right now. News refreshes every couple of minutes — check the News tab for broad market coverage.
-            </div>
-          ) : (
-            portfolioStockNews.map((n) => <NewsCard key={n.id} n={n} onClick={onNewsSelect} C={C} />)
-          )}
         </>
       )}
     </div>
@@ -1333,9 +1180,10 @@ export default function App() {
   const [hydrated, setHydrated] = useState(false);
   const [instrument, setInstrument] = useState("NIFTY");
   const [chartsDropOpen, setChartsDropOpen] = useState(false);
-  const [portfolioSubTab, setPortfolioSubTab] = useState("holdings");
+  const [portfolioSubTab, setPortfolioSubTab] = useState("suggestions");
   const [settingsSubTab, setSettingsSubTab] = useState("general");
   const [niftySignalLog, setNiftySignalLog] = useState([]);
+  const [serverLogConfigured, setServerLogConfigured] = useState(false);
   const [tab, setTab] = useState("dashboard");
   const [tf, setTf] = useState("5m");
   const [refresh, setRefresh] = useState(5);
@@ -1361,12 +1209,7 @@ export default function App() {
   const [newsFilter, setNewsFilter] = useState("All");
 
   const [portfolioAnalyses, setPortfolioAnalyses] = useState({});
-
-  const [watchlists, setWatchlists] = useState(DEFAULT_WATCHLISTS);
-  const [activeWatchlist, setActiveWatchlist] = useState("My Watchlist");
-  const [watchInput, setWatchInput] = useState("");
-  const [watchPrices, setWatchPrices] = useState({});
-  const [watchQuotes, setWatchQuotes] = useState({});
+  const [stockQuotes, setStockQuotes] = useState({});
 
   const [sett, setSett] = useState({
     riskLimit: 10000, profitPct: 1.5, slPct: 0.8,
@@ -1388,12 +1231,14 @@ export default function App() {
   const [eaState, setEaState] = useState({});
   const chatEnd = useRef(null);
   const csvRef = useRef(null);
-  const [newStock, setNewStock] = useState({ name: "", qty: "", buy: "" });
+  const [newStock, setNewStock] = useState({ name: "", qty: "", buy: "", type: "stock" });
   const portfolioRef = useRef(portfolio);
   const pricesRef = useRef(prices);
   const prevNiftyLogRef = useRef(null);
+  const serverLogConfiguredRef = useRef(false);
   portfolioRef.current = portfolio;
   pricesRef.current = prices;
+  serverLogConfiguredRef.current = serverLogConfigured;
   const stockNamesKey = portfolio.map((p) => p.name).sort().join(",");
 
   // Hydrate from localStorage
@@ -1403,8 +1248,7 @@ export default function App() {
       if (data.theme) setTheme(data.theme);
       if (data.portfolio?.length) setPortfolio(data.portfolio);
       if (data.trades) setTrades(data.trades);
-      if (data.watchlists) setWatchlists(data.watchlists);
-      if (data.activeWatchlist) setActiveWatchlist(data.activeWatchlist);
+      if (data.portfolioSubTab === "suggestions" || data.portfolioSubTab === "holdings") setPortfolioSubTab(data.portfolioSubTab);
       if (data.sett) setSett(data.sett);
       if (data.refresh) setRefresh(data.refresh);
       if (data.alerts) setAlerts(data.alerts);
@@ -1418,11 +1262,35 @@ export default function App() {
     setHydrated(true);
   }, []);
 
+  const syncNiftyLogFromServer = useCallback(async () => {
+    try {
+      const res = await fetch("/api/nifty-log", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setServerLogConfigured(Boolean(data.configured));
+      if (!data.logs?.length) return;
+      setNiftySignalLog((local) => {
+        const merged = mergeNiftyLogLists(data.logs, local);
+        prevNiftyLogRef.current = merged[0] ?? null;
+        return merged;
+      });
+    } catch {
+      /* offline or server not configured */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    syncNiftyLogFromServer();
+    const id = setInterval(syncNiftyLogFromServer, 60_000);
+    return () => clearInterval(id);
+  }, [hydrated, syncNiftyLogFromServer]);
+
   // Persist on change
   useEffect(() => {
     if (!hydrated) return;
-    savePersisted({ theme, portfolio, trades, watchlists, activeWatchlist, sett, refresh, alerts, activeScalp, chatModel, niftySignalLog });
-  }, [hydrated, theme, portfolio, trades, watchlists, activeWatchlist, sett, refresh, alerts, activeScalp, chatModel, niftySignalLog]);
+    savePersisted({ theme, portfolio, trades, portfolioSubTab, sett, refresh, alerts, activeScalp, chatModel, niftySignalLog });
+  }, [hydrated, theme, portfolio, trades, portfolioSubTab, sett, refresh, alerts, activeScalp, chatModel, niftySignalLog]);
 
   // Market status ticker
   useEffect(() => {
@@ -1518,7 +1386,11 @@ export default function App() {
 
   // Daily candles + indicators for each portfolio holding (for chart/indicator suggestions)
   const portfolioSymbolsKey = useMemo(
-    () => portfolio.filter((s) => !MACRO_SYMBOLS.has(s.name.toUpperCase())).map((s) => s.name.toUpperCase()).sort().join(","),
+    () => portfolio
+      .filter((s) => s.type !== "mf" && !MACRO_SYMBOLS.has(s.name.toUpperCase()))
+      .map((s) => s.name.toUpperCase())
+      .sort()
+      .join(","),
     [portfolio]
   );
 
@@ -1536,19 +1408,15 @@ export default function App() {
     return () => { cancelled = true; };
   }, [portfolioSymbolsKey]);
 
-  // Portfolio + watchlist only — for Home stock suggestions
-  const homeStockSymbols = useMemo(() => {
-    const port = portfolio
-      .filter((s) => !MACRO_SYMBOLS.has(s.name.toUpperCase()))
-      .map((s) => s.name.toUpperCase());
-    const watch = [...new Set(Object.values(watchlists).flat())]
-      .map((s) => s.toUpperCase())
-      .filter((s) => !MACRO_SYMBOLS.has(s));
-    return [...new Set([...port, ...watch])];
-  }, [portfolio, watchlists]);
+  const portfolioStockSymbols = useMemo(
+    () => portfolio
+      .filter((s) => s.type !== "mf" && !MACRO_SYMBOLS.has(s.name.toUpperCase()))
+      .map((s) => s.name.toUpperCase()),
+    [portfolio]
+  );
 
   useEffect(() => {
-    const syms = homeStockSymbols;
+    const syms = portfolioStockSymbols;
     if (!syms.length) return;
     let cancelled = false;
     (async () => {
@@ -1557,26 +1425,11 @@ export default function App() {
         return [s, q];
       }));
       if (!cancelled) {
-        setWatchQuotes(Object.fromEntries(entries.filter(([, q]) => q)));
-        setWatchPrices(Object.fromEntries(entries.map(([s, q]) => [s, q?.current ?? null])));
+        setStockQuotes(Object.fromEntries(entries.filter(([, q]) => q)));
       }
     })();
     return () => { cancelled = true; };
-  }, [homeStockSymbols.join(","), refresh]);
-
-  useEffect(() => {
-    const syms = watchlists[activeWatchlist] || [];
-    if (!syms.length || syms.every((s) => watchPrices[s] != null)) return;
-    let cancelled = false;
-    (async () => {
-      const entries = await Promise.all(syms.map(async (s) => {
-        const q = await fetchStockQuote(s);
-        return [s, q?.current ?? null];
-      }));
-      if (!cancelled) setWatchPrices((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
-    })();
-    return () => { cancelled = true; };
-  }, [watchlists, activeWatchlist, refresh]);
+  }, [portfolioStockSymbols.join(","), refresh]);
 
   // News
   useEffect(() => {
@@ -1694,16 +1547,19 @@ export default function App() {
       marketStatus,
     });
 
-    const decision = decideSignalLog(prevNiftyLogRef.current, entry);
-    if (decision === "skip") return;
-    if (decision === "update") {
-      const merged = mergeSignalLogEntry(prevNiftyLogRef.current, entry);
-      prevNiftyLogRef.current = merged;
-      setNiftySignalLog((prev) => (prev.length ? [merged, ...prev.slice(1)] : [merged]));
-    } else {
-      prevNiftyLogRef.current = entry;
-      setNiftySignalLog((prev) => [entry, ...prev].slice(0, NIFTY_LOG_MAX_ENTRIES));
-    }
+    setNiftySignalLog((prev) => {
+      const { logs, changed } = applyNiftyLogUpdate(prev, entry);
+      if (!changed) return prev;
+      prevNiftyLogRef.current = logs[0];
+      if (serverLogConfiguredRef.current) {
+        fetch("/api/nifty-log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ entry }),
+        }).catch(() => {});
+      }
+      return logs;
+    });
   }, [hydrated, finalCalls.NIFTY, prices.NIFTY, analyses.NIFTY, signalsByInstrument.NIFTY, marketStatus]);
 
   const niftyMove = useMemo(() => explainAssetMove(prices.NIFTY, news, "NIFTY"), [prices.NIFTY, news]);
@@ -1755,18 +1611,19 @@ export default function App() {
   const portVal = portfolio.reduce((s, p) => s + p.cur * p.qty, 0);
   const portCost = portfolio.reduce((s, p) => s + p.buy * p.qty, 0);
 
-  const upsertPortfolioStock = useCallback((name, qty, buy, sector = "Other") => {
-    const sym = String(name).toUpperCase().replace(/\.NS$/, "");
+  const upsertPortfolioStock = useCallback((name, qty, buy, sector = "Other", type = "stock") => {
+    const sym = type === "mf" ? String(name).trim() : String(name).toUpperCase().replace(/\.NS$/, "");
     const q = +qty || 1;
     const price = +buy || 0;
+    const sec = type === "mf" ? "Mutual Fund" : sector;
     setPortfolio((p) => {
-      const existing = p.find((s) => s.name.toUpperCase() === sym);
+      const existing = p.find((s) => s.name.toUpperCase() === sym.toUpperCase() && s.type === type);
       if (existing) {
-        return p.map((s) => s.name.toUpperCase() === sym
-          ? { ...s, qty: q, buy: price || s.buy, cur: price || s.cur, sector: sector || s.sector }
-          : s);
+        return p.map((s) => (s.id === existing.id
+          ? { ...s, name: sym, qty: q, buy: price || s.buy, cur: type === "mf" ? price || s.cur : price || s.cur, sector: sec, type }
+          : s));
       }
-      return [...p, { id: Date.now(), name: sym, qty: q, buy: price, cur: price, sector }];
+      return [...p, { id: Date.now(), name: sym, qty: q, buy: price, cur: price, sector: sec, type }];
     });
   }, []);
 
@@ -1797,13 +1654,9 @@ export default function App() {
       if (action === "removeStock") {
         removePortfolioStock(value.name || value.symbol || value);
       }
-      if (action === "addToWatchlist") {
-        const sym = (value.symbol || value).toUpperCase();
-        setWatchlists((w) => ({ ...w, [activeWatchlist]: [...new Set([...(w[activeWatchlist] || []), sym])] }));
-      }
-      if (action === "switchTab") setTab(value);
+      if (action === "switchTab") setTab(value === "watchlist" ? "portfolio" : value);
     } catch (_) {}
-  }, [activeWatchlist, upsertPortfolioStock, removePortfolioStock]);
+  }, [upsertPortfolioStock, removePortfolioStock]);
 
   const askEA = useCallback(async (eaKey, payload) => {
     setEaState((s) => ({ ...s, [eaKey]: { loading: true, text: "", error: null } }));
@@ -1844,8 +1697,8 @@ When the user asks to add, update, or remove portfolio holdings, emit a command 
 <CMD>{"action":"removeStock","value":{"name":"TCS"}}</CMD>
 
 Other commands via <CMD>{"action":"...","value":"..."}</CMD>:
-changeInstrument, changeTimeframe, changeRefreshRate, toggleIndicator, setRiskLimit, setTheme, addToWatchlist, switchTab
-Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
+changeInstrument, changeTimeframe, changeRefreshRate, toggleIndicator, setRiskLimit, setTheme, switchTab
+Tabs: dashboard|charts|portfolio|news|settings`;
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1879,11 +1732,29 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
     e.target.value = "";
   };
 
-  const addPortfolioStock = useCallback(() => {
+  const addPortfolioStock = useCallback((editingId) => {
     const name = newStock.name.trim();
     if (!name) return;
-    upsertPortfolioStock(name, newStock.qty || 1, newStock.buy || 0);
-    setNewStock({ name: "", qty: "", buy: "" });
+    const type = newStock.type === "mf" ? "mf" : "stock";
+    const sym = type === "mf" ? name : name.toUpperCase().replace(/\.NS$/, "");
+    const qty = +newStock.qty || 1;
+    const buy = +newStock.buy || 0;
+    if (editingId) {
+      setPortfolio((p) => p.map((s) => (s.id === editingId
+        ? {
+          ...s,
+          name: sym,
+          qty,
+          buy: buy || s.buy,
+          cur: type === "mf" ? buy || s.cur : s.cur,
+          type,
+          sector: type === "mf" ? "Mutual Fund" : s.sector,
+        }
+        : s)));
+    } else {
+      upsertPortfolioStock(sym, qty, buy, "Other", type);
+    }
+    setNewStock({ name: "", qty: "", buy: "", type: "stock" });
   }, [newStock, upsertPortfolioStock]);
 
   // Kept for Trades tab when re-enabled
@@ -1899,31 +1770,19 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
     setNewT({ ins: instrument, type: "BUY", entry: "", date: new Date().toISOString().slice(0, 10) });
   };
 
-  const addToWatchlist = useCallback((symbol) => {
-    const sym = (symbol || watchInput).trim().toUpperCase();
-    if (!sym) return;
-    setWatchlists((w) => ({ ...w, [activeWatchlist]: [...new Set([...(w[activeWatchlist] || []), sym])] }));
-    setWatchInput("");
-  }, [watchInput, activeWatchlist]);
-
-  const removeFromWatchlist = (sym) => {
-    setWatchlists((w) => ({ ...w, [activeWatchlist]: (w[activeWatchlist] || []).filter((s) => s !== sym) }));
-  };
-
   const requestNotifPerm = () => {
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
       Notification.requestPermission();
     }
   };
 
-  const portfolioStocks = portfolio.filter((s) => !MACRO_SYMBOLS.has(s.name.toUpperCase()));
+  const portfolioStocks = portfolio.filter((s) => s.type !== "mf" && !MACRO_SYMBOLS.has(s.name.toUpperCase()));
 
   const matchesSymbol = (n, sym) => {
     const S = sym.toUpperCase();
     return (n.stocks || []).some((st) => st.toUpperCase() === S)
       || (n.headline || "").toUpperCase().includes(S);
   };
-  const portfolioStockNews = news.filter((n) => portfolioStocks.some((s) => matchesSymbol(n, s.name)));
   const portfolioNewsBySymbol = useMemo(() => {
     const map = {};
     for (const s of portfolioStocks) {
@@ -1932,65 +1791,155 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
     return map;
   }, [portfolioSymbolsKey, news]);
 
+  const portfolioSuggestionItems = useMemo(() => {
+    const items = [];
+    const niftyPct = prices.NIFTY?.prev
+      ? +(((prices.NIFTY.cur - prices.NIFTY.prev) / prices.NIFTY.prev) * 100).toFixed(2)
+      : 0;
+    const niftySwing = buildUnifiedSuggestion({
+      analysis: analyses.NIFTY,
+      price: prices.NIFTY?.cur,
+      chgPct: niftyPct,
+      indexSignals: signalsByInstrument.NIFTY,
+      settings: sett,
+      mode: "swing",
+      instrument: "NIFTY",
+    });
+    pushSuggestionItem(items, {
+      id: "nifty-swing",
+      name: "NIFTY",
+      mode: "Swing",
+      call: niftySwing,
+      priceData: prices.NIFTY,
+      newsHeadline: latestNewsHeadline("NIFTY", news),
+    });
+    pushSuggestionItem(items, {
+      id: "gold-swing",
+      name: "GOLD",
+      mode: "Swing",
+      call: finalCalls.GOLD_swing,
+      priceData: prices.GOLD,
+      newsHeadline: latestNewsHeadline("GOLD", news),
+    });
+    pushSuggestionItem(items, {
+      id: "gold-long",
+      name: "GOLD",
+      mode: "Long term",
+      call: finalCalls.GOLD_long,
+      priceData: prices.GOLD,
+      newsHeadline: latestNewsHeadline("GOLD", news),
+    });
+    pushSuggestionItem(items, {
+      id: "silver-swing",
+      name: "SILVER",
+      mode: "Swing",
+      call: finalCalls.SILVER_swing,
+      priceData: prices.SILVER,
+      newsHeadline: latestNewsHeadline("SILVER", news),
+    });
+    pushSuggestionItem(items, {
+      id: "silver-long",
+      name: "SILVER",
+      mode: "Long term",
+      call: finalCalls.SILVER_long,
+      priceData: prices.SILVER,
+      newsHeadline: latestNewsHeadline("SILVER", news),
+    });
+    for (const stock of portfolioStocks) {
+      const sym = stock.name.toUpperCase();
+      const quote = stockQuotes[sym];
+      const priceData = quote
+        ? { cur: quote.current ?? stock.cur, prev: quote.previousClose ?? stock.buy }
+        : { cur: stock.cur, prev: stock.buy };
+      const suggestion = getPortfolioSuggestion({
+        stock,
+        analysis: portfolioAnalyses[sym],
+        newsItems: portfolioNewsBySymbol[sym] || [],
+        quote,
+        settings: sett,
+      });
+      pushSuggestionItem(items, {
+        id: `hold-${sym}`,
+        name: sym,
+        mode: "Swing",
+        call: suggestion,
+        priceData,
+        newsHeadline: latestNewsHeadline(sym, news),
+      });
+    }
+    return sortPortfolioSuggestions(items);
+  }, [
+    finalCalls,
+    prices,
+    analyses,
+    signalsByInstrument,
+    sett,
+    news,
+    portfolioStocks,
+    portfolioAnalyses,
+    portfolioNewsBySymbol,
+    stockQuotes,
+  ]);
+
   const filteredNews = newsFilter === "All" ? news : news.filter((n) => n.cat === newsFilter);
 
   // ── TAB COMPONENTS ──
   const Dashboard = () => (
     <div style={{ padding: "0 14px 90px" }}>
-      <HomeSuggestionBlock
-        name="NIFTY"
-        badge="Scalping"
-        finalCall={finalCalls.NIFTY}
-        priceData={prices.NIFTY}
-        eaKey="NIFTY"
-        eaState={eaState}
-        onAskEA={askEA}
-        C={C}
-        S={S}
-      />
-
-      <HomeCommodityBlock
-        name="GOLD"
-        priceData={prices.GOLD}
-        swingCall={finalCalls.GOLD_swing}
-        longCall={finalCalls.GOLD_long}
-        eaState={eaState}
-        onAskEA={askEA}
-        C={C}
-        S={S}
-      />
-
-      <HomeCommodityBlock
-        name="SILVER"
-        priceData={prices.SILVER}
-        swingCall={finalCalls.SILVER_swing}
-        longCall={finalCalls.SILVER_long}
-        eaState={eaState}
-        onAskEA={askEA}
-        C={C}
-        S={S}
-      />
-
-      <div style={{ marginTop: 4, marginBottom: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
-          <Star size={14} color={C.yellow} />
-          <span style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>Portfolio & Watchlist</span>
+      <div style={{ ...S.card, marginBottom: 12, borderColor: `${C.green}44` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+          <Lightbulb size={16} color={C.green} />
+          <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>Swing & long-term ideas</span>
         </div>
-        {homeStockSymbols.length === 0 ? (
-          <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 16 }}>Add holdings or watchlist stocks to see suggestions here.</div>
-        ) : (
-          homeStockSymbols.map((sym) => (
-            <WatchlistSuggestionRow
-              key={sym}
-              symbol={sym}
-              quote={watchQuotes[sym]}
-              suggestion={getWatchlistMarketSuggestion(sym, watchQuotes[sym])}
-              C={C}
-              S={S}
-            />
-          ))
-        )}
+        <p style={{ color: C.muted, fontSize: 12, lineHeight: 1.5, margin: "0 0 12px" }}>
+          Buy/sell suggestions for NIFTY, gold, silver, and your holdings live under Portfolio → Suggestions (sorted by strongest BUY, then SELL).
+        </p>
+        <button
+          type="button"
+          onClick={() => { setTab("portfolio"); setPortfolioSubTab("suggestions"); }}
+          style={{ width: "100%", padding: 11, borderRadius: 10, background: C.green, color: "#000", fontWeight: 800, border: "none", cursor: "pointer", fontSize: 13 }}
+        >
+          Open Portfolio Suggestions
+        </button>
       </div>
+
+      <div style={{ ...S.card, marginBottom: 12 }}>
+        <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Markets at a glance</div>
+        {INSTRUMENT_KEYS.map((name) => {
+          const p = prices[name];
+          if (!p) return null;
+          const ch = +(p.cur - p.prev).toFixed(2);
+          const pc = +((ch / p.prev) * 100).toFixed(2);
+          return (
+            <div key={name} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: `1px solid ${C.dim}` }}>
+              <div>
+                <span style={{ color: C.text, fontWeight: 700 }}>{name}</span>
+                {INSTRUMENT_SUB[name] && <div style={{ color: C.muted, fontSize: 9 }}>{INSTRUMENT_SUB[name]}</div>}
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ color: C.text }}>₹{fmt(p.cur, name === "NIFTY" ? 0 : 2)}</div>
+                <div style={{ color: ch >= 0 ? C.green : C.red, fontSize: 11 }}>{ch >= 0 ? "+" : ""}{fmt(ch, name === "NIFTY" ? 0 : 2)} ({pc >= 0 ? "+" : ""}{pc}%)</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {niftySignalLog.length > 0 && (
+        <>
+          <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, marginBottom: 8, textTransform: "uppercase" }}>Recent NIFTY scalp signals</div>
+          {niftySignalLog.slice(0, 3).map((entry) => (
+            <NiftySignalLogRow key={entry.id} entry={entry} C={C} S={S} />
+          ))}
+          <button
+            type="button"
+            onClick={() => { setTab("settings"); setSettingsSubTab("nifty-log"); }}
+            style={{ width: "100%", marginTop: 4, padding: 10, borderRadius: 8, background: C.dim, border: `1px solid ${C.border}`, color: C.muted, fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+          >
+            View full NIFTY log
+          </button>
+        </>
+      )}
     </div>
   );
 
@@ -2170,13 +2119,24 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
               </div>
               <p style={{ color: C.muted, fontSize: 11, lineHeight: 1.5, margin: "0 0 10px" }}>
                 Logs only high-conviction BUY/SELL signals ({NIFTY_LOG_MIN_CONFIDENCE}%+). Rapid swings in the same direction update one entry (peak kept); a new row is added only after a real time gap, when direction flips, or confidence climbs higher.
+                {serverLogConfigured
+                  ? " Background logging is active — signals are recorded on the server every 2 minutes during market hours, even when this app is closed."
+                  : " Add Upstash Redis + CRON_SECRET on Vercel to log in the background when the app is closed."}
               </p>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ color: C.muted, fontSize: 11 }}>{niftySignalLog.length} entries saved</span>
+                <span style={{ color: C.muted, fontSize: 11 }}>
+                  {niftySignalLog.length} entries saved
+                  {serverLogConfigured && <span style={{ color: C.green }}> · server sync on</span>}
+                </span>
                 {niftySignalLog.length > 0 && (
                   <button
                     type="button"
-                    onClick={() => { if (window.confirm("Clear all NIFTY signal log entries?")) { setNiftySignalLog([]); prevNiftyLogRef.current = null; } }}
+                    onClick={() => {
+                      if (!window.confirm("Clear all NIFTY signal log entries?")) return;
+                      setNiftySignalLog([]);
+                      prevNiftyLogRef.current = null;
+                      fetch("/api/nifty-log", { method: "DELETE" }).catch(() => {});
+                    }}
                     style={{ padding: "6px 10px", borderRadius: 6, background: `${C.red}18`, border: `1px solid ${C.red}44`, color: C.red, fontSize: 11, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
                   >
                     <Trash2 size={12} /> Clear log
@@ -2187,7 +2147,8 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
 
             {niftySignalLog.length === 0 ? (
               <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 24 }}>
-                No NIFTY BUY/SELL signals logged yet. Keep the app open during market hours — entries appear when confidence reaches {NIFTY_LOG_MIN_CONFIDENCE}%+.
+                No NIFTY BUY/SELL signals logged yet. Entries appear when confidence reaches {NIFTY_LOG_MIN_CONFIDENCE}%+ during market hours
+                {serverLogConfigured ? " — logging continues on the server when the app is closed." : " — keep the app open, or enable server logging on Vercel."}
               </div>
             ) : (
               niftySignalLog.map((entry) => <NiftySignalLogRow key={entry.id} entry={entry} C={C} S={S} />)
@@ -2204,7 +2165,6 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
     { id: "portfolio", Icon: Briefcase, label: "Portfolio" },
     // { id: "trades", Icon: Activity, label: "Trades" }, // hidden — re-enable when trade logging needed
     { id: "news", Icon: Newspaper, label: "News" },
-    { id: "watchlist", Icon: Star, label: "Watch" },
     { id: "settings", Icon: Settings, label: "Settings" },
   ];
 
@@ -2241,23 +2201,11 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
       </div>
 
       <div key={tab} style={{ paddingTop: 8, animation: "saIn .28s ease" }}>
-        {tab === "watchlist" ? (
-          <WatchlistTab
-            watchlists={watchlists}
-            activeWatchlist={activeWatchlist}
-            onActiveWatchlistChange={setActiveWatchlist}
-            watchInput={watchInput}
-            onWatchInputChange={setWatchInput}
-            watchPrices={watchPrices}
-            onAdd={addToWatchlist}
-            onRemove={removeFromWatchlist}
-            C={C}
-            S={S}
-          />
-        ) : tab === "portfolio" ? (
+        {tab === "portfolio" ? (
           <PortfolioTab
             portfolioSubTab={portfolioSubTab}
             onPortfolioSubTabChange={setPortfolioSubTab}
+            suggestionItems={portfolioSuggestionItems}
             portfolio={portfolio}
             newStock={newStock}
             onNewStockChange={setNewStock}
@@ -2266,16 +2214,8 @@ Tabs: dashboard|charts|portfolio|news|watchlist|settings`;
             portVal={portVal}
             portPnL={portPnL}
             portCost={portCost}
-            portfolioStocks={portfolioStocks}
-            portfolioAnalyses={portfolioAnalyses}
-            portfolioNewsBySymbol={portfolioNewsBySymbol}
-            watchQuotes={watchQuotes}
-            portfolioStockNews={portfolioStockNews}
-            cp={cp}
-            sett={sett}
             csvRef={csvRef}
             onCsvChange={handleCSV}
-            onNewsSelect={setSelNews}
             C={C}
             S={S}
           />

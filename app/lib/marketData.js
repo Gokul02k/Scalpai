@@ -93,6 +93,7 @@ export async function fetchStockQuote(symbol) {
 export async function fetchPortfolioPrices(portfolio) {
   const updated = await Promise.all(
     portfolio.map(async (s) => {
+      if (s.type === 'mf') return s;
       const q = await fetchStockQuote(s.name);
       if (q?.current) return { ...s, cur: q.current };
       return s;
