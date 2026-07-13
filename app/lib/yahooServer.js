@@ -74,7 +74,7 @@ async function fetchQuoteSummary(yahooSymbol) {
 }
 
 export async function fetchYahooFundamentals(symbol) {
-  const yahooSymbol = symbol.includes('.') ? symbol : `${symbol}.NS`;
+  const yahooSymbol = symbol.includes('.') || symbol.startsWith('^') ? symbol : `${symbol}.NS`;
 
   // 1) Chart meta + 1y daily closes → guaranteed key stats + moving averages.
   let keyStats = {};

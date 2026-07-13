@@ -495,43 +495,103 @@ export function getStockSuggestion(stock, settings = { profitPct: 1.5, slPct: 0.
   };
 }
 
+function clampNum(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
+}
+
 /**
- * Portfolio holding suggestion driven by live chart indicators + recent news,
- * NOT by the user's profit/loss. Returns a final call with factors and levels.
+ * Score a stock's fundamentals into a directional bias (+ bullish / - bearish)
+ * with human-readable factors. Returns { score, factors, available }.
+ * Heuristics use absolute thresholds suitable for Indian large/mid caps.
  */
-export function getPortfolioSuggestion({ stock, analysis, newsItems = [], quote, settings = {} }) {
+export function scoreFundamentals(f, price) {
+  if (!f) return { score: 0, factors: [], available: false };
+  let score = 0;
+  const factors = [];
+  const add = (type, name, reason, weight = 2) => factors.push({ type, name, reason, weight });
+
+  if (f.trailingPE != null && f.trailingPE > 0) {
+    if (f.trailingPE < 15) { score += 1; add('BUY', 'Valuation (P/E)', `Low P/E ${f.trailingPE.toFixed(1)} — attractively valued`); }
+    else if (f.trailingPE > 45) { score -= 1; add('SELL', 'Valuation (P/E)', `High P/E ${f.trailingPE.toFixed(1)} — richly valued`); }
+  }
+  if (f.priceToBook != null && f.priceToBook > 0) {
+    if (f.priceToBook < 1.5) { score += 0.5; add('BUY', 'Price/Book', `P/B ${f.priceToBook.toFixed(2)} — cheap vs book value`); }
+    else if (f.priceToBook > 10) { score -= 0.5; add('SELL', 'Price/Book', `P/B ${f.priceToBook.toFixed(1)} — expensive vs book value`); }
+  }
+  if (f.returnOnEquity != null) {
+    if (f.returnOnEquity >= 15) { score += 1; add('BUY', 'Quality (ROE)', `Strong ROE ${f.returnOnEquity}%`); }
+    else if (f.returnOnEquity < 5) { score -= 0.5; add('SELL', 'Quality (ROE)', `Weak ROE ${f.returnOnEquity}%`); }
+  }
+  if (f.profitMargins != null) {
+    if (f.profitMargins < 0) { score -= 1; add('SELL', 'Profitability', `Loss-making — net margin ${f.profitMargins}%`); }
+    else if (f.profitMargins >= 15) { score += 0.5; add('BUY', 'Profitability', `Healthy net margin ${f.profitMargins}%`); }
+  }
+  if (f.debtToEquity != null) {
+    if (f.debtToEquity > 150) { score -= 1; add('SELL', 'Leverage', `High debt/equity ${f.debtToEquity.toFixed(0)}`); }
+    else if (f.debtToEquity < 40) { score += 0.5; add('BUY', 'Leverage', `Low debt/equity ${f.debtToEquity.toFixed(0)}`); }
+  }
+  if (f.earningsGrowth != null) {
+    if (f.earningsGrowth >= 10) { score += 0.5; add('BUY', 'Earnings growth', `Earnings +${f.earningsGrowth}%`); }
+    else if (f.earningsGrowth <= -10) { score -= 0.5; add('SELL', 'Earnings growth', `Earnings ${f.earningsGrowth}%`); }
+  }
+  if (f.revenueGrowth != null) {
+    if (f.revenueGrowth >= 10) { score += 0.5; add('BUY', 'Revenue growth', `Revenue +${f.revenueGrowth}%`); }
+    else if (f.revenueGrowth <= -5) { score -= 0.5; add('SELL', 'Revenue growth', `Revenue ${f.revenueGrowth}%`); }
+  }
+  if (f.pegRatio != null && f.pegRatio > 0 && f.pegRatio < 1) {
+    score += 0.5; add('BUY', 'PEG', `PEG ${f.pegRatio.toFixed(2)} — growth at a fair price`);
+  }
+  if (f.targetMeanPrice != null && price) {
+    const up = ((f.targetMeanPrice - price) / price) * 100;
+    if (up >= 12) { score += 1; add('BUY', 'Analyst target', `~${up.toFixed(0)}% upside to avg target`); }
+    else if (up <= -8) { score -= 1; add('SELL', 'Analyst target', `Trading above avg analyst target`); }
+  }
+  if (f.recommendationKey) {
+    if (/buy/.test(f.recommendationKey)) { score += 0.5; add('BUY', 'Analyst rating', `Consensus: ${f.recommendationKey.replace(/_/g, ' ')}`); }
+    else if (/sell|underperform/.test(f.recommendationKey)) { score -= 0.5; add('SELL', 'Analyst rating', `Consensus: ${f.recommendationKey.replace(/_/g, ' ')}`); }
+  }
+
+  return { score: +score.toFixed(2), factors, available: true };
+}
+
+/**
+ * Portfolio holding suggestion blending live chart technicals, company
+ * fundamentals (P/E, P/B, ROE, debt, growth, analyst view) and recent news —
+ * NOT the user's profit/loss. Fundamentals are weighted more for long-term.
+ */
+export function getPortfolioSuggestion({ stock, analysis, newsItems = [], quote, fundamentals = null, settings = {}, mode = 'swing' }) {
   const price = quote?.current ?? stock?.cur ?? null;
   if (!analysis || !price) {
     return {
       action: 'WAIT',
       label: 'Analyzing…',
       confidence: 0,
-      reason: 'Loading chart indicators and recent news for this holding…',
-      detail: 'Suggestion is based on chart + news, not your P&L.',
+      reason: 'Loading chart indicators, fundamentals and recent news…',
+      detail: 'Suggestion blends technicals, fundamentals and news — not your P&L.',
       factors: [],
       newsCount: 0,
+      fundamentalScore: null,
     };
   }
 
   const dayPct = quote?.changePercent
     ?? (stock?.prev ? +(((price - stock.prev) / stock.prev) * 100).toFixed(2) : 0);
 
-  // Technical base from indicators (swing horizon) — independent of buy price.
-  const base = buildUnifiedSuggestion({ analysis, price, chgPct: dayPct, settings, mode: 'swing' });
+  // 1) Technical base from indicators.
+  const base = buildUnifiedSuggestion({ analysis, price, chgPct: dayPct, settings, mode });
+  let action = base.action;
+  let confidence = base.confidence;
+  const techFactors = [...base.factors];
 
-  // Recent news sentiment for this stock.
+  // 2) Recent news sentiment.
   const recent = (newsItems || []).slice(0, 8);
   const pos = recent.filter((n) => n.sentiment === 'positive').length;
   const neg = recent.filter((n) => n.sentiment === 'negative').length;
   const newsScore = pos - neg;
-
-  let action = base.action;
-  let confidence = base.confidence;
-  const factors = [...base.factors];
-
+  const newsFactors = [];
   if (recent.length) {
     const type = newsScore > 0 ? 'BUY' : newsScore < 0 ? 'SELL' : 'HOLD';
-    factors.unshift({
+    newsFactors.push({
       type,
       name: 'Recent news',
       reason: `${pos} positive / ${neg} negative recent headline${recent.length === 1 ? '' : 's'}`,
@@ -543,23 +603,46 @@ export function getPortfolioSuggestion({ stock, analysis, newsItems = [], quote,
     else if (newsScore >= 2 && action === 'SELL') { action = 'HOLD'; confidence = Math.max(40, confidence - 12); }
   }
 
+  // 3) Fundamentals — weighted more heavily for the long-term horizon.
+  const fund = scoreFundamentals(fundamentals, price);
+  if (fund.available) {
+    const fw = mode === 'longterm' ? 7 : 3;
+    confidence += Math.round(clampNum(fund.score, -3, 3) * fw);
+    if (mode === 'longterm') {
+      if (fund.score >= 2 && action === 'HOLD') action = 'BUY';
+      if (fund.score >= 1.5 && action === 'SELL') action = 'HOLD';
+      if (fund.score <= -2 && action === 'BUY') action = 'HOLD';
+      if (fund.score <= -3) action = 'SELL';
+    } else if (fund.score <= -2 && action === 'BUY') {
+      action = 'HOLD';
+    }
+    confidence = Math.round(clampNum(confidence, 30, 95));
+  }
+
   const labelMap = { BUY: 'Add / Buy', SELL: 'Trim / Sell', HOLD: 'Hold', WAIT: 'Analyzing…' };
+  const rankedFund = [...fund.factors].sort((a, b) => (b.type === action ? 1 : 0) - (a.type === action ? 1 : 0));
+  const factors = [...rankedFund.slice(0, 3), ...newsFactors, ...techFactors].slice(0, 7);
+
   const techReason = base.factors.slice(0, 2).map((f) => f.name).join(' · ') || 'Technical setup';
-  const newsReason = recent.length ? `News ${pos}↑/${neg}↓` : 'No recent news';
+  const fundReason = fund.available
+    ? (fund.score >= 1 ? 'fundamentals supportive' : fund.score <= -1 ? 'fundamentals weak' : 'fundamentals neutral')
+    : 'fundamentals N/A';
+  const newsReason = recent.length ? `news ${pos}↑/${neg}↓` : 'no recent news';
 
   return {
     action,
     label: labelMap[action] || action,
     confidence,
-    reason: `${techReason} · ${newsReason}`,
-    detail: 'Based on live chart indicators and recent news — not your buy price.',
-    factors: factors.slice(0, 6),
+    reason: `${techReason} · ${fundReason} · ${newsReason}`,
+    detail: 'Blends chart technicals, fundamentals (P/E, ROE, debt, growth…) and recent news.',
+    factors,
     entry: base.entry,
     target: base.target,
     stopLoss: base.stopLoss,
     rr: base.rr,
     dayPct,
     newsCount: recent.length,
+    fundamentalScore: fund.available ? fund.score : null,
   };
 }
 

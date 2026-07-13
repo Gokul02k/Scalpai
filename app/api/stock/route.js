@@ -7,7 +7,7 @@ export async function GET(request) {
     return Response.json({ error: 'symbol required' }, { status: 400 });
   }
 
-  const yahooSymbol = symbol.includes('.') ? symbol : `${symbol}.NS`;
+  const yahooSymbol = symbol.includes('.') || symbol.startsWith('^') ? symbol : `${symbol}.NS`;
 
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=5d`;

@@ -70,7 +70,7 @@ export async function fetchCandles(instrument, tf = '5m') {
 }
 
 export async function fetchStockCandles(symbol, tf = '1d') {
-  const ySym = symbol.includes('.') ? symbol : `${symbol}.NS`;
+  const ySym = symbol.includes('.') || symbol.startsWith('^') ? symbol : `${symbol}.NS`;
   try {
     const res = await fetch(`/api/candles?symbol=${encodeURIComponent(ySym)}&tf=${tf}`, { cache: 'no-store' });
     const data = await res.json();

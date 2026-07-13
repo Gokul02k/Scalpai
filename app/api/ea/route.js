@@ -1,4 +1,5 @@
-import { groqGenerate, GROQ_SETUP_HINT } from '../../lib/groq';
+import { geminiGenerate, hasGemini, GEMINI_SETUP_HINT } from '../../lib/gemini';
+import { groqGenerate, getGroqKey } from '../../lib/groq';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,27 +28,41 @@ export async function POST(request) {
       return Response.json({ error: 'Missing instrument or signal context' }, { status: 400 });
     }
 
-    const system = `You are EA (Expert Advisor) for Indian market trading on ScalpAI.
-The user already has a rule-based BUY signal from live charts. Your job:
-1. Review support/resistance context, liquidity, and indicators in the snapshot.
-2. Say clearly: AGREE with the BUY, or CAUTION (wait / smaller size / skip).
-3. Give 2-4 short bullet points: main reason, main risk, and what to watch before entering on Groww.
+    const system = `You are EA (Expert Advisor) for Indian market investing on ScalpAI.
+The user already has a rule-based signal from live charts, fundamentals and news. Your job:
+1. Review the signal, support/resistance, indicators, and (for holdings) valuation/quality context in the snapshot.
+2. Say clearly: AGREE with the call, or CAUTION (wait / smaller size / skip).
+3. Give 2-4 short bullet points: main reason, main risk, and what to watch before acting on Groww/Zerodha.
 Keep under 120 words. Plain English. This is suggestion-only, not financial advice.`;
 
-    const text = await groqGenerate({
-      system,
-      userPrompt: buildPrompt(ctx),
-      maxTokens: 450,
-    });
+    const userPrompt = buildPrompt(ctx);
+    const errors = [];
 
-    return Response.json({ text });
+    if (hasGemini()) {
+      try {
+        const text = await geminiGenerate({ system, userPrompt, maxTokens: 450 });
+        return Response.json({ text, provider: 'gemini' });
+      } catch (error) {
+        console.error('Gemini EA error:', error);
+        errors.push(`Gemini: ${error.message}`);
+      }
+    }
+
+    if (getGroqKey()) {
+      try {
+        const text = await groqGenerate({ system, userPrompt, maxTokens: 450 });
+        return Response.json({ text, provider: 'groq' });
+      } catch (error) {
+        console.error('Groq EA error:', error);
+        errors.push(`Groq: ${error.message}`);
+      }
+    }
+
+    const message = errors.length ? errors.join(' | ') : `AI is not configured. ${GEMINI_SETUP_HINT}`;
+    const status = /not set|configured/i.test(message) ? 503 : 502;
+    return Response.json({ error: message }, { status });
   } catch (error) {
     console.error('EA API error:', error);
-    const message = error.message || 'Failed to reach Groq';
-    const status = /not set/i.test(message) ? 503 : 502;
-    return Response.json(
-      { error: message.includes(GROQ_SETUP_HINT) ? message : `${message} ${GROQ_SETUP_HINT}` },
-      { status }
-    );
+    return Response.json({ error: error.message || 'Failed to reach AI provider' }, { status: 502 });
   }
 }
