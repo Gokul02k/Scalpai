@@ -209,6 +209,7 @@ export async function fetchYahooCandles(symbol = '^NSEI', tf = '5m') {
 
     return timestamps.map((t, i) => ({
       t: new Date(t * 1000).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+      ts: t * 1000,
       o: +(q.open?.[i] ?? 0).toFixed(2),
       h: +(q.high?.[i] ?? 0).toFixed(2),
       l: +(q.low?.[i] ?? 0).toFixed(2),

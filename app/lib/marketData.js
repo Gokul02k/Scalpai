@@ -134,6 +134,7 @@ export function genFallbackCandles(base, count = 65, vol = 0.0014) {
     const l = Math.min(o, c) - Math.random() * 0.35 * vol * p;
     out.push({
       t: new Date(now - i * 5 * 60000).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+      ts: now - i * 5 * 60000,
       o: +o.toFixed(2), h: +h.toFixed(2), l: +l.toFixed(2), c: +c.toFixed(2),
       vol: Math.floor(80000 + Math.random() * 400000),
     });

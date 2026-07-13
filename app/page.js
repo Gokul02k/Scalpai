@@ -20,8 +20,11 @@ import { loadPersisted, savePersisted } from "./lib/storage";
 import {
   buildNiftySignalLogEntry,
   applyNiftyLogUpdate,
+  applyOutcomeToLogs,
+  summarizeOutcomes,
   mergeNiftyLogLists,
   isLoggableNiftySignal,
+  OUTCOME_LABELS,
   NIFTY_LOG_MAX_ENTRIES,
   NIFTY_LOG_MIN_CONFIDENCE,
 } from "./lib/signalLog";
@@ -429,10 +432,28 @@ function SignalFactorRow({ factor, C }) {
   );
 }
 
+function OutcomeBadge({ outcome, C }) {
+  const status = outcome?.status || "pending";
+  const map = {
+    target: { c: C.green, txt: `✓ ${OUTCOME_LABELS.target}` },
+    stop: { c: C.red, txt: `✗ ${OUTCOME_LABELS.stop}` },
+    expired: { c: C.muted, txt: OUTCOME_LABELS.expired },
+    pending: { c: C.yellow, txt: `● ${OUTCOME_LABELS.pending}` },
+  };
+  const o = map[status] || map.pending;
+  return (
+    <span style={{ background: `${o.c}22`, color: o.c, fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 4, border: `1px solid ${o.c}55` }}>
+      {o.txt}
+    </span>
+  );
+}
+
 function NiftySignalLogRow({ entry, C, S }) {
   const [open, setOpen] = useState(false);
   const clr = entry.action === "BUY" ? C.green : C.red;
   const strengthClr = entry.strengthTier >= 3 ? C.green : entry.strengthTier >= 2 ? C.yellow : C.muted;
+  const outcome = entry.outcome;
+  const resultClr = outcome ? (outcome.resultPct > 0 ? C.green : outcome.resultPct < 0 ? C.red : C.muted) : C.muted;
 
   return (
     <div style={{ ...S.card, borderColor: `${clr}44`, marginBottom: 10 }}>
@@ -440,6 +461,7 @@ function NiftySignalLogRow({ entry, C, S }) {
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
             <span style={{ background: clr, color: "#000", fontSize: 10, fontWeight: 800, padding: "3px 10px", borderRadius: 4 }}>{entry.action}</span>
+            <OutcomeBadge outcome={outcome} C={C} />
             <span style={{ background: `${strengthClr}22`, color: strengthClr, fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 4 }}>{entry.strength}</span>
             <span style={{ color: C.text, fontSize: 12, fontWeight: 800 }}>{entry.confidence}%</span>
             {entry.peakConfidence > entry.confidence && (
@@ -458,6 +480,21 @@ function NiftySignalLogRow({ entry, C, S }) {
           </div>
         </div>
       </div>
+
+      {outcome && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, background: `${resultClr}12`, borderRadius: 8, padding: "7px 10px", marginBottom: 8 }}>
+          <span style={{ color: C.muted, fontSize: 11 }}>
+            {outcome.status === "target" && "Target hit"}
+            {outcome.status === "stop" && "Stopped out"}
+            {outcome.status === "expired" && "Expired (no target/stop)"}
+            {outcome.status === "pending" && "Tracking live"}
+          </span>
+          <span style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <span style={{ color: C.muted, fontSize: 10 }}>peak {outcome.mfePct >= 0 ? "+" : ""}{outcome.mfePct}% / dd {outcome.maePct}%</span>
+            <span style={{ color: resultClr, fontSize: 13, fontWeight: 800 }}>{outcome.resultPct >= 0 ? "+" : ""}{outcome.resultPct}%</span>
+          </span>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, marginBottom: 8 }}>
         {[
@@ -1628,9 +1665,11 @@ export default function App() {
   const portfolioRef = useRef(portfolio);
   const pricesRef = useRef(prices);
   const prevNiftyLogRef = useRef(null);
+  const niftyLogRef = useRef([]);
   const serverLogConfiguredRef = useRef(false);
   portfolioRef.current = portfolio;
   pricesRef.current = prices;
+  niftyLogRef.current = niftySignalLog;
   serverLogConfiguredRef.current = serverLogConfigured;
   const stockNamesKey = portfolio.map((p) => p.name).sort().join(",");
 
@@ -1981,6 +2020,36 @@ export default function App() {
       return logs;
     });
   }, [hydrated, finalCalls.NIFTY, prices.NIFTY, analyses.NIFTY, signalsByInstrument.NIFTY, marketStatus]);
+
+  // Grade logged predictions against the real NIFTY price path (passed/failed/expired).
+  // Runs on load and every 60s; works retroactively so signals resolved while the
+  // app was closed still get graded when it reopens.
+  useEffect(() => {
+    if (!hydrated) return;
+    let cancelled = false;
+    const evaluate = async () => {
+      const openCount = niftyLogRef.current.filter((e) => !e.outcome || e.outcome.status === "pending").length;
+      if (!openCount) return;
+      const candles = await fetchCandles("NIFTY", "5m");
+      if (cancelled || !candles?.length) return;
+      setNiftySignalLog((prev) => {
+        const { logs, changed } = applyOutcomeToLogs(prev, candles, Date.now());
+        if (!changed) return prev;
+        prevNiftyLogRef.current = logs[0];
+        if (serverLogConfiguredRef.current) {
+          fetch("/api/nifty-log", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ logs }),
+          }).catch(() => {});
+        }
+        return logs;
+      });
+    };
+    evaluate();
+    const id = setInterval(evaluate, 60_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [hydrated]);
 
   const niftyMove = useMemo(() => explainAssetMove(prices.NIFTY, news, "NIFTY"), [prices.NIFTY, news]);
   const goldMove = useMemo(() => explainAssetMove(prices.GOLD, news, "GOLD"), [prices.GOLD, news]);
@@ -2403,6 +2472,36 @@ Tabs: dashboard|portfolio|news|settings`;
                 )}
               </div>
             </div>
+
+            {niftySignalLog.length > 0 && (() => {
+              const stats = summarizeOutcomes(niftySignalLog);
+              return (
+                <div style={{ ...S.card, marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+                    <span style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>Prediction accuracy</span>
+                    <span style={{ color: stats.winRate == null ? C.muted : stats.winRate >= 50 ? C.green : C.red, fontWeight: 900, fontSize: 18 }}>
+                      {stats.winRate == null ? "—" : `${stats.winRate}%`}
+                    </span>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+                    {[
+                      { l: "Passed", v: stats.passed, c: C.green },
+                      { l: "Failed", v: stats.failed, c: C.red },
+                      { l: "Active", v: stats.active, c: C.yellow },
+                      { l: "Expired", v: stats.expired, c: C.muted },
+                    ].map((s) => (
+                      <div key={s.l} style={{ background: C.dim, borderRadius: 8, padding: "8px 4px", textAlign: "center" }}>
+                        <div style={{ color: s.c, fontWeight: 900, fontSize: 17 }}>{s.v}</div>
+                        <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase" }}>{s.l}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <p style={{ color: C.muted, fontSize: 10, margin: "10px 0 0", lineHeight: 1.4 }}>
+                    Win rate = passed ÷ (passed + failed). A signal "passes" when NIFTY hits its target before its stop-loss.
+                  </p>
+                </div>
+              );
+            })()}
 
             {niftySignalLog.length === 0 ? (
               <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 24 }}>

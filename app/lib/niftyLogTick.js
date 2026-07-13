@@ -6,6 +6,7 @@ import {
   buildNiftySignalLogEntry,
   isLoggableNiftySignal,
   applyNiftyLogUpdate,
+  applyOutcomeToLogs,
 } from './signalLog';
 import { getMarketStatus } from './marketHours';
 import { getNiftyLogs, saveNiftyLogs, isNiftyLogStorageConfigured } from './niftyLogStore';
@@ -36,6 +37,13 @@ export async function runNiftyLogTick() {
   if (!candles.length) {
     return { skipped: true, reason: 'no_candles' };
   }
+
+  // Grade previously logged predictions against the latest price path.
+  try {
+    const { logs: current } = await getNiftyLogs();
+    const graded = applyOutcomeToLogs(current, candles, Date.now());
+    if (graded.changed) await saveNiftyLogs(graded.logs);
+  } catch { /* grading is best-effort */ }
 
   const analysis = analyzeFromCandles(candles);
   const price = quote.data.current;
