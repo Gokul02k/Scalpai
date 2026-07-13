@@ -6,12 +6,12 @@ import {
   ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import {
-  Settings, ChevronDown,   MessageCircle, X, Send, Newspaper, BarChart2,
+  Settings, ChevronDown, ChevronRight, MessageCircle, X, Send, Newspaper, BarChart2,
   Briefcase, Home, ArrowUp, ArrowDown, Zap, RefreshCw,
   Upload, Plus, Trash2, Bell, Sun, Moon, Lightbulb, ScrollText,
 } from "lucide-react";
 import {
-  fetchAllMarketData, fetchCandles, fetchStockCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, genFallbackCandles,
+  fetchAllMarketData, fetchCandles, fetchStockCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, fetchStockFundamentals, genFallbackCandles,
 } from "./lib/marketData";
 import { analyzeFromCandles } from "./lib/indicators";
 import { generateIndexSignals, generatePortfolioSignals, parsePortfolioCSV } from "./lib/signals";
@@ -871,11 +871,11 @@ function HomeCommodityBlock({ name, priceData, swingCall, longCall, eaState, onA
   );
 }
 
-function PortfolioSuggestionCard({ item, C, S }) {
+function PortfolioSuggestionCard({ item, onSelect, C, S }) {
   const clr = item.action === "BUY" ? C.green : item.action === "SELL" ? C.red : C.yellow;
   const decimals = item.name === "NIFTY" ? 0 : 2;
   return (
-    <div style={{ ...S.card, borderColor: `${clr}44`, padding: 12, marginBottom: 10 }}>
+    <div onClick={onSelect} style={{ ...S.card, borderColor: `${clr}44`, padding: 12, marginBottom: 10, cursor: onSelect ? "pointer" : "default" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
@@ -901,6 +901,386 @@ function PortfolioSuggestionCard({ item, C, S }) {
           📰 {item.newsHeadline}
         </p>
       )}
+      {onSelect && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 2, color: C.blue, fontSize: 11, fontWeight: 700, marginTop: 8 }}>
+          Chart, technicals & fundamentals <ChevronRight size={13} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function horizonVerdict(shortCall, longCall) {
+  const s = shortCall?.action;
+  const l = longCall?.action;
+  if (!s && !l) return null;
+  if (s === "BUY" && l === "BUY") return { text: "Attractive on both horizons — good for a short-term trade and a long-term hold.", tone: "green" };
+  if (l === "BUY" && s !== "BUY") return { text: "Better as a long-term investment; short-term isn't a clean entry yet.", tone: "blue" };
+  if (s === "BUY" && l !== "BUY") return { text: "Short-term trade setup, but long-term conviction is weak — keep a tight stop.", tone: "yellow" };
+  if (l === "SELL" && s === "SELL") return { text: "Weak on both horizons — consider trimming or staying out.", tone: "red" };
+  if (l === "SELL") return { text: "Long-term trend is weak — be cautious about holding for the long run.", tone: "red" };
+  if (s === "SELL") return { text: "Short-term momentum is negative — a dip/pullback may be underway.", tone: "yellow" };
+  return { text: "Mixed signals — no strong edge right now. Wait for confirmation.", tone: "muted" };
+}
+
+function HorizonCallCard({ title, subtitle, call, priceData, eaKey, symbol, mode, eaState, onAskEA, C }) {
+  if (!call) {
+    return (
+      <div style={{ background: C.dim, borderRadius: 12, padding: 14, marginBottom: 10, textAlign: "center", color: C.muted, fontSize: 12 }}>
+        {title} — loading…
+      </div>
+    );
+  }
+  const clr = call.action === "BUY" ? C.green : call.action === "SELL" ? C.red : C.yellow;
+  return (
+    <div style={{ background: C.card, border: `1px solid ${clr}44`, borderRadius: 12, padding: 14, marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10 }}>
+        <div>
+          <div style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>{title}</div>
+          <div style={{ color: C.muted, fontSize: 10 }}>{subtitle}</div>
+        </div>
+      </div>
+      <FinalCallHeader label={call.label} confidence={call.confidence} action={call.action} C={C} />
+      <TradeLevelsRow entry={call.entry} target={call.target} stopLoss={call.stopLoss} rr={call.rr} action={call.action} decimals={2} C={C} />
+      {call.factors?.length > 0 && (
+        <div style={{ borderTop: `1px solid ${C.dim}`, paddingTop: 8, marginBottom: 4 }}>
+          {call.factors.slice(0, 4).map((f, i) => <SignalFactorRow key={i} factor={f} C={C} />)}
+        </div>
+      )}
+      <AskEASection
+        eaKey={eaKey}
+        instrument={symbol}
+        mode={mode}
+        finalCall={call}
+        priceData={priceData}
+        eaState={eaState}
+        onAskEA={onAskEA}
+        C={C}
+      />
+    </div>
+  );
+}
+
+function StockDetailModal({ stock, news = [], sett, eaState, onAskEA, onClose, C, S }) {
+  const sym = (stock?.name || "").toUpperCase();
+  const [quote, setQuote] = useState(null);
+  const [fund, setFund] = useState(null);
+  const [candlesByTf, setCandlesByTf] = useState({});
+  const [chartTf, setChartTf] = useState("1d");
+  const [loading, setLoading] = useState(true);
+  const [showSummary, setShowSummary] = useState(false);
+
+  const HORIZONS = [
+    { tf: "5m", label: "Intraday" },
+    { tf: "1h", label: "Swing" },
+    { tf: "1d", label: "Long term" },
+  ];
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setQuote(null);
+    setFund(null);
+    setCandlesByTf({});
+    (async () => {
+      const [q, f, h1, d1] = await Promise.all([
+        fetchStockQuote(sym),
+        fetchStockFundamentals(sym),
+        fetchStockCandles(sym, "1h"),
+        fetchStockCandles(sym, "1d"),
+      ]);
+      if (cancelled) return;
+      setQuote(q);
+      setFund(f);
+      setCandlesByTf({ "1h": h1 || [], "1d": d1 || [] });
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [sym]);
+
+  useEffect(() => {
+    if (candlesByTf[chartTf]) return;
+    let cancelled = false;
+    (async () => {
+      const c = await fetchStockCandles(sym, chartTf);
+      if (!cancelled) setCandlesByTf((p) => ({ ...p, [chartTf]: c || [] }));
+    })();
+    return () => { cancelled = true; };
+  }, [chartTf, sym, candlesByTf]);
+
+  const analysisByTf = useMemo(() => {
+    const out = {};
+    for (const [k, c] of Object.entries(candlesByTf)) out[k] = c?.length ? analyzeFromCandles(c) : null;
+    return out;
+  }, [candlesByTf]);
+
+  const price = quote?.current ?? stock?.cur ?? fund?.keyStats?.price ?? 0;
+  const prev = quote?.previousClose ?? fund?.keyStats?.previousClose ?? stock?.buy ?? price;
+  const chg = +(price - prev).toFixed(2);
+  const chgPct = prev ? +((chg / prev) * 100).toFixed(2) : 0;
+  const isUp = chg >= 0;
+  const priceData = { cur: price, prev };
+
+  const stockNews = useMemo(
+    () => news.filter((n) =>
+      (n.stocks || []).some((s) => String(s).toUpperCase() === sym)
+      || (n.headline || "").toUpperCase().includes(sym)
+    ).slice(0, 6),
+    [news, sym]
+  );
+
+  const shortCall = useMemo(() => {
+    const a = analysisByTf["1h"];
+    if (!a || !price) return null;
+    return getPortfolioSuggestion({ stock, analysis: a, newsItems: stockNews, quote: { current: price, changePercent: chgPct }, settings: sett });
+  }, [analysisByTf, price, chgPct, stock, stockNews, sett]);
+
+  const longCall = useMemo(() => {
+    const a = analysisByTf["1d"];
+    if (!a || !price) return null;
+    return buildUnifiedSuggestion({ analysis: a, price, chgPct, settings: sett, mode: "longterm", instrument: sym });
+  }, [analysisByTf, price, chgPct, sett, sym]);
+
+  const verdict = horizonVerdict(shortCall, longCall);
+  const verdictClr = verdict ? { green: C.green, blue: C.blue, yellow: C.yellow, red: C.red, muted: C.muted }[verdict.tone] : C.muted;
+
+  const chartCandles = candlesByTf[chartTf] || [];
+  const candleSlice = chartCandles.slice(-45);
+  const chartAnalysis = analysisByTf[chartTf];
+  const overlays = chartAnalysis ? {
+    ema20: chartAnalysis.ema20,
+    ema50: chartAnalysis.ema50,
+    support: chartAnalysis.sr?.support,
+    resistance: chartAnalysis.sr?.resistance,
+    price,
+    priceUp: isUp,
+  } : null;
+
+  const ks = fund?.keyStats || {};
+  const f = fund?.fundamentals || null;
+  const range52 = (ks.fiftyTwoWeekHigh && ks.fiftyTwoWeekLow && ks.fiftyTwoWeekHigh > ks.fiftyTwoWeekLow)
+    ? Math.min(100, Math.max(0, ((price - ks.fiftyTwoWeekLow) / (ks.fiftyTwoWeekHigh - ks.fiftyTwoWeekLow)) * 100))
+    : null;
+
+  const compact = (n) => {
+    if (n == null || isNaN(n)) return "—";
+    const a = Math.abs(n);
+    if (a >= 1e7) return (n / 1e7).toFixed(2) + " Cr";
+    if (a >= 1e5) return (n / 1e5).toFixed(2) + " L";
+    if (a >= 1e3) return (n / 1e3).toFixed(1) + "K";
+    return String(Math.round(n));
+  };
+  const crore = (n) => (n == null ? "—" : `₹${(n / 1e7).toLocaleString("en-IN", { maximumFractionDigits: 0 })} Cr`);
+
+  const statBox = (label, value, valueColor) => (
+    <div style={{ background: C.dim, borderRadius: 8, padding: "8px 10px" }}>
+      <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase", marginBottom: 2 }}>{label}</div>
+      <div style={{ color: valueColor || C.text, fontSize: 12, fontWeight: 700 }}>{value}</div>
+    </div>
+  );
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 210, display: "flex", flexDirection: "column", background: C.bg, backgroundImage: C.bgGrad }}>
+      <div style={{ ...glassStyle(C), borderTop: "none", borderLeft: "none", borderRight: "none", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, position: "sticky", top: 0, zIndex: 5 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ color: C.text, fontWeight: 900, fontSize: 18 }}>{sym}</span>
+            <span style={{ color: isUp ? C.green : C.red, fontSize: 12, fontWeight: 700 }}>
+              {isUp ? <ArrowUp size={11} style={{ verticalAlign: "middle" }} /> : <ArrowDown size={11} style={{ verticalAlign: "middle" }} />}
+              {" "}₹{fmt(price)} ({chgPct >= 0 ? "+" : ""}{chgPct}%)
+            </span>
+          </div>
+          <div style={{ color: C.muted, fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {fund?.name || "Loading…"}{fund?.exchange ? ` · ${fund.exchange}` : ""}
+          </div>
+        </div>
+        <button onClick={onClose} aria-label="Close" style={{ background: C.dim, border: "none", color: C.muted, cursor: "pointer", borderRadius: 8, padding: 6, flexShrink: 0 }}><X size={18} /></button>
+      </div>
+
+      <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px max(24px, env(safe-area-inset-bottom))" }}>
+        {stock?.qty ? (
+          <div style={{ ...S.card, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div>
+              <div style={{ color: C.muted, fontSize: 10, textTransform: "uppercase" }}>Your position</div>
+              <div style={{ color: C.text, fontSize: 13, fontWeight: 700 }}>{stock.qty} shares · avg ₹{fmt(stock.buy)}</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ color: C.muted, fontSize: 10, textTransform: "uppercase" }}>P&L</div>
+              <div style={{ color: (price - stock.buy) >= 0 ? C.green : C.red, fontSize: 13, fontWeight: 800 }}>
+                {(price - stock.buy) >= 0 ? "+" : ""}₹{fmt((price - stock.buy) * stock.qty, 0)} ({stock.buy ? (((price - stock.buy) / stock.buy) * 100).toFixed(2) : 0}%)
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {verdict && (
+          <div style={{ ...S.card, borderColor: `${verdictClr}55`, marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+              <Lightbulb size={14} color={verdictClr} />
+              <span style={{ color: C.text, fontWeight: 800, fontSize: 13 }}>Verdict</span>
+            </div>
+            <p style={{ color: C.text, fontSize: 13, lineHeight: 1.5, margin: 0 }}>{verdict.text}</p>
+            <p style={{ color: C.muted, fontSize: 10, margin: "8px 0 0" }}>Based on live chart indicators + recent news. Not investment advice.</p>
+          </div>
+        )}
+
+        <HorizonCallCard
+          title="Short-term (swing)"
+          subtitle="Hourly chart · days to a few weeks"
+          call={shortCall}
+          priceData={priceData}
+          eaKey={`DETAIL_${sym}_short`}
+          symbol={sym}
+          mode="swing"
+          eaState={eaState}
+          onAskEA={onAskEA}
+          C={C}
+        />
+
+        <HorizonCallCard
+          title="Long-term (positional)"
+          subtitle="Daily chart · weeks to months"
+          call={longCall}
+          priceData={priceData}
+          eaKey={`DETAIL_${sym}_long`}
+          symbol={sym}
+          mode="longterm"
+          eaState={eaState}
+          onAskEA={onAskEA}
+          C={C}
+        />
+
+        <div style={{ ...S.card }}>
+          <div style={{ display: "flex", gap: 4, marginBottom: 10, flexWrap: "wrap" }}>
+            {HORIZONS.map((h) => (
+              <button key={h.tf} type="button" onClick={() => setChartTf(h.tf)} style={{ padding: "6px 12px", borderRadius: 8, background: chartTf === h.tf ? C.green : C.dim, color: chartTf === h.tf ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 11, cursor: "pointer", fontWeight: 700 }}>
+                {h.label}
+              </button>
+            ))}
+          </div>
+          {candleSlice.length > 0 ? (
+            <>
+              <CandleChart candles={candleSlice} height={220} C={C} overlays={overlays} />
+              <ChartLegend overlays={overlays} decimals={2} C={C} />
+            </>
+          ) : (
+            <div style={{ height: 180, display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontSize: 12 }}>
+              {loading ? "Loading chart…" : "Chart data unavailable"}
+            </div>
+          )}
+        </div>
+
+        <div style={{ ...S.card }}>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Key stats</div>
+          {range52 != null && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.muted, marginBottom: 4 }}>
+                <span>52W low ₹{fmt(ks.fiftyTwoWeekLow)}</span>
+                <span>52W high ₹{fmt(ks.fiftyTwoWeekHigh)}</span>
+              </div>
+              <div style={{ position: "relative", height: 6, borderRadius: 3, background: C.dim }}>
+                <div style={{ position: "absolute", top: -3, left: `calc(${range52}% - 6px)`, width: 12, height: 12, borderRadius: "50%", background: C.blue, border: `2px solid ${C.bg}` }} />
+              </div>
+              <div style={{ textAlign: "center", color: C.muted, fontSize: 10, marginTop: 4 }}>Currently {range52.toFixed(0)}% of 52-week range</div>
+            </div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+            {statBox("Day range", ks.dayLow && ks.dayHigh ? `₹${fmt(ks.dayLow)}–${fmt(ks.dayHigh)}` : "—")}
+            {statBox("Volume", compact(ks.volume))}
+            {statBox("Prev close", ks.previousClose != null ? `₹${fmt(ks.previousClose)}` : "—")}
+            {statBox("50-day avg", ks.fiftyDayAverage != null ? `₹${fmt(ks.fiftyDayAverage)}` : "—", ks.fiftyDayAverage && price >= ks.fiftyDayAverage ? C.green : C.red)}
+            {statBox("200-day avg", ks.twoHundredDayAverage != null ? `₹${fmt(ks.twoHundredDayAverage)}` : "—", ks.twoHundredDayAverage && price >= ks.twoHundredDayAverage ? C.green : C.red)}
+            {statBox("Market cap", f?.marketCap ? crore(f.marketCap) : "—")}
+          </div>
+        </div>
+
+        <div style={{ ...S.card }}>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Fundamentals</div>
+          {f ? (
+            <>
+              {(f.sector || f.industry) && (
+                <div style={{ color: C.muted, fontSize: 11, marginBottom: 10 }}>
+                  {[f.sector, f.industry].filter(Boolean).join(" · ")}
+                </div>
+              )}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+                {statBox("P/E (TTM)", f.trailingPE != null ? f.trailingPE.toFixed(1) : "—")}
+                {statBox("Fwd P/E", f.forwardPE != null ? f.forwardPE.toFixed(1) : "—")}
+                {statBox("EPS (TTM)", f.trailingEps != null ? `₹${fmt(f.trailingEps)}` : "—")}
+                {statBox("P/B", f.priceToBook != null ? f.priceToBook.toFixed(2) : "—")}
+                {statBox("Div yield", f.dividendYield != null ? `${f.dividendYield}%` : "—")}
+                {statBox("Beta", f.beta != null ? f.beta.toFixed(2) : "—")}
+                {statBox("ROE", f.returnOnEquity != null ? `${f.returnOnEquity}%` : "—", f.returnOnEquity >= 15 ? C.green : undefined)}
+                {statBox("Profit margin", f.profitMargins != null ? `${f.profitMargins}%` : "—", f.profitMargins >= 0 ? C.green : C.red)}
+                {statBox("Rev growth", f.revenueGrowth != null ? `${f.revenueGrowth}%` : "—", f.revenueGrowth >= 0 ? C.green : C.red)}
+                {statBox("Debt/Equity", f.debtToEquity != null ? f.debtToEquity.toFixed(0) : "—")}
+                {statBox("PEG", f.pegRatio != null ? f.pegRatio.toFixed(2) : "—")}
+                {statBox("Analysts", f.numberOfAnalystOpinions != null ? String(f.numberOfAnalystOpinions) : "—")}
+              </div>
+
+              {(f.targetMeanPrice != null || f.recommendationKey) && (
+                <div style={{ marginTop: 12, padding: 10, borderRadius: 8, background: C.dim }}>
+                  {f.recommendationKey && (
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: f.targetMeanPrice != null ? 6 : 0 }}>
+                      <span style={{ color: C.muted, fontSize: 11 }}>Analyst rating</span>
+                      <span style={{ color: /buy/.test(f.recommendationKey) ? C.green : /sell|underperform/.test(f.recommendationKey) ? C.red : C.yellow, fontSize: 12, fontWeight: 800, textTransform: "uppercase" }}>
+                        {f.recommendationKey.replace(/_/g, " ")}
+                      </span>
+                    </div>
+                  )}
+                  {f.targetMeanPrice != null && (
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ color: C.muted, fontSize: 11 }}>Avg target</span>
+                      <span style={{ color: C.text, fontSize: 12, fontWeight: 700 }}>
+                        ₹{fmt(f.targetMeanPrice)}{price ? <span style={{ color: f.targetMeanPrice >= price ? C.green : C.red }}> ({f.targetMeanPrice >= price ? "+" : ""}{(((f.targetMeanPrice - price) / price) * 100).toFixed(1)}%)</span> : null}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {f.summary && (
+                <div style={{ marginTop: 12 }}>
+                  <p style={{ color: C.muted, fontSize: 12, lineHeight: 1.55, margin: 0, maxHeight: showSummary ? "none" : 62, overflow: "hidden" }}>{f.summary}</p>
+                  <button type="button" onClick={() => setShowSummary((v) => !v)} style={{ marginTop: 6, background: "none", border: "none", color: C.blue, fontSize: 11, fontWeight: 700, cursor: "pointer", padding: 0 }}>
+                    {showSummary ? "Show less" : "Read more"}
+                  </button>
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={{ color: C.muted, fontSize: 12, lineHeight: 1.5 }}>
+              {loading ? "Loading fundamentals…" : "Detailed fundamentals aren't available for this symbol right now. Key stats above and the technical view still apply."}
+            </div>
+          )}
+        </div>
+
+        <div style={{ ...S.card }}>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Technical indicators · {HORIZONS.find((h) => h.tf === chartTf)?.label}</div>
+          {chartAnalysis ? (
+            <ChartIndicatorPanels analysis={chartAnalysis} instCandles={chartCandles} sett={sett} C={C} S={S} />
+          ) : (
+            <div style={{ color: C.muted, fontSize: 12 }}>{loading ? "Loading indicators…" : "Indicators unavailable"}</div>
+          )}
+        </div>
+
+        <div style={{ ...S.card, marginBottom: 0 }}>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Latest news</div>
+          {stockNews.length ? (
+            stockNews.map((n) => (
+              <div key={n.id} style={{ padding: "8px 0", borderBottom: `1px solid ${C.dim}` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 2 }}>
+                  <span style={{ color: n.sentiment === "positive" ? C.green : n.sentiment === "negative" ? C.red : C.yellow, fontSize: 9, fontWeight: 700, textTransform: "uppercase" }}>{n.sentiment || "neutral"}</span>
+                  <span style={{ color: C.muted, fontSize: 10 }}>{n.time}</span>
+                </div>
+                <p style={{ color: C.text, fontSize: 12, lineHeight: 1.45, margin: 0 }}>{n.headline}</p>
+              </div>
+            ))
+          ) : (
+            <div style={{ color: C.muted, fontSize: 12 }}>No recent news for {sym}.</div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -909,6 +1289,7 @@ function PortfolioTab({
   portfolioSubTab,
   onPortfolioSubTabChange,
   suggestionItems,
+  onSelectStock,
   portfolio,
   newStock,
   onNewStockChange,
@@ -1000,7 +1381,16 @@ function PortfolioTab({
             </div>
           ) : (
             suggestionItems.map((item) => (
-              <PortfolioSuggestionCard key={item.id} item={item} C={C} S={S} />
+              <PortfolioSuggestionCard
+                key={item.id}
+                item={item}
+                onSelect={() => {
+                  const held = portfolio.find((p) => p.name.toUpperCase() === item.name.toUpperCase() && p.type !== "mf");
+                  onSelectStock(held || { name: item.name, type: "stock" });
+                }}
+                C={C}
+                S={S}
+              />
             ))
           )}
         </>
@@ -1119,14 +1509,19 @@ function PortfolioTab({
             return (
               <div key={s.id} style={{ ...S.card, borderColor: isMf ? `${C.blue}33` : up ? `${C.green}35` : `${C.red}35` }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                  <div>
+                  <div
+                    onClick={() => !isMf && onSelectStock(s)}
+                    style={{ minWidth: 0, cursor: isMf ? "default" : "pointer", flex: 1 }}
+                  >
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{s.name}</span>
                       {isMf && <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 4, background: `${C.blue}22`, color: C.blue }}>MF</span>}
+                      {!isMf && <ChevronRight size={14} color={C.muted} />}
                     </div>
                     <div style={{ color: C.muted, fontSize: 11 }}>
                       {isMf ? `${s.qty} units · Avg NAV ₹${fmt(s.buy)}` : `${s.sector || "Stock"} · ${s.qty} shares · Avg ₹${fmt(s.buy)}`}
                     </div>
+                    {!isMf && <div style={{ color: C.blue, fontSize: 10, fontWeight: 700, marginTop: 3 }}>Tap for chart, technicals & suggestion</div>}
                   </div>
                   <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
                     {!isMf && (
@@ -1220,6 +1615,7 @@ export default function App() {
   const [activeScalp, setActiveScalp] = useState(null);
   const [scalpElapsed, setScalpElapsed] = useState(0);
   const [marketStatus, setMarketStatus] = useState(() => getMarketStatus());
+  const [selectedStock, setSelectedStock] = useState(null);
 
   const [chatOpen, setChatOpen] = useState(false);
   const [msgs, setMsgs] = useState([
@@ -2129,6 +2525,7 @@ Tabs: dashboard|charts|portfolio|news|settings`;
             portfolioSubTab={portfolioSubTab}
             onPortfolioSubTabChange={setPortfolioSubTab}
             suggestionItems={portfolioSuggestionItems}
+            onSelectStock={setSelectedStock}
             portfolio={portfolio}
             newStock={newStock}
             onNewStockChange={setNewStock}
@@ -2177,6 +2574,20 @@ Tabs: dashboard|charts|portfolio|news|settings`;
           );
         })}
       </div>
+
+      {selectedStock && (
+        <StockDetailModal
+          key={selectedStock.id ?? selectedStock.name}
+          stock={selectedStock}
+          news={news}
+          sett={sett}
+          eaState={eaState}
+          onAskEA={askEA}
+          onClose={() => setSelectedStock(null)}
+          C={C}
+          S={S}
+        />
+      )}
 
       {selNews && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", zIndex: 200, display: "flex", alignItems: "flex-end" }} onClick={() => setSelNews(null)}>

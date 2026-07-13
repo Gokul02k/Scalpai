@@ -90,6 +90,16 @@ export async function fetchStockQuote(symbol) {
   }
 }
 
+export async function fetchStockFundamentals(symbol) {
+  try {
+    const res = await fetch(`/api/fundamentals?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchPortfolioPrices(portfolio) {
   const updated = await Promise.all(
     portfolio.map(async (s) => {
