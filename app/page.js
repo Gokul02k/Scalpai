@@ -27,6 +27,7 @@ import {
   OUTCOME_LABELS,
   NIFTY_LOG_MAX_ENTRIES,
   NIFTY_LOG_MIN_CONFIDENCE,
+  NIFTY_MIN_PASS_POINTS,
 } from "./lib/signalLog";
 import { getMarketStatus } from "./lib/marketHours";
 import { THEMES, cardStyle, glassStyle } from "./lib/themes";
@@ -1319,7 +1320,6 @@ export default function App() {
 
   const [hydrated, setHydrated] = useState(false);
   const [instrument, setInstrument] = useState("NIFTY");
-  const [settingsSubTab, setSettingsSubTab] = useState("general");
   const [niftySignalLog, setNiftySignalLog] = useState([]);
   const [serverLogConfigured, setServerLogConfigured] = useState(false);
   const [tab, setTab] = useState("dashboard");
@@ -2076,155 +2076,118 @@ Tabs: dashboard|portfolio|news|settings`;
     </div>
   );
 
-  const SettingsTab = () => {
-    const subTabs = [
-      { id: "general", label: "General" },
-      { id: "nifty-log", label: "NIFTY Log" },
-    ];
-
-    return (
-      <div style={{ padding: "0 14px 90px" }}>
-        <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-          {subTabs.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setSettingsSubTab(t.id)}
-              style={{
-                flex: 1,
-                padding: "9px 8px",
-                borderRadius: 8,
-                background: settingsSubTab === t.id ? C.green : C.card,
-                color: settingsSubTab === t.id ? "#000" : C.muted,
-                border: `1px solid ${C.border}`,
-                fontSize: 11,
-                fontWeight: 700,
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 5,
-              }}
-            >
-              {t.id === "nifty-log" ? <ScrollText size={13} /> : <Settings size={13} />}
-              {t.label}
-            </button>
-          ))}
+  const SettingsTab = () => (
+    <div style={{ padding: "0 14px 90px" }}>
+      <div style={{ ...S.card, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {theme === "dark" ? <Moon size={16} color={C.muted} /> : <Sun size={16} color={C.yellow} />}
+          <span style={{ color: C.text, fontWeight: 700 }}>Theme</span>
         </div>
+        <Toggle on={theme === "light"} onToggle={() => setTheme(theme === "dark" ? "light" : "dark")} C={C} />
+      </div>
 
-        {settingsSubTab === "general" && (
-          <>
-            <div style={{ ...S.card, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {theme === "dark" ? <Moon size={16} color={C.muted} /> : <Sun size={16} color={C.yellow} />}
-                <span style={{ color: C.text, fontWeight: 700 }}>Theme</span>
-              </div>
-              <Toggle on={theme === "light"} onToggle={() => setTheme(theme === "dark" ? "light" : "dark")} C={C} />
+      <div style={S.card}>
+        <div style={{ color: C.text, fontWeight: 700, marginBottom: 8 }}>Refresh · <span style={{ color: C.green }}>{refresh}s</span></div>
+        <input type="range" min={3} max={60} value={refresh} onChange={(e) => setRefresh(+e.target.value)} style={{ width: "100%", accentColor: C.green }} />
+      </div>
+
+      <div style={S.card}>
+        <div style={{ color: C.text, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><Bell size={14} /> Alerts</div>
+        {[{ k: "sound", l: "Sound" }, { k: "notification", l: "Notification" }].map(({ k, l }) => (
+          <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.dim}` }}>
+            <span style={{ color: C.text, fontSize: 13 }}>{l}</span>
+            <Toggle on={alerts[k]} onToggle={() => { if (k === "notification") requestNotifPerm(); setAlerts((p) => ({ ...p, [k]: !p[k] })); }} C={C} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  const NiftyLogTab = () => (
+    <div style={{ padding: "0 14px 90px" }}>
+      <div style={{ ...S.card, marginBottom: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+          <Zap size={16} color={C.yellow} />
+          <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>NIFTY signal log</span>
+        </div>
+        <p style={{ color: C.muted, fontSize: 11, lineHeight: 1.5, margin: "0 0 10px" }}>
+          Logs only high-conviction BUY/SELL signals ({NIFTY_LOG_MIN_CONFIDENCE}%+). Each prediction is graded against the real price path — it "passes" only after NIFTY moves at least {NIFTY_MIN_PASS_POINTS} points in its favour before hitting the stop-loss.
+          {serverLogConfigured
+            ? " Upstash sync is on — signals save to the server while you use the app."
+            : " Add Upstash Redis + CRON_SECRET on Vercel to log in the background when the app is closed."}
+        </p>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ color: C.muted, fontSize: 11 }}>
+            {niftySignalLog.length} entries saved
+            {serverLogConfigured && <span style={{ color: C.green }}> · server sync on</span>}
+          </span>
+          {niftySignalLog.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                if (!window.confirm("Clear all NIFTY signal log entries?")) return;
+                setNiftySignalLog([]);
+                prevNiftyLogRef.current = null;
+                fetch("/api/nifty-log", { method: "DELETE" }).catch(() => {});
+              }}
+              style={{ padding: "6px 10px", borderRadius: 6, background: `${C.red}18`, border: `1px solid ${C.red}44`, color: C.red, fontSize: 11, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
+            >
+              <Trash2 size={12} /> Clear log
+            </button>
+          )}
+        </div>
+      </div>
+
+      {niftySignalLog.length > 0 && (() => {
+        const stats = summarizeOutcomes(niftySignalLog);
+        return (
+          <div style={{ ...S.card, marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+              <span style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>Prediction accuracy</span>
+              <span style={{ color: stats.winRate == null ? C.muted : stats.winRate >= 50 ? C.green : C.red, fontWeight: 900, fontSize: 18 }}>
+                {stats.winRate == null ? "—" : `${stats.winRate}%`}
+              </span>
             </div>
-
-            <div style={S.card}>
-              <div style={{ color: C.text, fontWeight: 700, marginBottom: 8 }}>Refresh · <span style={{ color: C.green }}>{refresh}s</span></div>
-              <input type="range" min={3} max={60} value={refresh} onChange={(e) => setRefresh(+e.target.value)} style={{ width: "100%", accentColor: C.green }} />
-            </div>
-
-            <div style={S.card}>
-              <div style={{ color: C.text, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><Bell size={14} /> Alerts</div>
-              {[{ k: "sound", l: "Sound" }, { k: "notification", l: "Notification" }].map(({ k, l }) => (
-                <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.dim}` }}>
-                  <span style={{ color: C.text, fontSize: 13 }}>{l}</span>
-                  <Toggle on={alerts[k]} onToggle={() => { if (k === "notification") requestNotifPerm(); setAlerts((p) => ({ ...p, [k]: !p[k] })); }} C={C} />
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+              {[
+                { l: "Passed", v: stats.passed, c: C.green },
+                { l: "Failed", v: stats.failed, c: C.red },
+                { l: "Active", v: stats.active, c: C.yellow },
+                { l: "Expired", v: stats.expired, c: C.muted },
+              ].map((s) => (
+                <div key={s.l} style={{ background: C.dim, borderRadius: 8, padding: "8px 4px", textAlign: "center" }}>
+                  <div style={{ color: s.c, fontWeight: 900, fontSize: 17 }}>{s.v}</div>
+                  <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase" }}>{s.l}</div>
                 </div>
               ))}
             </div>
-          </>
-        )}
+            <p style={{ color: C.muted, fontSize: 10, margin: "10px 0 0", lineHeight: 1.4 }}>
+              Win rate = passed ÷ (passed + failed). A signal "passes" only after NIFTY moves ≥{NIFTY_MIN_PASS_POINTS} points in its favour before the stop-loss.
+            </p>
+          </div>
+        );
+      })()}
 
-        {settingsSubTab === "nifty-log" && (
-          <>
-            <div style={{ ...S.card, marginBottom: 12 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                <Zap size={16} color={C.yellow} />
-                <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>NIFTY signal log</span>
-              </div>
-              <p style={{ color: C.muted, fontSize: 11, lineHeight: 1.5, margin: "0 0 10px" }}>
-                Logs only high-conviction BUY/SELL signals ({NIFTY_LOG_MIN_CONFIDENCE}%+). Rapid swings in the same direction update one entry (peak kept); a new row is added only after a real time gap, when direction flips, or confidence climbs higher.
-                {serverLogConfigured
-                  ? " Upstash sync is on — signals save to the server while you use the app. For automatic 2-minute logging when the app is closed, use Vercel Pro (see vercel.cron.pro.example.json)."
-                  : " Add Upstash Redis + CRON_SECRET on Vercel to log in the background when the app is closed."}
-              </p>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ color: C.muted, fontSize: 11 }}>
-                  {niftySignalLog.length} entries saved
-                  {serverLogConfigured && <span style={{ color: C.green }}> · server sync on</span>}
-                </span>
-                {niftySignalLog.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!window.confirm("Clear all NIFTY signal log entries?")) return;
-                      setNiftySignalLog([]);
-                      prevNiftyLogRef.current = null;
-                      fetch("/api/nifty-log", { method: "DELETE" }).catch(() => {});
-                    }}
-                    style={{ padding: "6px 10px", borderRadius: 6, background: `${C.red}18`, border: `1px solid ${C.red}44`, color: C.red, fontSize: 11, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
-                  >
-                    <Trash2 size={12} /> Clear log
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {niftySignalLog.length > 0 && (() => {
-              const stats = summarizeOutcomes(niftySignalLog);
-              return (
-                <div style={{ ...S.card, marginBottom: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
-                    <span style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>Prediction accuracy</span>
-                    <span style={{ color: stats.winRate == null ? C.muted : stats.winRate >= 50 ? C.green : C.red, fontWeight: 900, fontSize: 18 }}>
-                      {stats.winRate == null ? "—" : `${stats.winRate}%`}
-                    </span>
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
-                    {[
-                      { l: "Passed", v: stats.passed, c: C.green },
-                      { l: "Failed", v: stats.failed, c: C.red },
-                      { l: "Active", v: stats.active, c: C.yellow },
-                      { l: "Expired", v: stats.expired, c: C.muted },
-                    ].map((s) => (
-                      <div key={s.l} style={{ background: C.dim, borderRadius: 8, padding: "8px 4px", textAlign: "center" }}>
-                        <div style={{ color: s.c, fontWeight: 900, fontSize: 17 }}>{s.v}</div>
-                        <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase" }}>{s.l}</div>
-                      </div>
-                    ))}
-                  </div>
-                  <p style={{ color: C.muted, fontSize: 10, margin: "10px 0 0", lineHeight: 1.4 }}>
-                    Win rate = passed ÷ (passed + failed). A signal "passes" when NIFTY hits its target before its stop-loss.
-                  </p>
-                </div>
-              );
-            })()}
-
-            {niftySignalLog.length === 0 ? (
-              <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 24 }}>
-                No NIFTY BUY/SELL signals logged yet. Entries appear when confidence reaches {NIFTY_LOG_MIN_CONFIDENCE}%+ during market hours
-                {serverLogConfigured ? " — logging continues on the server when the app is closed." : " — keep the app open, or enable server logging on Vercel."}
-              </div>
-            ) : (
-              niftySignalLog.map((entry) => <NiftySignalLogRow key={entry.id} entry={entry} C={C} S={S} />)
-            )}
-          </>
-        )}
-      </div>
-    );
-  };
+      {niftySignalLog.length === 0 ? (
+        <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 24 }}>
+          No NIFTY BUY/SELL signals logged yet. Entries appear when confidence reaches {NIFTY_LOG_MIN_CONFIDENCE}%+ during market hours
+          {serverLogConfigured ? " — logging continues on the server when the app is closed." : " — keep the app open, or enable server logging on Vercel."}
+        </div>
+      ) : (
+        niftySignalLog.map((entry) => <NiftySignalLogRow key={entry.id} entry={entry} C={C} S={S} />)
+      )}
+    </div>
+  );
 
   const TABS = [
     { id: "dashboard", Icon: Home, label: "Home" },
     { id: "portfolio", Icon: Briefcase, label: "Portfolio" },
     { id: "news", Icon: Newspaper, label: "News" },
+    { id: "niftylog", Icon: ScrollText, label: "NIFTY Log" },
     { id: "settings", Icon: Settings, label: "Settings" },
   ];
 
-  const CONTENT = { dashboard: Dashboard, news: NewsTab, settings: SettingsTab };
+  const CONTENT = { dashboard: Dashboard, news: NewsTab, niftylog: NiftyLogTab, settings: SettingsTab };
   const ActiveTab = CONTENT[tab];
 
   return (
@@ -2241,6 +2204,9 @@ Tabs: dashboard|portfolio|news|settings`;
           </div>
           <button onClick={() => setTab("news")} aria-label="News" style={{ background: tab === "news" ? `${C.yellow}2e` : `${C.yellow}14`, border: `1px solid ${C.yellow}55`, borderRadius: 999, padding: "6px 11px", color: C.yellow, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
             <Newspaper size={14} /><span style={{ fontSize: 11, fontWeight: 700 }}>News</span>
+          </button>
+          <button onClick={() => setTab("niftylog")} aria-label="NIFTY Log" style={{ background: tab === "niftylog" ? `${C.green}2e` : `${C.green}14`, border: `1px solid ${C.green}55`, borderRadius: 999, padding: "6px 11px", color: C.green, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+            <ScrollText size={14} /><span style={{ fontSize: 11, fontWeight: 700 }}>Log</span>
           </button>
           <button onClick={() => setChatOpen(true)} style={{ background: `linear-gradient(135deg, ${C.blue}33, ${C.blue}1a)`, border: `1px solid ${C.blue}66`, borderRadius: 999, padding: "6px 13px", color: C.blue, cursor: "pointer", display: "flex", alignItems: "center", gap: 5, boxShadow: `${C.glow} ${C.blue}33` }}>
             <MessageCircle size={14} /><span style={{ fontSize: 11, fontWeight: 700 }}>AI</span>
@@ -2276,7 +2242,7 @@ Tabs: dashboard|portfolio|news|settings`;
       </div>
 
       <div style={{ position: "fixed", bottom: "max(14px, env(safe-area-inset-bottom))", left: 0, right: 0, margin: "0 auto", width: "calc(100% - 28px)", maxWidth: "min(calc(100% - 28px), 460px)", zIndex: 50, ...glassStyle(C), borderRadius: 22, display: "flex", justifyContent: "space-around", padding: "8px 6px", boxShadow: C.shadow }}>
-        {TABS.filter((t) => t.id !== "news").map(({ id, Icon, label }) => {
+        {TABS.filter((t) => t.id !== "news" && t.id !== "niftylog").map(({ id, Icon, label }) => {
           const active = tab === id;
           return (
             <button key={id} onClick={() => setTab(id)} style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "8px 12px", borderRadius: 16, background: active ? `linear-gradient(135deg, ${C.green}26, ${C.blue}14)` : "transparent", border: active ? `1px solid ${C.green}44` : "1px solid transparent", cursor: "pointer", minWidth: 0, boxShadow: active ? `${C.glow} ${C.green}33` : "none" }}>

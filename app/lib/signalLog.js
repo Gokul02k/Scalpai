@@ -7,6 +7,10 @@ export const NIFTY_LOG_SESSION_MS = 20 * 60 * 1000;
 // touches its target or stop-loss (~one trading session incl. the next open).
 export const NIFTY_EVAL_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+// A NIFTY prediction only counts as "passed" once price has moved at least this
+// many points in its favour — so a pass reflects a meaningful, tradeable move.
+export const NIFTY_MIN_PASS_POINTS = 120;
+
 export const OUTCOME_LABELS = {
   pending: 'Active',
   target: 'Passed',
@@ -207,6 +211,9 @@ export function evaluateSignalOutcome(entry, candles = [], nowMs = Date.now()) {
   if (E == null || T == null || S == null) return null;
 
   const isBuy = entry.action === 'BUY';
+  // Require a minimum favourable move for a pass so it reflects a real move.
+  const minPts = entry.instrument === 'NIFTY' ? NIFTY_MIN_PASS_POINTS : 0;
+  const effTarget = isBuy ? Math.max(T, E + minPts) : Math.min(T, E - minPts);
   const startMs = new Date(entry.firstTs || entry.ts).getTime();
   // Only grade against the signal's own window so stale signals aren't judged
   // by unrelated later price action (or missing candle history).
@@ -229,10 +236,10 @@ export function evaluateSignalOutcome(entry, candles = [], nowMs = Date.now()) {
       mfe = Math.max(mfe, E - c.l);
       mae = Math.min(mae, E - c.h);
     }
-    const hitTarget = isBuy ? c.h >= T : c.l <= T;
+    const hitTarget = isBuy ? c.h >= effTarget : c.l <= effTarget;
     const hitStop = isBuy ? c.l <= S : c.h >= S;
     if (hitTarget && hitStop) { status = 'stop'; resolvedTs = c.ts; resolvedPrice = S; break; }
-    if (hitTarget) { status = 'target'; resolvedTs = c.ts; resolvedPrice = T; break; }
+    if (hitTarget) { status = 'target'; resolvedTs = c.ts; resolvedPrice = effTarget; break; }
     if (hitStop) { status = 'stop'; resolvedTs = c.ts; resolvedPrice = S; break; }
   }
 
