@@ -662,161 +662,33 @@ function AskEASection({ eaKey, instrument, mode, finalCall, priceData, eaState, 
   );
 }
 
-function HomeSuggestionBlock({ name, badge, finalCall, priceData, eaKey, eaState, onAskEA, onOpenDetail, C, S }) {
-  if (!finalCall) return null;
-  const { action, label, confidence, factors, entry, target, stopLoss, rr } = finalCall;
+function SwingStatusCard({ name, call, priceData, decimals = 2, onOpenDetail, C, S }) {
+  const action = call?.action || "WAIT";
   const clr = action === "BUY" ? C.green : action === "SELL" ? C.red : C.yellow;
   const cp = priceData?.cur ?? 0;
-  const chg = priceData ? +(cp - priceData.prev).toFixed(2) : 0;
+  const chg = priceData?.prev ? +(cp - priceData.prev).toFixed(2) : 0;
   const pct = priceData?.prev ? +((chg / priceData.prev) * 100).toFixed(2) : 0;
-  const isUp = chg >= 0;
-  const priceDecimals = name === "NIFTY" ? 0 : 2;
-
+  const reason = call?.factors?.[0]?.reason || null;
   return (
-    <div style={{ ...S.card, borderColor: `${clr}55`, marginBottom: 12 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-        <Lightbulb size={15} color={clr} />
-        <span style={{ color: C.text, fontWeight: 800, fontSize: 16 }}>{name}</span>
-        {badge && (
-          <span style={{ background: `${C.blue}28`, color: C.blue, fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 4 }}>{badge}</span>
-        )}
-      </div>
-      {priceData && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
-          <span style={{ color: C.text, fontWeight: 900, fontSize: 20 }}>₹{fmt(cp, priceDecimals)}</span>
-          <span style={{ color: isUp ? C.green : C.red, fontSize: 12, fontWeight: 700 }}>
-            {isUp ? <ArrowUp size={11} style={{ verticalAlign: "middle" }} /> : <ArrowDown size={11} style={{ verticalAlign: "middle" }} />}
-            {" "}{(chg >= 0 ? "+" : "") + fmt(chg, priceDecimals)} ({pct >= 0 ? "+" : ""}{pct}%)
+    <div onClick={onOpenDetail} style={{ ...S.card, borderColor: `${clr}44`, padding: 12, marginBottom: 10, cursor: onOpenDetail ? "pointer" : "default" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{name}</span>
+            <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 4, background: `${C.blue}22`, color: C.blue }}>Swing</span>
+          </div>
+          <div style={{ color: C.muted, fontSize: 11, marginTop: 3 }}>
+            ₹{fmt(cp, decimals)} · today {pct >= 0 ? "+" : ""}{pct}%
+          </div>
+        </div>
+        <div style={{ textAlign: "right", flexShrink: 0 }}>
+          <span style={{ background: clr, color: action === "HOLD" || action === "WAIT" ? C.text : "#000", fontSize: 11, fontWeight: 800, padding: "3px 10px", borderRadius: 5 }}>
+            {call?.label || "Analyzing…"}
           </span>
-        </div>
-      )}
-
-      <FinalCallHeader label={label} confidence={confidence} action={action} C={C} />
-      <TradeLevelsRow entry={entry} target={target} stopLoss={stopLoss} rr={rr} action={action} decimals={priceDecimals} C={C} />
-
-      <AskEASection
-        eaKey={eaKey || name}
-        instrument={name}
-        mode={badge || "scalp"}
-        finalCall={finalCall}
-        priceData={priceData}
-        eaState={eaState}
-        onAskEA={onAskEA}
-        C={C}
-      />
-
-      {factors.length > 0 && (
-        <div style={{ borderTop: `1px solid ${C.dim}`, paddingTop: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-            <Zap size={13} color={C.yellow} />
-            <span style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: "uppercase" }}>Signals in play</span>
-          </div>
-          {factors.map((f, i) => <SignalFactorRow key={i} factor={f} C={C} />)}
-        </div>
-      )}
-
-      {onOpenDetail && (
-        <button type="button" onClick={onOpenDetail} style={{ width: "100%", marginTop: 10, padding: 10, borderRadius: 8, background: `${C.blue}14`, border: `1px solid ${C.blue}44`, color: C.blue, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
-          Full analysis — chart, technicals & fundamentals <ChevronRight size={14} />
-        </button>
-      )}
-    </div>
-  );
-}
-
-function CompactCallRow({ title, call, eaKey, instrument, mode, priceData, eaState, onAskEA, C }) {
-  const clr = call.action === "BUY" ? C.green : call.action === "SELL" ? C.red : C.yellow;
-  const hasLevels = call.target && call.action !== "HOLD" && call.action !== "WAIT";
-  return (
-    <div style={{ background: C.dim, borderRadius: 10, padding: 10, marginBottom: 8, border: `1px solid ${clr}33` }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: hasLevels ? 8 : 0 }}>
-        <span style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>{title}</span>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ background: clr, color: call.action === "HOLD" || call.action === "WAIT" ? C.text : "#000", fontSize: 11, fontWeight: 800, padding: "3px 10px", borderRadius: 6 }}>{call.label}</span>
-          <span style={{ color: clr, fontWeight: 900, fontSize: 14, minWidth: 38, textAlign: "right" }}>{call.confidence}%</span>
+          {call?.confidence != null && <div style={{ color: clr, fontWeight: 900, fontSize: 13, marginTop: 4 }}>{call.confidence}%</div>}
         </div>
       </div>
-      {hasLevels && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 11, marginBottom: 8 }}>
-          <span style={{ color: C.muted }}>Entry <b style={{ color: C.blue }}>₹{fmt(call.entry, 2)}</b></span>
-          <span style={{ color: C.muted }}>Target <b style={{ color: C.green }}>₹{fmt(call.target, 2)}</b></span>
-          <span style={{ color: C.muted }}>SL <b style={{ color: C.red }}>₹{fmt(call.stopLoss, 2)}</b></span>
-          {call.rr && <span style={{ color: C.muted }}>R:R <b style={{ color: C.yellow }}>1:{call.rr}</b></span>}
-        </div>
-      )}
-      <AskEASection
-        eaKey={eaKey}
-        instrument={instrument}
-        mode={mode}
-        finalCall={call}
-        priceData={priceData}
-        eaState={eaState}
-        onAskEA={onAskEA}
-        C={C}
-      />
-    </div>
-  );
-}
-
-function HomeCommodityBlock({ name, priceData, swingCall, longCall, eaState, onAskEA, onOpenDetail, C, S }) {
-  const cp = priceData?.cur ?? 0;
-  const chg = priceData ? +(cp - priceData.prev).toFixed(2) : 0;
-  const pct = priceData?.prev ? +((chg / priceData.prev) * 100).toFixed(2) : 0;
-  const isUp = chg >= 0;
-  const rows = [
-    { call: swingCall, title: "Swing", key: `${name}_swing`, mode: "swing" },
-    { call: longCall, title: "Long term (~1 month)", key: `${name}_long`, mode: "longterm" },
-  ].filter((r) => r.call);
-  // Show indicators once for the whole commodity (signal is shown per mode above).
-  const factors = (swingCall?.factors?.length ? swingCall.factors : longCall?.factors || []).slice(0, 4);
-
-  return (
-    <div style={{ ...S.card, marginBottom: 12 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <Lightbulb size={15} color={C.yellow} />
-          <span style={{ color: C.text, fontWeight: 800, fontSize: 16 }}>{name}</span>
-        </div>
-        {priceData && (
-          <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-            <span style={{ color: C.text, fontWeight: 900, fontSize: 17 }}>₹{fmt(cp, 2)}</span>
-            <span style={{ color: isUp ? C.green : C.red, fontSize: 11, fontWeight: 700 }}>
-              {(chg >= 0 ? "+" : "") + fmt(chg, 2)} ({pct >= 0 ? "+" : ""}{pct}%)
-            </span>
-          </div>
-        )}
-      </div>
-
-      {rows.map(({ call, title, key, mode }) => (
-        <CompactCallRow
-          key={title}
-          title={title}
-          call={call}
-          eaKey={key}
-          instrument={name}
-          mode={mode}
-          priceData={priceData}
-          eaState={eaState}
-          onAskEA={onAskEA}
-          C={C}
-        />
-      ))}
-
-      {factors.length > 0 && (
-        <div style={{ borderTop: `1px solid ${C.dim}`, paddingTop: 8, marginTop: 2 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-            <Zap size={13} color={C.yellow} />
-            <span style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: "uppercase" }}>Signals in play</span>
-          </div>
-          {factors.map((f, i) => <SignalFactorRow key={i} factor={f} C={C} />)}
-        </div>
-      )}
-
-      {onOpenDetail && (
-        <button type="button" onClick={onOpenDetail} style={{ width: "100%", marginTop: 10, padding: 10, borderRadius: 8, background: `${C.blue}14`, border: `1px solid ${C.blue}44`, color: C.blue, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
-          Full analysis — chart, technicals & fundamentals <ChevronRight size={14} />
-        </button>
-      )}
+      {reason && <p style={{ color: C.muted, fontSize: 11, margin: "8px 0 0", lineHeight: 1.4 }}>{reason}</p>}
     </div>
   );
 }
@@ -1055,21 +927,6 @@ function StockDetailModal({ stock, news = [], sett, eaState, onAskEA, onClose, C
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px max(24px, env(safe-area-inset-bottom))" }}>
-        {stock?.qty ? (
-          <div style={{ ...S.card, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <div>
-              <div style={{ color: C.muted, fontSize: 10, textTransform: "uppercase" }}>Your position</div>
-              <div style={{ color: C.text, fontSize: 13, fontWeight: 700 }}>{stock.qty} shares · avg ₹{fmt(stock.buy)}</div>
-            </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ color: C.muted, fontSize: 10, textTransform: "uppercase" }}>P&L</div>
-              <div style={{ color: (price - stock.buy) >= 0 ? C.green : C.red, fontSize: 13, fontWeight: 800 }}>
-                {(price - stock.buy) >= 0 ? "+" : ""}₹{fmt((price - stock.buy) * stock.qty, 0)} ({stock.buy ? (((price - stock.buy) / stock.buy) * 100).toFixed(2) : 0}%)
-              </div>
-            </div>
-          </div>
-        ) : null}
-
         {verdict && (
           <div style={{ ...S.card, borderColor: `${verdictClr}55`, marginBottom: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
@@ -1245,342 +1102,190 @@ function StockDetailModal({ stock, news = [], sett, eaState, onAskEA, onClose, C
 }
 
 function PortfolioTab({
-  portfolioSubTab,
-  onPortfolioSubTabChange,
-  suggestionItems,
-  onSelectStock,
   portfolio,
-  newStock,
-  onNewStockChange,
-  onAddStock,
+  suggestionItems,
+  portfolioFundamentals,
+  onSelectStock,
+  onAddSymbol,
   onRemoveStock,
-  portVal,
-  portPnL,
-  portCost,
   csvRef,
   onCsvChange,
   C,
   S,
 }) {
-  const [symbolSuggestionsOpen, setSymbolSuggestionsOpen] = useState(false);
-  const [editingId, setEditingId] = useState(null);
-  const symbolInputRef = useRef(null);
-  const retPct = portCost ? +((portPnL / portCost) * 100).toFixed(2) : 0;
-  const subTabs = [
-    { id: "suggestions", label: "Suggestions" },
-    { id: "holdings", label: "Holdings" },
-  ];
+  const [query, setQuery] = useState("");
+  const [sortMode, setSortMode] = useState("suggestion");
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const inputRef = useRef(null);
 
-  const insights = useMemo(() => {
-    if (!portfolio.length) return null;
-    const stocks = portfolio.filter((s) => s.type !== "mf");
-    const perf = stocks
-      .map((s) => ({ name: s.name, pct: s.buy ? +(((s.cur - s.buy) / s.buy) * 100).toFixed(2) : 0 }))
-      .sort((a, b) => b.pct - a.pct);
-    const alloc = {};
-    for (const s of portfolio) {
-      const v = (s.cur || 0) * (s.qty || 0);
-      if (v <= 0) continue;
-      const key = s.type === "mf"
-        ? "Mutual funds"
-        : (s.sector && s.sector !== "Other" && s.sector !== "Stock" ? s.sector : "Stocks");
-      alloc[key] = (alloc[key] || 0) + v;
-    }
-    const total = Object.values(alloc).reduce((a, b) => a + b, 0);
-    const allocList = Object.entries(alloc).sort((a, b) => b[1] - a[1]).slice(0, 5);
-    return {
-      best: perf[0] && perf[0].pct > 0 ? perf[0] : null,
-      worst: perf.length > 1 && perf[perf.length - 1].pct < 0 ? perf[perf.length - 1] : null,
-      allocList,
-      total,
-    };
-  }, [portfolio]);
   const heldSymbols = portfolio.map((s) => s.name);
-  const symbolSuggestions = useMemo(
-    () => (newStock.type === "mf" ? [] : filterStockSuggestions(newStock.name, heldSymbols)),
-    [newStock.name, newStock.type, heldSymbols.join(",")]
-  );
+  const q = query.trim().toUpperCase();
 
-  const pickSymbol = (sym) => {
-    onNewStockChange({ ...newStock, name: sym });
-    setSymbolSuggestionsOpen(false);
-    symbolInputRef.current?.focus();
+  const suggByName = useMemo(() => {
+    const m = {};
+    for (const it of suggestionItems) m[it.name.toUpperCase()] = it;
+    return m;
+  }, [suggestionItems]);
+
+  const orderByName = useMemo(() => {
+    const m = {};
+    suggestionItems.forEach((it, i) => { m[it.name.toUpperCase()] = i; });
+    return m;
+  }, [suggestionItems]);
+
+  const sectorOf = (s) => portfolioFundamentals?.[s.name.toUpperCase()]?.sector
+    || (s.sector && s.sector !== "Other" && s.sector !== "Stock" ? s.sector : "Other");
+
+  const addMatches = q ? filterStockSuggestions(query, heldSymbols) : [];
+  const alreadyHeld = q && heldSymbols.some((h) => h.toUpperCase() === q);
+
+  const visible = useMemo(() => {
+    let list = portfolio.filter((s) => s.type !== "mf").filter((s) => !q || s.name.toUpperCase().includes(q));
+    if (sortMode === "az") {
+      list = [...list].sort((a, b) => a.name.localeCompare(b.name));
+    } else if (sortMode === "sector") {
+      list = [...list].sort((a, b) => {
+        const sa = sectorOf(a); const sb = sectorOf(b);
+        if (sa !== sb) return sa.localeCompare(sb);
+        return a.name.localeCompare(b.name);
+      });
+    } else {
+      list = [...list].sort((a, b) => {
+        const ai = orderByName[a.name.toUpperCase()] ?? Infinity;
+        const bi = orderByName[b.name.toUpperCase()] ?? Infinity;
+        if (ai !== bi) return ai - bi;
+        return a.name.localeCompare(b.name);
+      });
+    }
+    return list;
+  }, [portfolio, q, sortMode, orderByName, portfolioFundamentals]);
+
+  const mfEntries = portfolio.filter((s) => s.type === "mf");
+
+  const addTyped = () => {
+    if (!q || alreadyHeld) return;
+    onAddSymbol(q);
+    setQuery("");
+    setSuggestOpen(false);
+  };
+  const pick = (sym) => {
+    onAddSymbol(sym);
+    setQuery("");
+    setSuggestOpen(false);
+    inputRef.current?.focus();
   };
 
-  const startEdit = (s) => {
-    setEditingId(s.id);
-    onNewStockChange({
-      name: s.name,
-      qty: String(s.qty),
-      buy: String(s.buy),
-      type: s.type === "mf" ? "mf" : "stock",
-    });
-    onPortfolioSubTabChange("holdings");
-    symbolInputRef.current?.focus();
+  const renderRow = (s) => {
+    const it = suggByName[s.name.toUpperCase()];
+    const action = it?.action;
+    const clr = action === "BUY" ? C.green : action === "SELL" ? C.red : C.yellow;
+    return (
+      <div key={s.id} style={{ ...S.card, borderColor: it ? `${clr}35` : C.border, padding: 12, marginBottom: 8 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+          <div onClick={() => onSelectStock(s)} style={{ minWidth: 0, cursor: "pointer", flex: 1 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{s.name}</span>
+              <span style={{ fontSize: 9, color: C.muted, background: C.dim, borderRadius: 4, padding: "2px 6px" }}>{sectorOf(s)}</span>
+              <ChevronRight size={14} color={C.muted} />
+            </div>
+            {it ? (
+              <div style={{ marginTop: 5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <span style={{ background: clr, color: action === "HOLD" || action === "WAIT" ? C.text : "#000", fontSize: 10, fontWeight: 800, padding: "2px 8px", borderRadius: 4 }}>{it.label}</span>
+                <span style={{ color: clr, fontWeight: 800, fontSize: 12 }}>{it.confidence}%</span>
+                <span style={{ color: C.muted, fontSize: 11 }}>· {it.reason}</span>
+              </div>
+            ) : (
+              <div style={{ color: C.muted, fontSize: 11, marginTop: 5 }}>Analyzing… recommendation will appear shortly</div>
+            )}
+          </div>
+          <button type="button" onClick={() => onRemoveStock(s.id)} aria-label={`Remove ${s.name}`} style={{ padding: 6, borderRadius: 6, background: `${C.red}18`, border: "none", cursor: "pointer", flexShrink: 0 }}>
+            <Trash2 size={14} color={C.red} />
+          </button>
+        </div>
+      </div>
+    );
   };
 
-  const cancelEdit = () => {
-    setEditingId(null);
-    onNewStockChange({ name: "", qty: "", buy: "", type: "stock" });
-  };
-
-  const handleSubmit = () => {
-    onAddStock(editingId);
-    setEditingId(null);
+  const groupedBySector = () => {
+    const groups = {};
+    for (const s of visible) { const k = sectorOf(s); (groups[k] = groups[k] || []).push(s); }
+    return Object.keys(groups).sort().map((sec) => (
+      <div key={sec}>
+        <div style={{ color: C.muted, fontSize: 10, fontWeight: 800, textTransform: "uppercase", margin: "8px 2px 8px" }}>{sec} · {groups[sec].length}</div>
+        {groups[sec].map(renderRow)}
+      </div>
+    ));
   };
 
   return (
-    <div style={{ padding: "0 14px 90px" }}>
-      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-        {subTabs.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => onPortfolioSubTabChange(t.id)}
-            style={{
-              flex: 1,
-              padding: "9px 8px",
-              borderRadius: 8,
-              background: portfolioSubTab === t.id ? C.green : C.card,
-              color: portfolioSubTab === t.id ? "#000" : C.muted,
-              border: `1px solid ${C.border}`,
-              fontSize: 11,
-              fontWeight: 700,
-              cursor: "pointer",
-            }}
-          >
-            {t.label}
+    <div style={{ padding: "0 14px 90px", position: "relative" }}>
+      <div style={{ position: "relative", marginBottom: 10 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={(e) => { setQuery(e.target.value.toUpperCase()); setSuggestOpen(true); }}
+            onFocus={() => setSuggestOpen(true)}
+            onBlur={() => setTimeout(() => setSuggestOpen(false), 150)}
+            onKeyDown={(e) => { if (e.key === "Enter") addTyped(); }}
+            placeholder="Search or add a stock (e.g. RELIANCE)"
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
+            style={{ flex: 1, padding: 11, borderRadius: 10, background: C.dim, border: `1px solid ${C.border}`, color: C.text, fontSize: 16, outline: "none" }}
+          />
+          <button type="button" onClick={addTyped} disabled={!q || alreadyHeld} style={{ padding: "0 14px", borderRadius: 10, background: !q || alreadyHeld ? C.dim : C.green, color: !q || alreadyHeld ? C.muted : "#000", fontWeight: 800, border: "none", cursor: !q || alreadyHeld ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+            <Plus size={16} /> Add
           </button>
+        </div>
+        {suggestOpen && q && addMatches.length > 0 && (
+          <div style={{ position: "absolute", left: 0, right: 0, top: 50, zIndex: 20, background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, maxHeight: 220, overflowY: "auto", boxShadow: `0 8px 24px ${C.bg}88` }}>
+            {addMatches.map((sym) => (
+              <button key={sym} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => pick(sym)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", textAlign: "left", padding: "10px 12px", background: "transparent", border: "none", borderBottom: `1px solid ${C.dim}`, color: C.text, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                {sym} <span style={{ color: C.green, fontSize: 11, fontWeight: 700 }}>+ Add</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        {[{ id: "suggestion", l: "Suggestion" }, { id: "az", l: "A–Z" }, { id: "sector", l: "Sector" }].map((o) => (
+          <button key={o.id} type="button" onClick={() => setSortMode(o.id)} style={{ flex: 1, padding: "8px 6px", borderRadius: 8, background: sortMode === o.id ? C.green : C.card, color: sortMode === o.id ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{o.l}</button>
         ))}
       </div>
 
-      {portfolioSubTab === "suggestions" && (
-        <>
-          {portfolio.length > 0 && insights && (
-            <div style={{ ...S.card, marginBottom: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
-                <div>
-                  <div style={{ color: C.muted, fontSize: 10, textTransform: "uppercase" }}>Portfolio value</div>
-                  <div style={{ color: C.text, fontSize: 20, fontWeight: 900 }}>₹{fmt(portVal, 0)}</div>
-                </div>
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ color: C.muted, fontSize: 10, textTransform: "uppercase" }}>Total P&L</div>
-                  <div style={{ color: portPnL >= 0 ? C.green : C.red, fontSize: 15, fontWeight: 800 }}>
-                    {portPnL >= 0 ? "+" : ""}₹{fmt(portPnL, 0)} ({retPct >= 0 ? "+" : ""}{retPct}%)
-                  </div>
-                </div>
-              </div>
-
-              {(insights.best || insights.worst) && (
-                <div style={{ display: "flex", gap: 8, marginBottom: insights.allocList.length ? 12 : 0 }}>
-                  {insights.best && (
-                    <div style={{ flex: 1, background: `${C.green}12`, borderRadius: 8, padding: "8px 10px" }}>
-                      <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase" }}>Top gainer</div>
-                      <div style={{ color: C.text, fontSize: 12, fontWeight: 700 }}>{insights.best.name}</div>
-                      <div style={{ color: C.green, fontSize: 11, fontWeight: 700 }}>+{insights.best.pct}%</div>
-                    </div>
-                  )}
-                  {insights.worst && (
-                    <div style={{ flex: 1, background: `${C.red}12`, borderRadius: 8, padding: "8px 10px" }}>
-                      <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase" }}>Top loser</div>
-                      <div style={{ color: C.text, fontSize: 12, fontWeight: 700 }}>{insights.worst.name}</div>
-                      <div style={{ color: C.red, fontSize: 11, fontWeight: 700 }}>{insights.worst.pct}%</div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {insights.allocList.length > 0 && insights.total > 0 && (
-                <div>
-                  <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase", marginBottom: 6 }}>Allocation</div>
-                  {insights.allocList.map(([name, val]) => {
-                    const p = Math.round((val / insights.total) * 100);
-                    return (
-                      <div key={name} style={{ marginBottom: 6 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.text, marginBottom: 2 }}>
-                          <span>{name}</span>
-                          <span style={{ color: C.muted }}>{p}%</span>
-                        </div>
-                        <div style={{ height: 5, borderRadius: 3, background: C.dim }}>
-                          <div style={{ width: `${p}%`, height: "100%", borderRadius: 3, background: C.blue }} />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-
-          <p style={{ color: C.muted, fontSize: 11, margin: "0 0 10px", lineHeight: 1.4 }}>
-            Your holdings — technicals + fundamentals + news, sorted by strongest BUY, then SELL. Tap a card for the full analysis.
-          </p>
-          {suggestionItems.length === 0 ? (
-            <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 20 }}>
-              No suggestions yet. Add stocks in Holdings or wait for live data.
-            </div>
-          ) : (
-            suggestionItems.map((item) => (
-              <PortfolioSuggestionCard
-                key={item.id}
-                item={item}
-                onSelect={() => {
-                  const held = portfolio.find((p) => p.name.toUpperCase() === item.name.toUpperCase() && p.type !== "mf");
-                  onSelectStock(held || { name: item.name, type: "stock" });
-                }}
-                C={C}
-                S={S}
-              />
-            ))
-          )}
-        </>
+      {visible.length === 0 ? (
+        <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 20 }}>
+          {portfolio.length === 0
+            ? "Your watchlist is empty. Search a stock above and tap Add."
+            : "No stocks match your search."}
+        </div>
+      ) : sortMode === "sector" ? (
+        groupedBySector()
+      ) : (
+        visible.map(renderRow)
       )}
 
-      {portfolioSubTab === "holdings" && (
+      {mfEntries.length > 0 && (
         <>
-          {portfolio.length > 0 && (
-            <div style={{ ...S.card, background: `linear-gradient(135deg,${C.card},${C.dim})`, marginBottom: 12 }}>
-              <div style={{ color: C.muted, fontSize: 10, marginBottom: 4, textTransform: "uppercase" }}>Total value</div>
-              <div style={{ color: C.text, fontSize: 22, fontWeight: 900 }}>₹{fmt(portVal, 0)}</div>
-              <div style={{ color: portPnL >= 0 ? C.green : C.red, fontSize: 13, fontWeight: 700 }}>
-                {portPnL >= 0 ? "+" : ""}₹{fmt(portPnL, 0)} ({retPct >= 0 ? "+" : ""}{retPct}%)
-              </div>
-            </div>
-          )}
-
-          <input ref={csvRef} type="file" accept=".csv,.txt" style={{ display: "none" }} onChange={onCsvChange} />
-          <button type="button" onClick={() => csvRef.current?.click()} style={{ width: "100%", padding: 12, borderRadius: 10, marginBottom: 10, background: `${C.blue}18`, border: `1px dashed ${C.blue}55`, color: C.blue, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-            <Upload size={14} /> Import CSV
-          </button>
-
-          <div style={{ ...S.card, marginBottom: 12, position: "relative" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <div style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>
-                {editingId ? "Edit holding" : "Add holding"}
-              </div>
-              <div style={{ display: "flex", gap: 4 }}>
-                {["stock", "mf"].map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    onClick={() => onNewStockChange({ ...newStock, type: t, name: "" })}
-                    style={{
-                      padding: "4px 8px",
-                      borderRadius: 6,
-                      fontSize: 10,
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      border: `1px solid ${C.border}`,
-                      background: newStock.type === t ? C.green : C.dim,
-                      color: newStock.type === t ? "#000" : C.muted,
-                    }}
-                  >
-                    {t === "stock" ? "Stock" : "Mutual fund"}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-              <input
-                ref={symbolInputRef}
-                type="text"
-                value={newStock.name}
-                onChange={(e) => {
-                  onNewStockChange({ ...newStock, name: newStock.type === "mf" ? e.target.value : e.target.value.toUpperCase() });
-                  setSymbolSuggestionsOpen(true);
-                }}
-                onFocus={() => setSymbolSuggestionsOpen(true)}
-                onBlur={() => setTimeout(() => setSymbolSuggestionsOpen(false), 150)}
-                placeholder={newStock.type === "mf" ? "Fund name" : "Symbol"}
-                autoComplete="off"
-                autoCorrect="off"
-                spellCheck={false}
-                style={{ flex: 2, padding: 10, borderRadius: 8, background: C.dim, border: `1px solid ${C.border}`, color: C.text, fontSize: 16, outline: "none" }}
-              />
-              <input
-                type="number"
-                value={newStock.qty}
-                onChange={(e) => onNewStockChange({ ...newStock, qty: e.target.value })}
-                placeholder={newStock.type === "mf" ? "Units" : "Qty"}
-                autoComplete="off"
-                style={{ flex: 1, padding: 10, borderRadius: 8, background: C.dim, border: `1px solid ${C.border}`, color: C.text, fontSize: 16, outline: "none" }}
-              />
-              <input
-                type="number"
-                value={newStock.buy}
-                onChange={(e) => onNewStockChange({ ...newStock, buy: e.target.value })}
-                placeholder="Avg ₹"
-                autoComplete="off"
-                style={{ flex: 1, padding: 10, borderRadius: 8, background: C.dim, border: `1px solid ${C.border}`, color: C.text, fontSize: 16, outline: "none" }}
-              />
-            </div>
-
-            {symbolSuggestionsOpen && newStock.type === "stock" && newStock.name.trim() && symbolSuggestions.length > 0 && (
-              <div style={{ position: "absolute", left: 12, right: 12, top: 88, zIndex: 20, background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, maxHeight: 180, overflowY: "auto", boxShadow: `0 8px 24px ${C.bg}88` }}>
-                {symbolSuggestions.map((sym) => (
-                  <button key={sym} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => pickSymbol(sym)} style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 12px", background: "transparent", border: "none", borderBottom: `1px solid ${C.dim}`, color: C.text, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
-                    {sym}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <div style={{ display: "flex", gap: 8 }}>
-              <button type="button" onClick={handleSubmit} style={{ flex: 1, padding: 10, borderRadius: 8, background: C.green, color: "#000", fontWeight: 800, fontSize: 12, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                <Plus size={14} /> {editingId ? "Save" : "Add"}
+          <div style={{ color: C.muted, fontSize: 10, fontWeight: 800, textTransform: "uppercase", margin: "14px 2px 8px" }}>Mutual funds</div>
+          {mfEntries.map((s) => (
+            <div key={s.id} style={{ ...S.card, borderColor: `${C.blue}33`, padding: 12, marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>{s.name}</span>
+              <button type="button" onClick={() => onRemoveStock(s.id)} aria-label={`Remove ${s.name}`} style={{ padding: 6, borderRadius: 6, background: `${C.red}18`, border: "none", cursor: "pointer" }}>
+                <Trash2 size={14} color={C.red} />
               </button>
-              {editingId && (
-                <button type="button" onClick={cancelEdit} style={{ padding: "10px 14px", borderRadius: 8, background: C.dim, color: C.muted, border: `1px solid ${C.border}`, cursor: "pointer", fontWeight: 700, fontSize: 12 }}>
-                  Cancel
-                </button>
-              )}
             </div>
-          </div>
-
-          {portfolio.length === 0 && (
-            <div style={{ ...S.card, textAlign: "center", color: C.muted, marginBottom: 12 }}>No holdings yet. Add stocks or mutual funds above.</div>
-          )}
-
-          {portfolio.map((s) => {
-            const isMf = s.type === "mf";
-            const pnl = isMf ? 0 : (s.cur - s.buy) * s.qty;
-            const pnlPct = !isMf && s.buy ? +((s.cur - s.buy) / s.buy * 100).toFixed(2) : 0;
-            const up = pnl >= 0;
-            return (
-              <div key={s.id} style={{ ...S.card, borderColor: isMf ? `${C.blue}33` : up ? `${C.green}35` : `${C.red}35` }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                  <div
-                    onClick={() => !isMf && onSelectStock(s)}
-                    style={{ minWidth: 0, cursor: isMf ? "default" : "pointer", flex: 1 }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{s.name}</span>
-                      {isMf && <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 4, background: `${C.blue}22`, color: C.blue }}>MF</span>}
-                      {!isMf && <ChevronRight size={14} color={C.muted} />}
-                    </div>
-                    <div style={{ color: C.muted, fontSize: 11 }}>
-                      {isMf ? `${s.qty} units · Avg NAV ₹${fmt(s.buy)}` : `${s.sector || "Stock"} · ${s.qty} shares · Avg ₹${fmt(s.buy)}`}
-                    </div>
-                    {!isMf && <div style={{ color: C.blue, fontSize: 10, fontWeight: 700, marginTop: 3 }}>Tap for chart, technicals & suggestion</div>}
-                  </div>
-                  <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
-                    {!isMf && (
-                      <div style={{ textAlign: "right" }}>
-                        <div style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>₹{fmt(s.cur)}</div>
-                        <div style={{ color: up ? C.green : C.red, fontSize: 11, fontWeight: 700 }}>{up ? "+" : ""}₹{fmt(pnl, 0)} ({pnlPct >= 0 ? "+" : ""}{pnlPct}%)</div>
-                      </div>
-                    )}
-                    <button type="button" onClick={() => startEdit(s)} style={{ padding: 6, borderRadius: 6, background: `${C.blue}18`, border: "none", cursor: "pointer", color: C.blue, fontSize: 10, fontWeight: 700 }}>Edit</button>
-                    <button type="button" onClick={() => onRemoveStock(s.id)} aria-label={`Remove ${s.name}`} style={{ padding: 6, borderRadius: 6, background: `${C.red}18`, border: "none", cursor: "pointer" }}>
-                      <Trash2 size={14} color={C.red} />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+          ))}
         </>
       )}
+
+      <input ref={csvRef} type="file" accept=".csv,.txt" style={{ display: "none" }} onChange={onCsvChange} />
+      <button type="button" onClick={() => csvRef.current?.click()} style={{ width: "100%", marginTop: 10, padding: 10, borderRadius: 10, background: `${C.blue}12`, border: `1px dashed ${C.blue}44`, color: C.blue, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 12 }}>
+        <Upload size={13} /> Import stocks from CSV
+      </button>
     </div>
   );
 }
@@ -1614,7 +1319,6 @@ export default function App() {
 
   const [hydrated, setHydrated] = useState(false);
   const [instrument, setInstrument] = useState("NIFTY");
-  const [portfolioSubTab, setPortfolioSubTab] = useState("suggestions");
   const [settingsSubTab, setSettingsSubTab] = useState("general");
   const [niftySignalLog, setNiftySignalLog] = useState([]);
   const [serverLogConfigured, setServerLogConfigured] = useState(false);
@@ -1661,7 +1365,6 @@ export default function App() {
   const [eaState, setEaState] = useState({});
   const chatEnd = useRef(null);
   const csvRef = useRef(null);
-  const [newStock, setNewStock] = useState({ name: "", qty: "", buy: "", type: "stock" });
   const portfolioRef = useRef(portfolio);
   const pricesRef = useRef(prices);
   const prevNiftyLogRef = useRef(null);
@@ -1679,7 +1382,6 @@ export default function App() {
     if (data) {
       if (data.theme) setTheme(data.theme);
       if (data.portfolio?.length) setPortfolio(data.portfolio);
-      if (data.portfolioSubTab === "suggestions" || data.portfolioSubTab === "holdings") setPortfolioSubTab(data.portfolioSubTab);
       if (data.sett) setSett(data.sett);
       if (data.refresh) setRefresh(data.refresh);
       if (data.alerts) setAlerts(data.alerts);
@@ -1719,8 +1421,8 @@ export default function App() {
   // Persist on change
   useEffect(() => {
     if (!hydrated) return;
-    savePersisted({ theme, portfolio, portfolioSubTab, sett, refresh, alerts, chatModel, niftySignalLog });
-  }, [hydrated, theme, portfolio, portfolioSubTab, sett, refresh, alerts, chatModel, niftySignalLog]);
+    savePersisted({ theme, portfolio, sett, refresh, alerts, chatModel, niftySignalLog });
+  }, [hydrated, theme, portfolio, sett, refresh, alerts, chatModel, niftySignalLog]);
 
   // Market status ticker
   useEffect(() => {
@@ -1954,6 +1656,15 @@ export default function App() {
         mode: "scalp",
         instrument: "NIFTY",
       }),
+      NIFTY_swing: buildUnifiedSuggestion({
+        analysis: analyses.NIFTY,
+        price: prices.NIFTY?.cur,
+        chgPct: niftyPct,
+        indexSignals: signalsByInstrument.NIFTY,
+        settings: sett,
+        mode: "swing",
+        instrument: "NIFTY",
+      }),
       GOLD_swing: buildUnifiedSuggestion({
         analysis: analyses.GOLD,
         price: prices.GOLD?.cur,
@@ -2082,10 +1793,6 @@ export default function App() {
   const P = prices[instrument];
   const cp = P?.cur ?? 0;
 
-  const portPnL = portfolio.reduce((s, p) => s + (p.cur - p.buy) * p.qty, 0);
-  const portVal = portfolio.reduce((s, p) => s + p.cur * p.qty, 0);
-  const portCost = portfolio.reduce((s, p) => s + p.buy * p.qty, 0);
-
   const upsertPortfolioStock = useCallback((name, qty, buy, sector = "Other", type = "stock") => {
     const sym = type === "mf" ? String(name).trim() : String(name).toUpperCase().replace(/\.NS$/, "");
     const q = +qty || 1;
@@ -2209,30 +1916,11 @@ Tabs: dashboard|portfolio|news|settings`;
     e.target.value = "";
   };
 
-  const addPortfolioStock = useCallback((editingId) => {
-    const name = newStock.name.trim();
-    if (!name) return;
-    const type = newStock.type === "mf" ? "mf" : "stock";
-    const sym = type === "mf" ? name : name.toUpperCase().replace(/\.NS$/, "");
-    const qty = +newStock.qty || 1;
-    const buy = +newStock.buy || 0;
-    if (editingId) {
-      setPortfolio((p) => p.map((s) => (s.id === editingId
-        ? {
-          ...s,
-          name: sym,
-          qty,
-          buy: buy || s.buy,
-          cur: type === "mf" ? buy || s.cur : s.cur,
-          type,
-          sector: type === "mf" ? "Mutual Fund" : s.sector,
-        }
-        : s)));
-    } else {
-      upsertPortfolioStock(sym, qty, buy, "Other", type);
-    }
-    setNewStock({ name: "", qty: "", buy: "", type: "stock" });
-  }, [newStock, upsertPortfolioStock]);
+  const addWatchStock = useCallback((symbol) => {
+    const sym = String(symbol || "").trim().toUpperCase().replace(/\.NS$/, "");
+    if (!sym) return;
+    upsertPortfolioStock(sym, 1, 0, "Other", "stock");
+  }, [upsertPortfolioStock]);
 
   const requestNotifPerm = () => {
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
@@ -2297,42 +1985,54 @@ Tabs: dashboard|portfolio|news|settings`;
   // ── TAB COMPONENTS ──
   const Dashboard = () => (
     <div style={{ padding: "0 14px 90px" }}>
-      <HomeSuggestionBlock
+      <div style={{ color: C.muted, fontSize: 11, fontWeight: 800, textTransform: "uppercase", margin: "2px 2px 8px" }}>Swing outlook</div>
+      <SwingStatusCard
         name="NIFTY"
-        badge="Scalping"
-        finalCall={finalCalls.NIFTY}
+        call={finalCalls.NIFTY_swing}
         priceData={prices.NIFTY}
-        eaKey="NIFTY"
-        eaState={eaState}
-        onAskEA={askEA}
+        decimals={0}
         onOpenDetail={() => setSelectedStock({ name: "NIFTY", type: "index" })}
         C={C}
         S={S}
       />
-
-      <HomeCommodityBlock
+      <SwingStatusCard
         name="GOLD"
+        call={finalCalls.GOLD_swing}
         priceData={prices.GOLD}
-        swingCall={finalCalls.GOLD_swing}
-        longCall={finalCalls.GOLD_long}
-        eaState={eaState}
-        onAskEA={askEA}
+        decimals={2}
         onOpenDetail={() => setSelectedStock({ name: "GOLD", type: "index" })}
         C={C}
         S={S}
       />
-
-      <HomeCommodityBlock
+      <SwingStatusCard
         name="SILVER"
+        call={finalCalls.SILVER_swing}
         priceData={prices.SILVER}
-        swingCall={finalCalls.SILVER_swing}
-        longCall={finalCalls.SILVER_long}
-        eaState={eaState}
-        onAskEA={askEA}
+        decimals={2}
         onOpenDetail={() => setSelectedStock({ name: "SILVER", type: "index" })}
         C={C}
         S={S}
       />
+
+      <div style={{ color: C.muted, fontSize: 11, fontWeight: 800, textTransform: "uppercase", margin: "16px 2px 8px" }}>Your stocks · strongest first</div>
+      {portfolioSuggestionItems.length === 0 ? (
+        <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 18 }}>
+          Add stocks in the Portfolio tab to see buy/sell suggestions here.
+        </div>
+      ) : (
+        portfolioSuggestionItems.map((item) => (
+          <PortfolioSuggestionCard
+            key={item.id}
+            item={item}
+            onSelect={() => {
+              const held = portfolio.find((p) => p.name.toUpperCase() === item.name.toUpperCase() && p.type !== "mf");
+              setSelectedStock(held || { name: item.name, type: "stock" });
+            }}
+            C={C}
+            S={S}
+          />
+        ))
+      )}
     </div>
   );
 
@@ -2559,18 +2259,12 @@ Tabs: dashboard|portfolio|news|settings`;
       <div key={tab} style={{ paddingTop: 8, animation: "saIn .28s ease" }}>
         {tab === "portfolio" ? (
           <PortfolioTab
-            portfolioSubTab={portfolioSubTab}
-            onPortfolioSubTabChange={setPortfolioSubTab}
-            suggestionItems={portfolioSuggestionItems}
-            onSelectStock={setSelectedStock}
             portfolio={portfolio}
-            newStock={newStock}
-            onNewStockChange={setNewStock}
-            onAddStock={addPortfolioStock}
+            suggestionItems={portfolioSuggestionItems}
+            portfolioFundamentals={portfolioFundamentals}
+            onSelectStock={setSelectedStock}
+            onAddSymbol={addWatchStock}
             onRemoveStock={removePortfolioStock}
-            portVal={portVal}
-            portPnL={portPnL}
-            portCost={portCost}
             csvRef={csvRef}
             onCsvChange={handleCSV}
             C={C}
