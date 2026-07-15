@@ -7,9 +7,9 @@ export const NIFTY_LOG_SESSION_MS = 20 * 60 * 1000;
 // touches its target or stop-loss (~one trading session incl. the next open).
 export const NIFTY_EVAL_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-// A NIFTY signal is only actionable / counts as "passed" once price moves at
-// least this many points in its favour — so it reflects a real, tradeable move.
-export const NIFTY_MIN_PASS_POINTS = 100;
+// A NIFTY scalp signal is only actionable / counts as "passed" once price moves
+// at least this many points in its favour — a real, tradeable scalping move.
+export const NIFTY_MIN_PASS_POINTS = 50;
 
 // Portfolio (stock) prediction tracking.
 export const PORTFOLIO_LOG_MIN_CONFIDENCE = 65;

@@ -672,7 +672,7 @@ function AskEASection({ eaKey, instrument, mode, finalCall, priceData, eaState, 
   );
 }
 
-function SwingStatusCard({ name, call, priceData, decimals = 2, onOpenDetail, C, S }) {
+function SwingStatusCard({ name, call, priceData, decimals = 2, badge = "Swing", onOpenDetail, C, S }) {
   const action = call?.action || "WAIT";
   const clr = action === "BUY" ? C.green : action === "SELL" ? C.red : C.yellow;
   const cp = priceData?.cur ?? 0;
@@ -685,7 +685,7 @@ function SwingStatusCard({ name, call, priceData, decimals = 2, onOpenDetail, C,
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{name}</span>
-            <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 4, background: `${C.blue}22`, color: C.blue }}>Swing</span>
+            <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 4, background: `${C.blue}22`, color: C.blue }}>{badge}</span>
           </div>
           <div style={{ color: C.muted, fontSize: 11, marginTop: 3 }}>
             ₹{fmt(cp, decimals)} · today {pct >= 0 ? "+" : ""}{pct}%
@@ -970,7 +970,7 @@ function StockDetailModal({ stock, news = [], sett, eaState, onAskEA, onClose, C
           <>
             <HorizonCallCard
               title="Scalping"
-              subtitle="5-min chart · intraday · targets a ≥100-pt move"
+              subtitle={`5-min chart · intraday · targets a ≥${NIFTY_MIN_PASS_POINTS}-pt move`}
               call={scalpCall}
               priceData={priceData}
               eaKey={`DETAIL_${sym}_scalp`}
@@ -1836,6 +1836,17 @@ export default function App() {
     };
   }, [analyses, dailyAnalyses, prices, signalsByInstrument, sett]);
 
+  // NIFTY scalp call gated by the minimum-move rule (shared by Home + detail view).
+  const niftyScalpCall = useMemo(() => {
+    const call = finalCalls.NIFTY;
+    if (!call) return call;
+    const moveDist = call.target != null ? Math.abs(call.target - call.entry) : 0;
+    if ((call.action === "BUY" || call.action === "SELL") && moveDist < NIFTY_MIN_PASS_POINTS) {
+      return { ...call, action: "HOLD", label: "No scalp trade", target: null, stopLoss: null, rr: null };
+    }
+    return call;
+  }, [finalCalls.NIFTY]);
+
   useEffect(() => {
     if (!hydrated) return;
     const call = finalCalls.NIFTY;
@@ -2191,10 +2202,11 @@ Tabs: dashboard|portfolio|news|settings`;
   // ── TAB COMPONENTS ──
   const Dashboard = () => (
     <div style={{ padding: "0 14px 90px" }}>
-      <div style={{ color: C.muted, fontSize: 11, fontWeight: 800, textTransform: "uppercase", margin: "2px 2px 8px" }}>Swing outlook</div>
+      <div style={{ color: C.muted, fontSize: 11, fontWeight: 800, textTransform: "uppercase", margin: "2px 2px 8px" }}>Market outlook</div>
       <SwingStatusCard
         name="NIFTY"
-        call={finalCalls.NIFTY_swing}
+        badge="Scalp"
+        call={niftyScalpCall}
         priceData={prices.NIFTY}
         decimals={0}
         onOpenDetail={() => setSelectedStock({ name: "NIFTY", type: "index" })}
