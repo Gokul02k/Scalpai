@@ -13,7 +13,7 @@ import {
 import {
   fetchAllMarketData, fetchCandles, fetchStockCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, fetchStockFundamentals, genFallbackCandles, SYMBOL_MAP,
 } from "./lib/marketData";
-import { analyzeFromCandles } from "./lib/indicators";
+import { analyzeFromCandles, calcEMA } from "./lib/indicators";
 import { generateIndexSignals, generatePortfolioSignals, parsePortfolioCSV } from "./lib/signals";
 import { buildUnifiedSuggestion, explainAssetMove, getPortfolioSuggestion } from "./lib/suggestion";
 import { loadPersisted, savePersisted } from "./lib/storage";
@@ -170,49 +170,266 @@ function formatElapsed(ms) {
   return `${s}s`;
 }
 
-function CandleChart({ candles = [], height = 200, C, overlays = null }) {
-  if (!candles.length) return null;
-  const W = 800, PAD = 10, H = height, ch = H - PAD * 2;
-  const maxP = Math.max(...candles.map((c) => c.h));
-  const minP = Math.min(...candles.map((c) => c.l));
-  const range = maxP - minP || 1;
-  const toY = (p) => PAD + ((maxP - p) / range) * ch;
-  const sw = W / candles.length;
-  const bw = Math.max(2, sw * 0.6);
-  const inRange = (p) => p != null && p >= minP && p <= maxP;
+/** Rolling Bollinger Bands series aligned 1:1 with closes (null until warm-up done). */
+function bollingerSeries(closes, period = 20, mult = 2) {
+  const out = [];
+  for (let i = 0; i < closes.length; i++) {
+    if (i < period - 1) { out.push(null); continue; }
+    const w = closes.slice(i - period + 1, i + 1);
+    const mid = w.reduce((a, b) => a + b, 0) / period;
+    const std = Math.sqrt(w.reduce((s, v) => s + (v - mid) ** 2, 0) / period);
+    out.push({ upper: mid + mult * std, mid, lower: mid - mult * std });
+  }
+  return out;
+}
 
-  // Horizontal overlay lines (EMA / support / resistance / last price). Lines don't
-  // distort under preserveAspectRatio="none"; labels are rendered in the legend below.
-  const levelLines = overlays
+function niceTicks(min, max, count = 5) {
+  const span = max - min;
+  if (!(span > 0)) return [min];
+  const raw = span / (count - 1);
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const step = (norm >= 5 ? 5 : norm >= 2 ? 2 : norm >= 1 ? 1 : 0.5) * mag;
+  const start = Math.ceil(min / step) * step;
+  const ticks = [];
+  for (let v = start; v <= max + step * 0.001; v += step) ticks.push(v);
+  return ticks;
+}
+
+/**
+ * Interactive price chart: candle/line/area, EMA overlays, Bollinger shading,
+ * support/resistance, volume sub-panel, price/time axes, and a touch crosshair.
+ */
+function PriceChart({
+  candles = [], view = 50, height = 260, C, overlays = null, decimals = 2,
+  chartType = "candle", showEMA = true, showBB = false, showVolume = true, sym = "",
+}) {
+  const wrapRef = useRef(null);
+  const [W, setW] = useState(360);
+  const [hover, setHover] = useState(null);
+  const activeRef = useRef(false);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect?.width;
+      if (w) setW(Math.round(w));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  if (!candles.length) return null;
+
+  const H = height;
+  const mL = 6, mR = 54, mT = 10, axisB = 18;
+  const volH = showVolume ? Math.round(H * 0.2) : 0;
+  const volGap = showVolume ? 8 : 0;
+  const priceH = H - mT - axisB - volH - volGap;
+  const plotW = Math.max(40, W - mL - mR);
+
+  const n = Math.min(view, candles.length);
+  const start = candles.length - n;
+  const disp = candles.slice(start);
+  const closesFull = candles.map((c) => c.c);
+
+  const ema20 = showEMA ? calcEMA(closesFull, 20).slice(start) : [];
+  const ema50 = showEMA ? calcEMA(closesFull, 50).slice(start) : [];
+  const bb = showBB ? bollingerSeries(closesFull, 20).slice(start) : [];
+
+  let hi = Math.max(...disp.map((c) => c.h));
+  let lo = Math.min(...disp.map((c) => c.l));
+  if (showEMA) {
+    for (const v of [...ema20, ...ema50]) { if (Number.isFinite(v)) { hi = Math.max(hi, v); lo = Math.min(lo, v); } }
+  }
+  if (showBB) {
+    for (const b of bb) { if (b) { hi = Math.max(hi, b.upper); lo = Math.min(lo, b.lower); } }
+  }
+  if (overlays) {
+    for (const v of [overlays.support, overlays.resistance]) {
+      if (Number.isFinite(v) && v > 0) { hi = Math.max(hi, v); lo = Math.min(lo, v); }
+    }
+  }
+  const pad = (hi - lo || 1) * 0.06;
+  hi += pad; lo -= pad;
+  const range = hi - lo || 1;
+
+  const step = plotW / n;
+  const bw = Math.max(2, Math.min(14, step * 0.62));
+  const x = (i) => mL + (i + 0.5) * step;
+  const yP = (p) => mT + ((hi - p) / range) * priceH;
+  const priceBottom = mT + priceH;
+  const volTop = priceBottom + axisB + volGap;
+  const maxVol = Math.max(...disp.map((c) => c.vol || 0), 1);
+  const yV = (v) => volTop + (1 - v / maxVol) * volH;
+
+  const lineFrom = (arr, xf, yf) => {
+    let d = "", on = false;
+    arr.forEach((v, i) => {
+      if (v == null || !Number.isFinite(v)) { on = false; return; }
+      d += `${on ? "L" : "M"} ${xf(i).toFixed(1)},${yf(v).toFixed(1)} `;
+      on = true;
+    });
+    return d.trim();
+  };
+
+  const closeLine = disp.map((c, i) => `${i ? "L" : "M"} ${x(i).toFixed(1)},${yP(c.c).toFixed(1)}`).join(" ");
+  const areaPath = `${closeLine} L ${x(n - 1).toFixed(1)},${priceBottom.toFixed(1)} L ${x(0).toFixed(1)},${priceBottom.toFixed(1)} Z`;
+
+  let bbArea = "";
+  if (showBB) {
+    const up = [], low = [];
+    bb.forEach((b, i) => { if (b) { up.push(`${x(i).toFixed(1)},${yP(b.upper).toFixed(1)}`); low.push(`${x(i).toFixed(1)},${yP(b.lower).toFixed(1)}`); } });
+    if (up.length) bbArea = `M ${up.join(" L ")} L ${low.reverse().join(" L ")} Z`;
+  }
+
+  const ticks = niceTicks(lo + pad, hi - pad, 5);
+  const timeIdx = [];
+  const tCount = Math.min(5, n);
+  for (let k = 0; k < tCount; k++) timeIdx.push(Math.round((k / (tCount - 1)) * (n - 1)));
+
+  const last = disp[n - 1];
+  const lastUp = last.c >= last.o;
+  const lastClr = lastUp ? C.green : C.red;
+  const h = hover != null ? disp[hover] : null;
+  const hChg = h ? +(h.c - h.o).toFixed(decimals) : 0;
+  const hPct = h && h.o ? +(((h.c - h.o) / h.o) * 100).toFixed(2) : 0;
+
+  const srLines = overlays
     ? [
-        { v: overlays.ema20, c: C.blue, dash: "5 4" },
-        { v: overlays.ema50, c: C.yellow, dash: "5 4" },
-        { v: overlays.support, c: C.green, dash: "2 4" },
-        { v: overlays.resistance, c: C.red, dash: "2 4" },
-        { v: overlays.price, c: overlays.priceUp ? C.green : C.red, dash: "0" },
-      ].filter((l) => inRange(l.v))
+        { v: overlays.support, c: C.green, label: "S" },
+        { v: overlays.resistance, c: C.red, label: "R" },
+      ].filter((l) => Number.isFinite(l.v) && l.v >= lo && l.v <= hi)
     : [];
 
+  const onMove = (e) => {
+    if (!activeRef.current && e.pointerType !== "mouse") return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = ((e.clientX - rect.left) / rect.width) * W;
+    let idx = Math.round((px - mL) / step - 0.5);
+    idx = Math.max(0, Math.min(n - 1, idx));
+    setHover(idx);
+  };
+  const onDown = (e) => {
+    activeRef.current = true;
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+    onMove(e);
+  };
+  const endHover = () => { activeRef.current = false; setHover(null); };
+
+  const hx = h ? x(hover) : 0;
+  const tipLeftPct = hx / W;
+
   return (
-    <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: "block" }}>
-      {[0.25, 0.5, 0.75].map((f) => (
-        <line key={f} x1={0} y1={PAD + f * ch} x2={W} y2={PAD + f * ch} stroke={C.border} strokeWidth={0.6} />
-      ))}
-      {levelLines.map((l, i) => (
-        <line key={`lvl-${i}`} x1={0} y1={toY(l.v)} x2={W} y2={toY(l.v)} stroke={l.c} strokeWidth={l.dash === "0" ? 1.4 : 1} strokeDasharray={l.dash === "0" ? undefined : l.dash} opacity={l.dash === "0" ? 0.9 : 0.55} />
-      ))}
-      {candles.map((c, i) => {
-        const up = c.c >= c.o, clr = up ? C.green : C.red;
-        const cx = i * sw + sw / 2;
-        const bt = toY(Math.max(c.o, c.c)), bb = toY(Math.min(c.o, c.c));
-        return (
-          <g key={i}>
-            <line x1={cx} y1={toY(c.h)} x2={cx} y2={toY(c.l)} stroke={clr} strokeWidth={1} opacity={0.7} />
-            <rect x={cx - bw / 2} y={bt} width={bw} height={Math.max(1, bb - bt)} fill={clr} opacity={up ? 1 : 0.85} rx={0.5} />
+    <div ref={wrapRef} style={{ position: "relative", width: "100%", userSelect: "none" }}>
+      <svg
+        width="100%" height={H} viewBox={`0 0 ${W} ${H}`} style={{ display: "block", touchAction: "pan-y" }}
+        onPointerDown={onDown} onPointerMove={onMove} onPointerUp={endHover} onPointerLeave={endHover} onPointerCancel={endHover}
+      >
+        <defs>
+          <linearGradient id="pcArea" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={lastClr} stopOpacity={0.28} />
+            <stop offset="100%" stopColor={lastClr} stopOpacity={0.02} />
+          </linearGradient>
+        </defs>
+
+        {ticks.map((t) => (
+          <g key={`gy-${t}`}>
+            <line x1={mL} y1={yP(t)} x2={mL + plotW} y2={yP(t)} stroke={C.border} strokeWidth={0.5} opacity={0.5} />
+            <text x={W - mR + 5} y={yP(t) + 3} fill={C.muted} fontSize={9}>{fmt(t, decimals)}</text>
           </g>
-        );
-      })}
-    </svg>
+        ))}
+
+        {showBB && bbArea && (
+          <>
+            <path d={bbArea} fill={`${C.blue}14`} stroke="none" />
+            <path d={lineFrom(bb.map((b) => b?.upper ?? null), x, yP)} fill="none" stroke={`${C.blue}66`} strokeWidth={1} />
+            <path d={lineFrom(bb.map((b) => b?.lower ?? null), x, yP)} fill="none" stroke={`${C.blue}66`} strokeWidth={1} />
+            <path d={lineFrom(bb.map((b) => b?.mid ?? null), x, yP)} fill="none" stroke={`${C.yellow}55`} strokeWidth={1} strokeDasharray="3 3" />
+          </>
+        )}
+
+        {srLines.map((l) => (
+          <g key={`sr-${l.label}`}>
+            <line x1={mL} y1={yP(l.v)} x2={mL + plotW} y2={yP(l.v)} stroke={l.c} strokeWidth={1} strokeDasharray="2 4" opacity={0.65} />
+            <text x={mL + 2} y={yP(l.v) - 3} fill={l.c} fontSize={8} fontWeight={700}>{l.label} {fmt(l.v, decimals)}</text>
+          </g>
+        ))}
+
+        {chartType === "area" && <path d={areaPath} fill="url(#pcArea)" stroke="none" />}
+        {(chartType === "area" || chartType === "line") && (
+          <path d={closeLine} fill="none" stroke={lastClr} strokeWidth={1.8} strokeLinejoin="round" strokeLinecap="round" />
+        )}
+
+        {chartType === "candle" && disp.map((c, i) => {
+          const up = c.c >= c.o, clr = up ? C.green : C.red;
+          const cx = x(i);
+          const bt = yP(Math.max(c.o, c.c)), bbtm = yP(Math.min(c.o, c.c));
+          return (
+            <g key={i}>
+              <line x1={cx} y1={yP(c.h)} x2={cx} y2={yP(c.l)} stroke={clr} strokeWidth={1} opacity={0.75} />
+              <rect x={cx - bw / 2} y={bt} width={bw} height={Math.max(1, bbtm - bt)} fill={clr} opacity={up ? 0.95 : 0.85} rx={1} />
+            </g>
+          );
+        })}
+
+        {showEMA && (
+          <>
+            <path d={lineFrom(ema20, x, yP)} fill="none" stroke={C.blue} strokeWidth={1.4} opacity={0.9} />
+            <path d={lineFrom(ema50, x, yP)} fill="none" stroke={C.yellow} strokeWidth={1.4} opacity={0.9} />
+          </>
+        )}
+
+        <line x1={mL} y1={yP(last.c)} x2={mL + plotW} y2={yP(last.c)} stroke={lastClr} strokeWidth={0.8} strokeDasharray="4 3" opacity={0.7} />
+        <g>
+          <rect x={W - mR + 1} y={yP(last.c) - 8} width={mR - 2} height={16} rx={3} fill={lastClr} />
+          <text x={W - mR + (mR - 2) / 2} y={yP(last.c) + 3} fill={"#04060c"} fontSize={9} fontWeight={800} textAnchor="middle">{fmt(last.c, decimals)}</text>
+        </g>
+
+        {showVolume && disp.map((c, i) => {
+          const up = c.c >= c.o;
+          const vy = yV(c.vol || 0);
+          return <rect key={`v-${i}`} x={x(i) - bw / 2} y={vy} width={bw} height={Math.max(0.5, volTop + volH - vy)} fill={up ? C.green : C.red} opacity={0.4} rx={0.5} />;
+        })}
+
+        {timeIdx.map((idx) => (
+          <text
+            key={`tx-${idx}`} x={x(idx)} y={priceBottom + 13} fill={C.muted} fontSize={8.5}
+            textAnchor={idx === 0 ? "start" : idx === n - 1 ? "end" : "middle"}
+          >{disp[idx].t}</text>
+        ))}
+
+        {h && (
+          <g pointerEvents="none">
+            <line x1={hx} y1={mT} x2={hx} y2={priceBottom} stroke={C.muted} strokeWidth={0.8} strokeDasharray="3 3" opacity={0.8} />
+            {showVolume && <line x1={hx} y1={volTop} x2={hx} y2={volTop + volH} stroke={C.muted} strokeWidth={0.8} strokeDasharray="3 3" opacity={0.6} />}
+            <line x1={mL} y1={yP(h.c)} x2={mL + plotW} y2={yP(h.c)} stroke={C.muted} strokeWidth={0.6} strokeDasharray="3 3" opacity={0.6} />
+            <circle cx={hx} cy={yP(h.c)} r={3} fill={h.c >= h.o ? C.green : C.red} stroke={C.card} strokeWidth={1} />
+          </g>
+        )}
+      </svg>
+
+      {h && (
+        <div style={{
+          position: "absolute", top: 4, left: `${(tipLeftPct > 0.5 ? tipLeftPct - 0.02 : tipLeftPct + 0.02) * 100}%`,
+          transform: tipLeftPct > 0.5 ? "translateX(-100%)" : "none",
+          background: C.glassStrong, border: `1px solid ${C.glassBorder}`, borderRadius: 8, padding: "6px 8px",
+          pointerEvents: "none", fontSize: 10, color: C.text, whiteSpace: "nowrap", boxShadow: C.shadow, zIndex: 2,
+        }}>
+          <div style={{ color: C.muted, fontSize: 9, marginBottom: 3 }}>{sym ? `${sym} · ` : ""}{h.t}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "auto auto", gap: "1px 10px" }}>
+            <span style={{ color: C.muted }}>O {fmt(h.o, decimals)}</span>
+            <span style={{ color: C.muted }}>H {fmt(h.h, decimals)}</span>
+            <span style={{ color: C.muted }}>L {fmt(h.l, decimals)}</span>
+            <span style={{ color: C.text, fontWeight: 700 }}>C {fmt(h.c, decimals)}</span>
+          </div>
+          <div style={{ color: hChg >= 0 ? C.green : C.red, fontWeight: 700, marginTop: 3 }}>
+            {hChg >= 0 ? "+" : ""}{fmt(hChg, decimals)} ({hPct >= 0 ? "+" : ""}{hPct}%)
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -798,10 +1015,11 @@ function HorizonCallCard({ title, subtitle, call, priceData, eaKey, symbol, mode
   );
 }
 
-function StockDetailModal({ stock, news = [], sett, eaState, onAskEA, onClose, C, S }) {
+function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA, onClose, C, S }) {
   const sym = (stock?.name || "").toUpperCase();
   const dataSym = SYMBOL_MAP[sym] || sym;
   const isNifty = sym === "NIFTY";
+  const isMacro = sym === "NIFTY" || sym === "GOLD" || sym === "SILVER";
   const dec = sym === "NIFTY" ? 0 : 2;
   const [quote, setQuote] = useState(null);
   const [fund, setFund] = useState(null);
@@ -870,33 +1088,26 @@ function StockDetailModal({ stock, news = [], sett, eaState, onAskEA, onClose, C
     [news, sym]
   );
 
-  // NIFTY = scalping only, and only surface BUY/SELL when a ≥100-point move looks likely.
-  const scalpCall = useMemo(() => {
-    if (!isNifty) return null;
-    const a = analysisByTf["5m"];
-    if (!a || !price) return null;
-    const idx = generateIndexSignals(a, price, "NIFTY", sett);
-    const call = buildUnifiedSuggestion({ analysis: a, price, chgPct, indexSignals: idx, settings: sett, mode: "scalp", instrument: "NIFTY" });
-    const moveDist = call.target != null ? Math.abs(call.target - call.entry) : 0;
-    if ((call.action === "BUY" || call.action === "SELL") && moveDist < NIFTY_MIN_PASS_POINTS) {
-      return { ...call, action: "HOLD", label: "No scalp trade", target: null, stopLoss: null, rr: null, gatedReason: `Projected move ~${Math.round(moveDist)} pts — under ${NIFTY_MIN_PASS_POINTS} pts, not worth scalping.` };
-    }
-    return call;
-  }, [isNifty, analysisByTf, price, chgPct, sett]);
+  // NIFTY = scalping only. Use the app-computed (gated) scalp call so Home and this
+  // view always agree.
+  const scalpCall = isNifty ? (macroCalls?.NIFTY ?? null) : null;
 
   const shortCall = useMemo(() => {
     if (isNifty) return null;
+    // GOLD/SILVER reuse the same swing call shown on Home for consistency.
+    if (isMacro) return macroCalls?.[`${sym}_swing`] ?? null;
     const a = analysisByTf["1h"];
     if (!a || !price) return null;
     return getPortfolioSuggestion({ stock, analysis: a, newsItems: stockNews, quote: { current: price, changePercent: chgPct }, fundamentals: fund?.fundamentals, settings: sett, mode: "swing" });
-  }, [isNifty, analysisByTf, price, chgPct, stock, stockNews, fund, sett]);
+  }, [isNifty, isMacro, macroCalls, sym, analysisByTf, price, chgPct, stock, stockNews, fund, sett]);
 
   const longCall = useMemo(() => {
     if (isNifty) return null;
+    if (isMacro) return macroCalls?.[`${sym}_long`] ?? null;
     const a = analysisByTf["1d"];
     if (!a || !price) return null;
     return getPortfolioSuggestion({ stock, analysis: a, newsItems: stockNews, quote: { current: price, changePercent: chgPct }, fundamentals: fund?.fundamentals, settings: sett, mode: "longterm" });
-  }, [isNifty, analysisByTf, price, chgPct, stock, stockNews, fund, sett]);
+  }, [isNifty, isMacro, macroCalls, sym, analysisByTf, price, chgPct, stock, stockNews, fund, sett]);
 
   const verdict = isNifty ? null : horizonVerdict(shortCall, longCall);
   const verdictClr = verdict ? { green: C.green, blue: C.blue, yellow: C.yellow, red: C.red, muted: C.muted }[verdict.tone] : C.muted;
@@ -991,7 +1202,7 @@ function StockDetailModal({ stock, news = [], sett, eaState, onAskEA, onClose, C
           <>
             <HorizonCallCard
               title="Short-term (swing)"
-              subtitle="Hourly chart · days to a few weeks"
+              subtitle="Swing · days to a few weeks"
               call={shortCall}
               priceData={priceData}
               eaKey={`DETAIL_${sym}_short`}
@@ -1005,7 +1216,7 @@ function StockDetailModal({ stock, news = [], sett, eaState, onAskEA, onClose, C
 
             <HorizonCallCard
               title="Long-term (positional)"
-              subtitle="Daily chart · weeks to months · fundamentals-weighted"
+              subtitle={isMacro ? "Long-term · weeks to months" : "Long-term · weeks to months · fundamentals-weighted"}
               call={longCall}
               priceData={priceData}
               eaKey={`DETAIL_${sym}_long`}
@@ -1842,10 +2053,18 @@ export default function App() {
     if (!call) return call;
     const moveDist = call.target != null ? Math.abs(call.target - call.entry) : 0;
     if ((call.action === "BUY" || call.action === "SELL") && moveDist < NIFTY_MIN_PASS_POINTS) {
-      return { ...call, action: "HOLD", label: "No scalp trade", target: null, stopLoss: null, rr: null };
+      return { ...call, action: "HOLD", label: "No scalp trade", target: null, stopLoss: null, rr: null, gatedReason: `Projected move ~${Math.round(moveDist)} pts — under ${NIFTY_MIN_PASS_POINTS} pts, not worth scalping.` };
     }
     return call;
   }, [finalCalls.NIFTY]);
+
+  const macroCalls = useMemo(() => ({
+    NIFTY: niftyScalpCall,
+    GOLD_swing: finalCalls.GOLD_swing,
+    GOLD_long: finalCalls.GOLD_long,
+    SILVER_swing: finalCalls.SILVER_swing,
+    SILVER_long: finalCalls.SILVER_long,
+  }), [niftyScalpCall, finalCalls]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -2479,6 +2698,7 @@ Tabs: dashboard|portfolio|news|settings`;
           stock={selectedStock}
           news={news}
           sett={sett}
+          macroCalls={macroCalls}
           eaState={eaState}
           onAskEA={askEA}
           onClose={() => setSelectedStock(null)}
