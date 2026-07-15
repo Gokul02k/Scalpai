@@ -42,7 +42,7 @@ export async function GET(request) {
     const q = result?.indicators?.quote?.[0] || {};
 
     const candles = timestamps.map((t, i) => ({
-      t: new Date(t * 1000).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', ...(tf === '1d' ? { month: 'short', day: 'numeric' } : {}) }),
+      t: new Date(t * 1000).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', ...(tf === '1d' ? { month: 'short', day: 'numeric' } : {}) }),
       ts: t * 1000,
       o: +(q.open?.[i] ?? 0).toFixed(2),
       h: +(q.high?.[i] ?? 0).toFixed(2),

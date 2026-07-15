@@ -53,13 +53,13 @@ export function buildNiftySignalLogEntry({
   const dt = new Date(ts);
   const { buyW, sellW, margin } = scoreFactors(finalCall.factors);
   const strength = getSignalStrength(finalCall.confidence);
-  const time = dt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const time = dt.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
   return {
     id: `${dt.getTime()}-${finalCall.action}`,
     ts,
     time,
-    date: dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+    date: dt.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' }),
     firstTs: ts,
     firstTime: time,
     updates: 1,
@@ -318,7 +318,7 @@ export function summarizeOutcomes(logs = []) {
 export function buildPortfolioSignalLogEntry({ symbol, action, label, confidence, price, entry, target, stopLoss, rr, reason }) {
   const ts = new Date().toISOString();
   const dt = new Date(ts);
-  const time = dt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  const time = dt.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' });
   return {
     id: `${symbol}-${dt.getTime()}-${action}`,
     symbol,
@@ -331,7 +331,7 @@ export function buildPortfolioSignalLogEntry({ symbol, action, label, confidence
     firstTs: ts,
     time,
     firstTime: time,
-    date: dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+    date: dt.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' }),
     updates: 1,
     price: price ?? entry ?? null,
     entry,
