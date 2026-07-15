@@ -287,7 +287,8 @@ function PriceChart({
   const ticks = niceTicks(lo + pad, hi - pad, 5);
   const timeIdx = [];
   const tCount = Math.min(5, n);
-  for (let k = 0; k < tCount; k++) timeIdx.push(Math.round((k / (tCount - 1)) * (n - 1)));
+  const tDenom = Math.max(1, tCount - 1);
+  for (let k = 0; k < tCount; k++) timeIdx.push(Math.round((k / tDenom) * (n - 1)));
 
   const last = disp[n - 1];
   const lastUp = last.c >= last.o;
@@ -1027,6 +1028,8 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
   const [chartTf, setChartTf] = useState(sym === "NIFTY" ? "5m" : "1d");
   const [loading, setLoading] = useState(true);
   const [showSummary, setShowSummary] = useState(false);
+  const [chartType, setChartType] = useState("candle");
+  const [chartOv, setChartOv] = useState({ ema: true, bb: false, vol: true });
 
   const HORIZONS = [
     { tf: "5m", label: "Intraday" },
@@ -1113,7 +1116,6 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
   const verdictClr = verdict ? { green: C.green, blue: C.blue, yellow: C.yellow, red: C.red, muted: C.muted }[verdict.tone] : C.muted;
 
   const chartCandles = candlesByTf[chartTf] || [];
-  const candleSlice = chartCandles.slice(-45);
   const chartAnalysis = analysisByTf[chartTf];
   const overlays = chartAnalysis ? {
     ema20: chartAnalysis.ema20,
@@ -1231,16 +1233,56 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
         )}
 
         <div style={{ ...S.card }}>
-          <div style={{ display: "flex", gap: 4, marginBottom: 10, flexWrap: "wrap" }}>
-            {HORIZONS.map((h) => (
-              <button key={h.tf} type="button" onClick={() => setChartTf(h.tf)} style={{ padding: "6px 12px", borderRadius: 8, background: chartTf === h.tf ? C.green : C.dim, color: chartTf === h.tf ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 11, cursor: "pointer", fontWeight: 700 }}>
-                {h.label}
+          <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {HORIZONS.map((h) => (
+                <button key={h.tf} type="button" onClick={() => setChartTf(h.tf)} style={{ padding: "6px 12px", borderRadius: 8, background: chartTf === h.tf ? C.green : C.dim, color: chartTf === h.tf ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 11, cursor: "pointer", fontWeight: 700 }}>
+                  {h.label}
+                </button>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 3, background: C.dim, borderRadius: 8, padding: 3 }}>
+              {[{ k: "candle", l: "Candle" }, { k: "line", l: "Line" }, { k: "area", l: "Area" }].map((t) => (
+                <button key={t.k} type="button" onClick={() => setChartType(t.k)} style={{ padding: "5px 9px", borderRadius: 6, background: chartType === t.k ? C.blue : "transparent", color: chartType === t.k ? "#fff" : C.muted, border: "none", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>
+                  {t.l}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+            {[{ k: "ema", l: "EMA 20/50" }, { k: "bb", l: "Bollinger" }, { k: "vol", l: "Volume" }].map((o) => (
+              <button
+                key={o.k}
+                type="button"
+                onClick={() => setChartOv((p) => ({ ...p, [o.k]: !p[o.k] }))}
+                style={{
+                  padding: "4px 10px", borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: "pointer",
+                  background: chartOv[o.k] ? `${C.blue}22` : "transparent",
+                  border: `1px solid ${chartOv[o.k] ? `${C.blue}77` : C.border}`,
+                  color: chartOv[o.k] ? C.blue : C.muted,
+                }}
+              >
+                {o.l}
               </button>
             ))}
           </div>
-          {candleSlice.length > 0 ? (
+
+          {chartCandles.length > 0 ? (
             <>
-              <CandleChart candles={candleSlice} height={220} C={C} overlays={overlays} />
+              <PriceChart
+                candles={chartCandles}
+                view={chartTf === "1d" ? 60 : 50}
+                height={260}
+                C={C}
+                overlays={overlays}
+                decimals={dec}
+                chartType={chartType}
+                showEMA={chartOv.ema}
+                showBB={chartOv.bb}
+                showVolume={chartOv.vol}
+                sym={sym}
+              />
               <ChartLegend overlays={overlays} decimals={dec} C={C} />
             </>
           ) : (
