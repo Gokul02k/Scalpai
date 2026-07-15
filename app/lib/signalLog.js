@@ -11,6 +11,12 @@ export const NIFTY_EVAL_WINDOW_MS = 24 * 60 * 60 * 1000;
 // least this many points in its favour — so it reflects a real, tradeable move.
 export const NIFTY_MIN_PASS_POINTS = 100;
 
+// Portfolio (stock) prediction tracking.
+export const PORTFOLIO_LOG_MIN_CONFIDENCE = 65;
+export const PORTFOLIO_LOG_MAX_ENTRIES = 200;
+// Stocks play out over weeks/months, so grade them over a longer window.
+export const PORTFOLIO_EVAL_WINDOW_MS = 60 * 24 * 60 * 60 * 1000;
+
 export const OUTCOME_LABELS = {
   pending: 'Active',
   target: 'Passed',
@@ -203,21 +209,22 @@ export function mergeNiftyLogLists(serverLogs = [], localLogs = []) {
  * Returns an outcome object, or null if the entry has no tradeable levels.
  * status: 'pending' | 'target' (passed) | 'stop' (failed) | 'expired'.
  */
-export function evaluateSignalOutcome(entry, candles = [], nowMs = Date.now()) {
+export function evaluateSignalOutcome(entry, candles = [], nowMs = Date.now(), opts = {}) {
   if (!entry || (entry.action !== 'BUY' && entry.action !== 'SELL')) return null;
   const E = entry.entry;
   const T = entry.target;
   const S = entry.stopLoss;
   if (E == null || T == null || S == null) return null;
 
+  const windowMs = opts.windowMs ?? NIFTY_EVAL_WINDOW_MS;
   const isBuy = entry.action === 'BUY';
   // Require a minimum favourable move for a pass so it reflects a real move.
-  const minPts = entry.instrument === 'NIFTY' ? NIFTY_MIN_PASS_POINTS : 0;
+  const minPts = opts.minFavorablePoints ?? (entry.instrument === 'NIFTY' ? NIFTY_MIN_PASS_POINTS : 0);
   const effTarget = isBuy ? Math.max(T, E + minPts) : Math.min(T, E - minPts);
   const startMs = new Date(entry.firstTs || entry.ts).getTime();
   // Only grade against the signal's own window so stale signals aren't judged
   // by unrelated later price action (or missing candle history).
-  const endMs = startMs + NIFTY_EVAL_WINDOW_MS;
+  const endMs = startMs + windowMs;
   const path = (candles || []).filter((c) => c && c.ts != null && c.ts >= startMs && c.ts <= endMs);
 
   let status = 'pending';
@@ -243,7 +250,7 @@ export function evaluateSignalOutcome(entry, candles = [], nowMs = Date.now()) {
     if (hitStop) { status = 'stop'; resolvedTs = c.ts; resolvedPrice = S; break; }
   }
 
-  if (status === 'pending' && nowMs - startMs > NIFTY_EVAL_WINDOW_MS) {
+  if (status === 'pending' && nowMs - startMs > windowMs) {
     status = 'expired';
     resolvedPrice = lastPrice;
     resolvedTs = path.length ? path[path.length - 1].ts : startMs;
@@ -267,11 +274,11 @@ export function evaluateSignalOutcome(entry, candles = [], nowMs = Date.now()) {
 }
 
 /** Re-grade all non-terminal entries against the latest candles. */
-export function applyOutcomeToLogs(logs = [], candles = [], nowMs = Date.now()) {
+export function applyOutcomeToLogs(logs = [], candles = [], nowMs = Date.now(), opts = {}) {
   let changed = false;
   const next = logs.map((e) => {
     if (e.outcome && e.outcome.status !== 'pending') return e; // freeze terminal results
-    const outcome = evaluateSignalOutcome(e, candles, nowMs);
+    const outcome = evaluateSignalOutcome(e, candles, nowMs, opts);
     if (!outcome) return e;
     const prev = e.outcome;
     if (!prev
@@ -303,4 +310,55 @@ export function summarizeOutcomes(logs = []) {
   const resolved = passed + failed;
   const winRate = resolved ? Math.round((passed / resolved) * 100) : null;
   return { passed, failed, active, expired, resolved, winRate };
+}
+
+// ── Portfolio (per-stock) prediction log ──
+
+/** Build a log entry for a stock BUY/SELL suggestion. */
+export function buildPortfolioSignalLogEntry({ symbol, action, label, confidence, price, entry, target, stopLoss, rr, reason }) {
+  const ts = new Date().toISOString();
+  const dt = new Date(ts);
+  const time = dt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  return {
+    id: `${symbol}-${dt.getTime()}-${action}`,
+    symbol,
+    instrument: symbol,
+    action,
+    label,
+    confidence,
+    peakConfidence: confidence,
+    ts,
+    firstTs: ts,
+    time,
+    firstTime: time,
+    date: dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+    updates: 1,
+    price: price ?? entry ?? null,
+    entry,
+    target,
+    stopLoss,
+    rr,
+    reason: reason || null,
+  };
+}
+
+/**
+ * Append/update a stock prediction into a multi-symbol log. Dedup is per symbol:
+ * a fresh reading refreshes that stock's most recent row (keeping its peak),
+ * and a new row is only added on a direction flip, a real time gap, or a higher read.
+ */
+export function applyPortfolioLogUpdate(logs, entry) {
+  const idx = logs.findIndex((e) => e.symbol === entry.symbol);
+  const last = idx >= 0 ? logs[idx] : null;
+  const decision = decideSignalLog(last, entry);
+  if (decision === 'skip') return { logs, changed: false, decision };
+
+  if (decision === 'update') {
+    const merged = mergeSignalLogEntry(last, entry);
+    const next = [...logs];
+    next[idx] = merged;
+    return { logs: next.slice(0, PORTFOLIO_LOG_MAX_ENTRIES), changed: true, decision };
+  }
+
+  return { logs: [entry, ...logs].slice(0, PORTFOLIO_LOG_MAX_ENTRIES), changed: true, decision: 'append' };
 }

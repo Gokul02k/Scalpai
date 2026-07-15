@@ -28,6 +28,11 @@ import {
   NIFTY_LOG_MAX_ENTRIES,
   NIFTY_LOG_MIN_CONFIDENCE,
   NIFTY_MIN_PASS_POINTS,
+  evaluateSignalOutcome,
+  buildPortfolioSignalLogEntry,
+  applyPortfolioLogUpdate,
+  PORTFOLIO_LOG_MIN_CONFIDENCE,
+  PORTFOLIO_EVAL_WINDOW_MS,
 } from "./lib/signalLog";
 import { getMarketStatus } from "./lib/marketHours";
 import { THEMES, cardStyle, glassStyle } from "./lib/themes";
@@ -123,6 +128,10 @@ function pushSuggestionItem(items, { id, name, mode, call, priceData, newsHeadli
     reason,
     price: priceData?.cur,
     dayPct,
+    entry: call.entry,
+    target: call.target,
+    stopLoss: call.stopLoss,
+    rr: call.rr,
     newsHeadline: (call.action === "BUY" || call.action === "SELL") ? newsHeadline : null,
   });
 }
@@ -1145,18 +1154,100 @@ function StockDetailModal({ stock, news = [], sett, eaState, onAskEA, onClose, C
   );
 }
 
+function StockPredictionRow({ entry, C, S }) {
+  const clr = entry.action === "BUY" ? C.green : C.red;
+  const o = entry.outcome;
+  const resultClr = o ? (o.resultPct > 0 ? C.green : o.resultPct < 0 ? C.red : C.muted) : C.muted;
+  return (
+    <div style={{ ...S.card, borderColor: `${clr}33`, padding: 12, marginBottom: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 3 }}>
+            <span style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>{entry.symbol}</span>
+            <span style={{ background: clr, color: "#000", fontSize: 9, fontWeight: 800, padding: "2px 7px", borderRadius: 4 }}>{entry.action}</span>
+            <OutcomeBadge outcome={o} C={C} />
+            <span style={{ color: C.text, fontSize: 11, fontWeight: 700 }}>{entry.confidence}%</span>
+          </div>
+          <div style={{ color: C.muted, fontSize: 10 }}>
+            {entry.date} · {entry.firstTime && entry.firstTime !== entry.time ? `${entry.firstTime}–${entry.time}` : entry.time}
+          </div>
+        </div>
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 11, marginBottom: o ? 8 : 0 }}>
+        <span style={{ color: C.muted }}>Entry <b style={{ color: C.blue }}>₹{fmt(entry.entry)}</b></span>
+        <span style={{ color: C.muted }}>Target <b style={{ color: C.green }}>₹{fmt(entry.target)}</b></span>
+        <span style={{ color: C.muted }}>SL <b style={{ color: C.red }}>₹{fmt(entry.stopLoss)}</b></span>
+      </div>
+      {o && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, background: `${resultClr}12`, borderRadius: 8, padding: "6px 10px" }}>
+          <span style={{ color: C.muted, fontSize: 11 }}>
+            {o.status === "target" ? "Target hit" : o.status === "stop" ? "Stopped out" : o.status === "expired" ? "Expired" : "Tracking"} · peak {o.mfePct >= 0 ? "+" : ""}{o.mfePct}%
+          </span>
+          <span style={{ color: resultClr, fontSize: 13, fontWeight: 800 }}>{o.resultPct >= 0 ? "+" : ""}{o.resultPct}%</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PortfolioLogView({ log = [], onClear, C, S }) {
+  const stats = summarizeOutcomes(log);
+  return (
+    <>
+      <div style={{ ...S.card, marginBottom: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+          <ScrollText size={15} color={C.green} />
+          <span style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>Stock prediction track record</span>
+        </div>
+        <p style={{ color: C.muted, fontSize: 11, lineHeight: 1.5, margin: "0 0 10px" }}>
+          Every BUY/SELL the app issues for your stocks (≥{PORTFOLIO_LOG_MIN_CONFIDENCE}% confidence) is graded against the real price path — passed = target hit before the stop-loss.
+        </p>
+        {log.length > 0 && (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+              <span style={{ color: C.muted, fontSize: 12 }}>Win rate</span>
+              <span style={{ color: stats.winRate == null ? C.muted : stats.winRate >= 50 ? C.green : C.red, fontWeight: 900, fontSize: 18 }}>{stats.winRate == null ? "—" : `${stats.winRate}%`}</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+              {[{ l: "Passed", v: stats.passed, c: C.green }, { l: "Failed", v: stats.failed, c: C.red }, { l: "Active", v: stats.active, c: C.yellow }, { l: "Expired", v: stats.expired, c: C.muted }].map((s) => (
+                <div key={s.l} style={{ background: C.dim, borderRadius: 8, padding: "8px 4px", textAlign: "center" }}>
+                  <div style={{ color: s.c, fontWeight: 900, fontSize: 17 }}>{s.v}</div>
+                  <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase" }}>{s.l}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+              <button type="button" onClick={onClear} style={{ padding: "6px 10px", borderRadius: 6, background: `${C.red}18`, border: `1px solid ${C.red}44`, color: C.red, fontSize: 11, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}><Trash2 size={12} /> Clear</button>
+            </div>
+          </>
+        )}
+      </div>
+      {log.length === 0 ? (
+        <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 20 }}>
+          No stock predictions logged yet. When a watchlist stock gets a strong BUY/SELL, it's tracked here automatically.
+        </div>
+      ) : (
+        log.map((e) => <StockPredictionRow key={e.id} entry={e} C={C} S={S} />)
+      )}
+    </>
+  );
+}
+
 function PortfolioTab({
   portfolio,
   suggestionItems,
   portfolioFundamentals,
+  portfolioSignalLog,
   onSelectStock,
   onAddSymbol,
   onRemoveStock,
+  onClearLog,
   csvRef,
   onCsvChange,
   C,
   S,
 }) {
+  const [view, setView] = useState("watchlist");
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState("suggestion");
   const [suggestOpen, setSuggestOpen] = useState(false);
@@ -1263,6 +1354,16 @@ function PortfolioTab({
 
   return (
     <div style={{ padding: "0 14px 90px", position: "relative" }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        {[{ id: "watchlist", l: "Watchlist" }, { id: "log", l: "Track record" }].map((o) => (
+          <button key={o.id} type="button" onClick={() => setView(o.id)} style={{ flex: 1, padding: "9px 8px", borderRadius: 8, background: view === o.id ? C.green : C.card, color: view === o.id ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{o.l}</button>
+        ))}
+      </div>
+
+      {view === "log" ? (
+        <PortfolioLogView log={portfolioSignalLog} onClear={onClearLog} C={C} S={S} />
+      ) : (
+      <>
       <div style={{ position: "relative", marginBottom: 10 }}>
         <div style={{ display: "flex", gap: 6 }}>
           <input
@@ -1330,6 +1431,8 @@ function PortfolioTab({
       <button type="button" onClick={() => csvRef.current?.click()} style={{ width: "100%", marginTop: 10, padding: 10, borderRadius: 10, background: `${C.blue}12`, border: `1px dashed ${C.blue}44`, color: C.blue, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 12 }}>
         <Upload size={13} /> Import stocks from CSV
       </button>
+      </>
+      )}
     </div>
   );
 }
@@ -1364,6 +1467,7 @@ export default function App() {
   const [hydrated, setHydrated] = useState(false);
   const [instrument, setInstrument] = useState("NIFTY");
   const [niftySignalLog, setNiftySignalLog] = useState([]);
+  const [portfolioSignalLog, setPortfolioSignalLog] = useState([]);
   const [serverLogConfigured, setServerLogConfigured] = useState(false);
   const [tab, setTab] = useState("dashboard");
   const [tf, setTf] = useState("5m");
@@ -1412,10 +1516,12 @@ export default function App() {
   const pricesRef = useRef(prices);
   const prevNiftyLogRef = useRef(null);
   const niftyLogRef = useRef([]);
+  const portfolioLogRef = useRef([]);
   const serverLogConfiguredRef = useRef(false);
   portfolioRef.current = portfolio;
   pricesRef.current = prices;
   niftyLogRef.current = niftySignalLog;
+  portfolioLogRef.current = portfolioSignalLog;
   serverLogConfiguredRef.current = serverLogConfigured;
   const stockNamesKey = portfolio.map((p) => p.name).sort().join(",");
 
@@ -1433,6 +1539,7 @@ export default function App() {
         setNiftySignalLog(data.niftySignalLog);
         prevNiftyLogRef.current = data.niftySignalLog[0];
       }
+      if (data.portfolioSignalLog?.length) setPortfolioSignalLog(data.portfolioSignalLog);
     }
     setHydrated(true);
   }, []);
@@ -1464,8 +1571,8 @@ export default function App() {
   // Persist on change
   useEffect(() => {
     if (!hydrated) return;
-    savePersisted({ theme, portfolio, sett, refresh, alerts, chatModel, niftySignalLog });
-  }, [hydrated, theme, portfolio, sett, refresh, alerts, chatModel, niftySignalLog]);
+    savePersisted({ theme, portfolio, sett, refresh, alerts, chatModel, niftySignalLog, portfolioSignalLog });
+  }, [hydrated, theme, portfolio, sett, refresh, alerts, chatModel, niftySignalLog, portfolioSignalLog]);
 
   // Market status ticker
   useEffect(() => {
@@ -1606,7 +1713,8 @@ export default function App() {
     return () => { cancelled = true; };
   }, [portfolioStockSymbols.join(","), refresh]);
 
-  // Fundamentals per holding — fetched when the holdings set changes (slow-moving, not every refresh)
+  // Fundamentals per holding — fetched when the holdings set changes (slow-moving, not every refresh).
+  // Stores the fundamentals object (P/E, ROE, sector, …) keyed by symbol.
   useEffect(() => {
     const syms = portfolioStockSymbols;
     if (!syms.length) { setPortfolioFundamentals({}); return; }
@@ -1615,21 +1723,6 @@ export default function App() {
       const entries = await Promise.all(syms.map(async (s) => {
         const f = await fetchStockFundamentals(s);
         return [s, f?.fundamentals || null];
-      }));
-      if (!cancelled) setPortfolioFundamentals(Object.fromEntries(entries.filter(([, f]) => f)));
-    })();
-    return () => { cancelled = true; };
-  }, [portfolioStockSymbols.join(",")]);
-
-  // Fundamentals per holding — fetched when the holdings set changes (slow-moving, not on every refresh)
-  useEffect(() => {
-    const syms = portfolioStockSymbols;
-    if (!syms.length) { setPortfolioFundamentals({}); return; }
-    let cancelled = false;
-    (async () => {
-      const entries = await Promise.all(syms.map(async (s) => {
-        const f = await fetchStockFundamentals(s);
-        return [s, f];
       }));
       if (!cancelled) setPortfolioFundamentals(Object.fromEntries(entries.filter(([, f]) => f)));
     })();
@@ -2023,6 +2116,76 @@ Tabs: dashboard|portfolio|news|settings`;
     portfolioFundamentals,
   ]);
 
+  // Log actionable portfolio suggestions (BUY/SELL) so we can track their outcomes.
+  useEffect(() => {
+    if (!hydrated) return;
+    setPortfolioSignalLog((prev) => {
+      let logs = prev;
+      let changed = false;
+      for (const it of portfolioSuggestionItems) {
+        if ((it.action === "BUY" || it.action === "SELL")
+          && it.confidence >= PORTFOLIO_LOG_MIN_CONFIDENCE
+          && it.entry != null && it.target != null && it.stopLoss != null) {
+          const entry = buildPortfolioSignalLogEntry({
+            symbol: it.name,
+            action: it.action,
+            label: it.label,
+            confidence: it.confidence,
+            price: it.price,
+            entry: it.entry,
+            target: it.target,
+            stopLoss: it.stopLoss,
+            rr: it.rr,
+            reason: it.reason,
+          });
+          const res = applyPortfolioLogUpdate(logs, entry);
+          if (res.changed) { logs = res.logs; changed = true; }
+        }
+      }
+      return changed ? logs : prev;
+    });
+  }, [hydrated, portfolioSuggestionItems]);
+
+  // Grade logged stock predictions against each stock's daily price path.
+  useEffect(() => {
+    if (!hydrated) return;
+    let cancelled = false;
+    const grade = async () => {
+      const open = portfolioLogRef.current.filter((e) => !e.outcome || e.outcome.status === "pending");
+      if (!open.length) return;
+      const symbols = [...new Set(open.map((e) => e.symbol))];
+      const candlesBySym = {};
+      await Promise.all(symbols.map(async (s) => { candlesBySym[s] = (await fetchStockCandles(s, "1d")) || []; }));
+      if (cancelled) return;
+      const now = Date.now();
+      setPortfolioSignalLog((prev) => {
+        let changed = false;
+        const next = prev.map((e) => {
+          if (e.outcome && e.outcome.status !== "pending") return e;
+          const candles = candlesBySym[e.symbol];
+          if (!candles?.length) return e;
+          const outcome = evaluateSignalOutcome(e, candles, now, { windowMs: PORTFOLIO_EVAL_WINDOW_MS });
+          if (!outcome) return e;
+          const p = e.outcome;
+          if (!p || p.status !== outcome.status || p.resultPct !== outcome.resultPct || p.mfePct !== outcome.mfePct || p.maePct !== outcome.maePct) {
+            changed = true;
+            return { ...e, outcome };
+          }
+          return e;
+        });
+        return changed ? next : prev;
+      });
+    };
+    grade();
+    const id = setInterval(grade, 90_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [hydrated]);
+
+  const clearPortfolioLog = useCallback(() => {
+    if (typeof window !== "undefined" && !window.confirm("Clear all stock prediction history?")) return;
+    setPortfolioSignalLog([]);
+  }, []);
+
   const filteredNews = newsFilter === "All" ? news : news.filter((n) => n.cat === newsFilter);
 
   // ── TAB COMPONENTS ──
@@ -2271,9 +2434,11 @@ Tabs: dashboard|portfolio|news|settings`;
             portfolio={portfolio}
             suggestionItems={portfolioSuggestionItems}
             portfolioFundamentals={portfolioFundamentals}
+            portfolioSignalLog={portfolioSignalLog}
             onSelectStock={setSelectedStock}
             onAddSymbol={addWatchStock}
             onRemoveStock={removePortfolioStock}
+            onClearLog={clearPortfolioLog}
             csvRef={csvRef}
             onCsvChange={handleCSV}
             C={C}
