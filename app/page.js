@@ -792,11 +792,12 @@ function HorizonCallCard({ title, subtitle, call, priceData, eaKey, symbol, mode
 function StockDetailModal({ stock, news = [], sett, eaState, onAskEA, onClose, C, S }) {
   const sym = (stock?.name || "").toUpperCase();
   const dataSym = SYMBOL_MAP[sym] || sym;
+  const isNifty = sym === "NIFTY";
   const dec = sym === "NIFTY" ? 0 : 2;
   const [quote, setQuote] = useState(null);
   const [fund, setFund] = useState(null);
   const [candlesByTf, setCandlesByTf] = useState({});
-  const [chartTf, setChartTf] = useState("1d");
+  const [chartTf, setChartTf] = useState(sym === "NIFTY" ? "5m" : "1d");
   const [loading, setLoading] = useState(true);
   const [showSummary, setShowSummary] = useState(false);
 
@@ -813,20 +814,21 @@ function StockDetailModal({ stock, news = [], sett, eaState, onAskEA, onClose, C
     setFund(null);
     setCandlesByTf({});
     (async () => {
-      const [q, f, h1, d1] = await Promise.all([
+      const tfA = isNifty ? "5m" : "1h";
+      const [q, f, cA, d1] = await Promise.all([
         fetchStockQuote(dataSym),
         fetchStockFundamentals(dataSym),
-        fetchStockCandles(dataSym, "1h"),
+        fetchStockCandles(dataSym, tfA),
         fetchStockCandles(dataSym, "1d"),
       ]);
       if (cancelled) return;
       setQuote(q);
       setFund(f);
-      setCandlesByTf({ "1h": h1 || [], "1d": d1 || [] });
+      setCandlesByTf({ [tfA]: cA || [], "1d": d1 || [] });
       setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [dataSym]);
+  }, [dataSym, isNifty]);
 
   useEffect(() => {
     if (candlesByTf[chartTf]) return;
@@ -859,19 +861,35 @@ function StockDetailModal({ stock, news = [], sett, eaState, onAskEA, onClose, C
     [news, sym]
   );
 
+  // NIFTY = scalping only, and only surface BUY/SELL when a ≥100-point move looks likely.
+  const scalpCall = useMemo(() => {
+    if (!isNifty) return null;
+    const a = analysisByTf["5m"];
+    if (!a || !price) return null;
+    const idx = generateIndexSignals(a, price, "NIFTY", sett);
+    const call = buildUnifiedSuggestion({ analysis: a, price, chgPct, indexSignals: idx, settings: sett, mode: "scalp", instrument: "NIFTY" });
+    const moveDist = call.target != null ? Math.abs(call.target - call.entry) : 0;
+    if ((call.action === "BUY" || call.action === "SELL") && moveDist < NIFTY_MIN_PASS_POINTS) {
+      return { ...call, action: "HOLD", label: "No scalp trade", target: null, stopLoss: null, rr: null, gatedReason: `Projected move ~${Math.round(moveDist)} pts — under ${NIFTY_MIN_PASS_POINTS} pts, not worth scalping.` };
+    }
+    return call;
+  }, [isNifty, analysisByTf, price, chgPct, sett]);
+
   const shortCall = useMemo(() => {
+    if (isNifty) return null;
     const a = analysisByTf["1h"];
     if (!a || !price) return null;
     return getPortfolioSuggestion({ stock, analysis: a, newsItems: stockNews, quote: { current: price, changePercent: chgPct }, fundamentals: fund?.fundamentals, settings: sett, mode: "swing" });
-  }, [analysisByTf, price, chgPct, stock, stockNews, fund, sett]);
+  }, [isNifty, analysisByTf, price, chgPct, stock, stockNews, fund, sett]);
 
   const longCall = useMemo(() => {
+    if (isNifty) return null;
     const a = analysisByTf["1d"];
     if (!a || !price) return null;
     return getPortfolioSuggestion({ stock, analysis: a, newsItems: stockNews, quote: { current: price, changePercent: chgPct }, fundamentals: fund?.fundamentals, settings: sett, mode: "longterm" });
-  }, [analysisByTf, price, chgPct, stock, stockNews, fund, sett]);
+  }, [isNifty, analysisByTf, price, chgPct, stock, stockNews, fund, sett]);
 
-  const verdict = horizonVerdict(shortCall, longCall);
+  const verdict = isNifty ? null : horizonVerdict(shortCall, longCall);
   const verdictClr = verdict ? { green: C.green, blue: C.blue, yellow: C.yellow, red: C.red, muted: C.muted }[verdict.tone] : C.muted;
 
   const chartCandles = candlesByTf[chartTf] || [];
@@ -939,33 +957,58 @@ function StockDetailModal({ stock, news = [], sett, eaState, onAskEA, onClose, C
           </div>
         )}
 
-        <HorizonCallCard
-          title="Short-term (swing)"
-          subtitle="Hourly chart · days to a few weeks"
-          call={shortCall}
-          priceData={priceData}
-          eaKey={`DETAIL_${sym}_short`}
-          symbol={sym}
-          mode="swing"
-          decimals={dec}
-          eaState={eaState}
-          onAskEA={onAskEA}
-          C={C}
-        />
+        {isNifty ? (
+          <>
+            <HorizonCallCard
+              title="Scalping"
+              subtitle="5-min chart · intraday · targets a ≥100-pt move"
+              call={scalpCall}
+              priceData={priceData}
+              eaKey={`DETAIL_${sym}_scalp`}
+              symbol={sym}
+              mode="scalp"
+              decimals={dec}
+              eaState={eaState}
+              onAskEA={onAskEA}
+              C={C}
+            />
+            {scalpCall?.gatedReason && (
+              <div style={{ ...S.card, marginTop: -2, marginBottom: 10, color: C.muted, fontSize: 12, lineHeight: 1.5 }}>
+                {scalpCall.gatedReason}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <HorizonCallCard
+              title="Short-term (swing)"
+              subtitle="Hourly chart · days to a few weeks"
+              call={shortCall}
+              priceData={priceData}
+              eaKey={`DETAIL_${sym}_short`}
+              symbol={sym}
+              mode="swing"
+              decimals={dec}
+              eaState={eaState}
+              onAskEA={onAskEA}
+              C={C}
+            />
 
-        <HorizonCallCard
-          title="Long-term (positional)"
-          subtitle="Daily chart · weeks to months · fundamentals-weighted"
-          call={longCall}
-          priceData={priceData}
-          eaKey={`DETAIL_${sym}_long`}
-          symbol={sym}
-          mode="longterm"
-          decimals={dec}
-          eaState={eaState}
-          onAskEA={onAskEA}
-          C={C}
-        />
+            <HorizonCallCard
+              title="Long-term (positional)"
+              subtitle="Daily chart · weeks to months · fundamentals-weighted"
+              call={longCall}
+              priceData={priceData}
+              eaKey={`DETAIL_${sym}_long`}
+              symbol={sym}
+              mode="longterm"
+              decimals={dec}
+              eaState={eaState}
+              onAskEA={onAskEA}
+              C={C}
+            />
+          </>
+        )}
 
         <div style={{ ...S.card }}>
           <div style={{ display: "flex", gap: 4, marginBottom: 10, flexWrap: "wrap" }}>

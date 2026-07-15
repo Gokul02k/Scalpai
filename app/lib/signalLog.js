@@ -7,9 +7,9 @@ export const NIFTY_LOG_SESSION_MS = 20 * 60 * 1000;
 // touches its target or stop-loss (~one trading session incl. the next open).
 export const NIFTY_EVAL_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-// A NIFTY prediction only counts as "passed" once price has moved at least this
-// many points in its favour — so a pass reflects a meaningful, tradeable move.
-export const NIFTY_MIN_PASS_POINTS = 120;
+// A NIFTY signal is only actionable / counts as "passed" once price moves at
+// least this many points in its favour — so it reflects a real, tradeable move.
+export const NIFTY_MIN_PASS_POINTS = 100;
 
 export const OUTCOME_LABELS = {
   pending: 'Active',
