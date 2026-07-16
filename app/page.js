@@ -56,6 +56,21 @@ const MACRO_SYMBOLS = new Set(["NIFTY", "GOLD", "SILVER", "GOLDBEES", "SILVERBEE
 
 const DEFAULT_PORTFOLIO = [];
 
+/** Collapse duplicate holdings (same name + type), keeping the most complete row. */
+function dedupePortfolio(list = []) {
+  const byKey = new Map();
+  for (const s of list) {
+    if (!s?.name) continue;
+    const key = `${s.type || "stock"}:${String(s.name).toUpperCase()}`;
+    const prev = byKey.get(key);
+    if (!prev) { byKey.set(key, s); continue; }
+    // Prefer the row that carries real qty/buy data over a bare watchlist entry.
+    const score = (x) => (x.qty > 1 ? 1 : 0) + (x.buy > 0 ? 1 : 0);
+    if (score(s) > score(prev)) byKey.set(key, s);
+  }
+  return [...byKey.values()];
+}
+
 const NIFTY50_SAMPLE = [
   "RELIANCE","TCS","HDFCBANK","INFY","ICICIBANK","HINDUNILVR","ITC","SBIN","BHARTIARTL",
   "KOTAKBANK","LT","AXISBANK","ASIANPAINT","MARUTI","TITAN","BAJFINANCE","SUNPHARMA","WIPRO",
@@ -1443,8 +1458,50 @@ function StockPredictionRow({ entry, C, S }) {
   );
 }
 
+const LOG_OUTCOME = (e) => {
+  const s = e.outcome?.status;
+  if (s === "target") return "passed";
+  if (s === "stop") return "failed";
+  if (s === "expired") return "expired";
+  return "active";
+};
+
+/**
+ * Collapse repeat predictions for the same stock+direction into a single row.
+ * A resolved outcome (target/stop) is kept over an expired/pending one; ties break
+ * to the most recent. This removes the periodic re-logs of a still-open signal.
+ */
+function dedupePortfolioLog(log = []) {
+  const rank = (e) => {
+    const s = e.outcome?.status;
+    if (s === "target" || s === "stop") return 3;
+    if (s === "expired") return 2;
+    return 1;
+  };
+  const byKey = new Map();
+  for (const e of log) {
+    const key = `${e.symbol}|${e.action}`;
+    const prev = byKey.get(key);
+    if (!prev) { byKey.set(key, e); continue; }
+    const better = rank(e) > rank(prev) || (rank(e) === rank(prev) && new Date(e.ts) > new Date(prev.ts));
+    if (better) byKey.set(key, e);
+  }
+  return [...byKey.values()].sort((a, b) => new Date(b.ts) - new Date(a.ts));
+}
+
 function PortfolioLogView({ log = [], onClear, C, S }) {
-  const stats = summarizeOutcomes(log);
+  const [filter, setFilter] = useState("all");
+  const entries = useMemo(() => dedupePortfolioLog(log), [log]);
+  const stats = summarizeOutcomes(entries);
+  const filtered = filter === "all" ? entries : entries.filter((e) => LOG_OUTCOME(e) === filter);
+
+  const boxes = [
+    { key: "passed", l: "Passed", v: stats.passed, c: C.green },
+    { key: "failed", l: "Failed", v: stats.failed, c: C.red },
+    { key: "active", l: "Active", v: stats.active, c: C.yellow },
+    { key: "expired", l: "Expired", v: stats.expired, c: C.muted },
+  ];
+
   return (
     <>
       <div style={{ ...S.card, marginBottom: 12 }}>
@@ -1455,32 +1512,56 @@ function PortfolioLogView({ log = [], onClear, C, S }) {
         <p style={{ color: C.muted, fontSize: 11, lineHeight: 1.5, margin: "0 0 10px" }}>
           Every BUY/SELL the app issues for your stocks (≥{PORTFOLIO_LOG_MIN_CONFIDENCE}% confidence) is graded against the real price path — passed = target hit before the stop-loss.
         </p>
-        {log.length > 0 && (
+        {entries.length > 0 && (
           <>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
               <span style={{ color: C.muted, fontSize: 12 }}>Win rate</span>
               <span style={{ color: stats.winRate == null ? C.muted : stats.winRate >= 50 ? C.green : C.red, fontWeight: 900, fontSize: 18 }}>{stats.winRate == null ? "—" : `${stats.winRate}%`}</span>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
-              {[{ l: "Passed", v: stats.passed, c: C.green }, { l: "Failed", v: stats.failed, c: C.red }, { l: "Active", v: stats.active, c: C.yellow }, { l: "Expired", v: stats.expired, c: C.muted }].map((s) => (
-                <div key={s.l} style={{ background: C.dim, borderRadius: 8, padding: "8px 4px", textAlign: "center" }}>
-                  <div style={{ color: s.c, fontWeight: 900, fontSize: 17 }}>{s.v}</div>
-                  <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase" }}>{s.l}</div>
-                </div>
-              ))}
+              {boxes.map((s) => {
+                const on = filter === s.key;
+                return (
+                  <button
+                    key={s.key}
+                    type="button"
+                    onClick={() => setFilter((f) => (f === s.key ? "all" : s.key))}
+                    aria-pressed={on}
+                    style={{
+                      background: on ? `${s.c}22` : C.dim,
+                      border: `1px solid ${on ? s.c : "transparent"}`,
+                      borderRadius: 8, padding: "8px 4px", textAlign: "center", cursor: "pointer",
+                    }}
+                  >
+                    <div style={{ color: s.c, fontWeight: 900, fontSize: 17 }}>{s.v}</div>
+                    <div style={{ color: on ? s.c : C.muted, fontSize: 9, textTransform: "uppercase", fontWeight: 700 }}>{s.l}</div>
+                  </button>
+                );
+              })}
             </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+              {filter === "all" ? (
+                <span style={{ color: C.muted, fontSize: 10 }}>Tap a stat to filter trades</span>
+              ) : (
+                <button type="button" onClick={() => setFilter("all")} style={{ padding: "5px 10px", borderRadius: 6, background: C.dim, border: `1px solid ${C.border}`, color: C.text, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                  Show all
+                </button>
+              )}
               <button type="button" onClick={onClear} style={{ padding: "6px 10px", borderRadius: 6, background: `${C.red}18`, border: `1px solid ${C.red}44`, color: C.red, fontSize: 11, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}><Trash2 size={12} /> Clear</button>
             </div>
           </>
         )}
       </div>
-      {log.length === 0 ? (
+      {entries.length === 0 ? (
         <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 20 }}>
           No stock predictions logged yet. When a watchlist stock gets a strong BUY/SELL, it's tracked here automatically.
         </div>
+      ) : filtered.length === 0 ? (
+        <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 20 }}>
+          No {filter} trades yet.
+        </div>
       ) : (
-        log.map((e) => <StockPredictionRow key={e.id} entry={e} C={C} S={S} />)
+        filtered.map((e) => <StockPredictionRow key={e.id} entry={e} C={C} S={S} />)
       )}
     </>
   );
@@ -1503,6 +1584,7 @@ function PortfolioTab({
   const [view, setView] = useState("watchlist");
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState("suggestion");
+  const [sectorFilter, setSectorFilter] = useState("all");
   const [suggestOpen, setSuggestOpen] = useState(false);
   const inputRef = useRef(null);
 
@@ -1527,8 +1609,23 @@ function PortfolioTab({
   const addMatches = q ? filterStockSuggestions(query, heldSymbols) : [];
   const alreadyHeld = q && heldSymbols.some((h) => h.toUpperCase() === q);
 
+  const stockList = useMemo(
+    () => dedupePortfolio(portfolio).filter((s) => s.type !== "mf"),
+    [portfolio]
+  );
+  const mfEntries = useMemo(
+    () => dedupePortfolio(portfolio).filter((s) => s.type === "mf"),
+    [portfolio]
+  );
+
+  const sectors = useMemo(() => {
+    const set = new Set(stockList.map(sectorOf));
+    return [...set].sort((a, b) => (a === "Other" ? 1 : 0) - (b === "Other" ? 1 : 0) || a.localeCompare(b));
+  }, [stockList, portfolioFundamentals]);
+
   const visible = useMemo(() => {
-    let list = portfolio.filter((s) => s.type !== "mf").filter((s) => !q || s.name.toUpperCase().includes(q));
+    let list = stockList.filter((s) => !q || s.name.toUpperCase().includes(q));
+    if (sectorFilter !== "all") list = list.filter((s) => sectorOf(s) === sectorFilter);
     if (sortMode === "az") {
       list = [...list].sort((a, b) => a.name.localeCompare(b.name));
     } else if (sortMode === "sector") {
@@ -1546,9 +1643,7 @@ function PortfolioTab({
       });
     }
     return list;
-  }, [portfolio, q, sortMode, orderByName, portfolioFundamentals]);
-
-  const mfEntries = portfolio.filter((s) => s.type === "mf");
+  }, [stockList, q, sortMode, sectorFilter, orderByName, portfolioFundamentals]);
 
   const addTyped = () => {
     if (!q || alreadyHeld) return;
@@ -1648,17 +1743,42 @@ function PortfolioTab({
         )}
       </div>
 
-      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
         {[{ id: "suggestion", l: "Suggestion" }, { id: "az", l: "A–Z" }, { id: "sector", l: "Sector" }].map((o) => (
           <button key={o.id} type="button" onClick={() => setSortMode(o.id)} style={{ flex: 1, padding: "8px 6px", borderRadius: 8, background: sortMode === o.id ? C.green : C.card, color: sortMode === o.id ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{o.l}</button>
         ))}
       </div>
 
+      {sectors.length > 1 && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 12, overflowX: "auto", paddingBottom: 2 }}>
+          {["all", ...sectors].map((sec) => {
+            const active = sectorFilter === sec;
+            return (
+              <button
+                key={sec}
+                type="button"
+                onClick={() => setSectorFilter(sec)}
+                style={{
+                  flexShrink: 0, padding: "6px 12px", borderRadius: 999, fontSize: 11, fontWeight: 700, cursor: "pointer",
+                  background: active ? `${C.blue}22` : "transparent",
+                  border: `1px solid ${active ? `${C.blue}88` : C.border}`,
+                  color: active ? C.blue : C.muted, whiteSpace: "nowrap",
+                }}
+              >
+                {sec === "all" ? "All sectors" : sec}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {visible.length === 0 ? (
         <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 20 }}>
-          {portfolio.length === 0
+          {stockList.length === 0
             ? "Your watchlist is empty. Search a stock above and tap Add."
-            : "No stocks match your search."}
+            : sectorFilter !== "all"
+              ? `No ${sectorFilter} stocks in your watchlist.`
+              : "No stocks match your search."}
         </div>
       ) : sortMode === "sector" ? (
         groupedBySector()
@@ -1720,6 +1840,7 @@ export default function App() {
   const [hydrated, setHydrated] = useState(false);
   const [instrument, setInstrument] = useState("NIFTY");
   const [niftySignalLog, setNiftySignalLog] = useState([]);
+  const [niftyLogFilter, setNiftyLogFilter] = useState("all");
   const [portfolioSignalLog, setPortfolioSignalLog] = useState([]);
   const [serverLogConfigured, setServerLogConfigured] = useState(false);
   const [tab, setTab] = useState("dashboard");
@@ -1783,7 +1904,7 @@ export default function App() {
     const data = loadPersisted();
     if (data) {
       if (data.theme) setTheme(data.theme);
-      if (data.portfolio?.length) setPortfolio(data.portfolio);
+      if (data.portfolio?.length) setPortfolio(dedupePortfolio(data.portfolio));
       if (data.sett) setSett(data.sett);
       if (data.refresh) setRefresh(data.refresh);
       if (data.alerts) setAlerts(data.alerts);
@@ -2317,7 +2438,7 @@ Tabs: dashboard|portfolio|news|settings`;
     const reader = new FileReader();
     reader.onload = (ev) => {
       const parsed = parsePortfolioCSV(ev.target.result);
-      if (parsed.length) setPortfolio(parsed);
+      if (parsed.length) setPortfolio(dedupePortfolio(parsed));
       else alert("Could not read CSV. Use columns: symbol/name, qty, price/buy (Groww/Zerodha export).");
     };
     reader.readAsText(file);
@@ -2629,20 +2750,38 @@ Tabs: dashboard|portfolio|news|settings`;
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
               {[
-                { l: "Passed", v: stats.passed, c: C.green },
-                { l: "Failed", v: stats.failed, c: C.red },
-                { l: "Active", v: stats.active, c: C.yellow },
-                { l: "Expired", v: stats.expired, c: C.muted },
-              ].map((s) => (
-                <div key={s.l} style={{ background: C.dim, borderRadius: 8, padding: "8px 4px", textAlign: "center" }}>
-                  <div style={{ color: s.c, fontWeight: 900, fontSize: 17 }}>{s.v}</div>
-                  <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase" }}>{s.l}</div>
-                </div>
-              ))}
+                { key: "passed", l: "Passed", v: stats.passed, c: C.green },
+                { key: "failed", l: "Failed", v: stats.failed, c: C.red },
+                { key: "active", l: "Active", v: stats.active, c: C.yellow },
+                { key: "expired", l: "Expired", v: stats.expired, c: C.muted },
+              ].map((s) => {
+                const on = niftyLogFilter === s.key;
+                return (
+                  <button
+                    key={s.key}
+                    type="button"
+                    onClick={() => setNiftyLogFilter((f) => (f === s.key ? "all" : s.key))}
+                    aria-pressed={on}
+                    style={{ background: on ? `${s.c}22` : C.dim, border: `1px solid ${on ? s.c : "transparent"}`, borderRadius: 8, padding: "8px 4px", textAlign: "center", cursor: "pointer" }}
+                  >
+                    <div style={{ color: s.c, fontWeight: 900, fontSize: 17 }}>{s.v}</div>
+                    <div style={{ color: on ? s.c : C.muted, fontSize: 9, textTransform: "uppercase", fontWeight: 700 }}>{s.l}</div>
+                  </button>
+                );
+              })}
             </div>
-            <p style={{ color: C.muted, fontSize: 10, margin: "10px 0 0", lineHeight: 1.4 }}>
-              Win rate = passed ÷ (passed + failed). A signal "passes" only after NIFTY moves ≥{NIFTY_MIN_PASS_POINTS} points in its favour before the stop-loss.
-            </p>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, gap: 8 }}>
+              <p style={{ color: C.muted, fontSize: 10, margin: 0, lineHeight: 1.4, flex: 1 }}>
+                {niftyLogFilter === "all"
+                  ? `Win rate = passed ÷ (passed + failed). A signal "passes" only after NIFTY moves ≥${NIFTY_MIN_PASS_POINTS} points in its favour before the stop-loss.`
+                  : `Showing ${niftyLogFilter} signals.`}
+              </p>
+              {niftyLogFilter !== "all" && (
+                <button type="button" onClick={() => setNiftyLogFilter("all")} style={{ flexShrink: 0, padding: "5px 10px", borderRadius: 6, background: C.dim, border: `1px solid ${C.border}`, color: C.text, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                  Show all
+                </button>
+              )}
+            </div>
           </div>
         );
       })()}
@@ -2652,9 +2791,13 @@ Tabs: dashboard|portfolio|news|settings`;
           No NIFTY BUY/SELL signals logged yet. Entries appear when confidence reaches {NIFTY_LOG_MIN_CONFIDENCE}%+ during market hours
           {serverLogConfigured ? " — logging continues on the server when the app is closed." : " — keep the app open, or enable server logging on Vercel."}
         </div>
-      ) : (
-        niftySignalLog.map((entry) => <NiftySignalLogRow key={entry.id} entry={entry} C={C} S={S} />)
-      )}
+      ) : (() => {
+        const shown = niftyLogFilter === "all" ? niftySignalLog : niftySignalLog.filter((e) => LOG_OUTCOME(e) === niftyLogFilter);
+        if (!shown.length) {
+          return <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 24 }}>No {niftyLogFilter} signals yet.</div>;
+        }
+        return shown.map((entry) => <NiftySignalLogRow key={entry.id} entry={entry} C={C} S={S} />);
+      })()}
     </div>
   );
 
