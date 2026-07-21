@@ -112,6 +112,41 @@ export function calcLiquidity(candles) {
   };
 }
 
+/**
+ * Intraday session metrics from timestamped candles (needs `ts` in ms):
+ *  - vwap: volume-weighted average price for the current IST trading day
+ *  - orHigh/orLow: the opening-range (first `openMinutes`) high/low
+ *  - orReady: true once at least one bar has printed after the opening range
+ * Returns null for candle sets without timestamps (e.g. daily bars).
+ */
+export function calcIntradaySession(candles = [], openMinutes = 15, barMinutes = 5) {
+  const last = candles[candles.length - 1];
+  if (!last || last.ts == null) return null;
+  const dayKey = (ts) => new Date(ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const today = dayKey(last.ts);
+  const session = candles.filter((c) => c.ts != null && dayKey(c.ts) === today);
+  if (!session.length) return null;
+
+  let pv = 0;
+  let vol = 0;
+  for (const c of session) {
+    const tp = (c.h + c.l + c.c) / 3;
+    const v = c.vol || 0;
+    pv += tp * v;
+    vol += v;
+  }
+  const vwap = vol > 0
+    ? +(pv / vol).toFixed(2)
+    : +(session.reduce((s, c) => s + c.c, 0) / session.length).toFixed(2);
+
+  const orBars = Math.max(1, Math.round(openMinutes / barMinutes));
+  const orCandles = session.slice(0, orBars);
+  const orHigh = +Math.max(...orCandles.map((c) => c.h)).toFixed(2);
+  const orLow = +Math.min(...orCandles.map((c) => c.l)).toFixed(2);
+
+  return { vwap, orHigh, orLow, orReady: session.length > orBars, bars: session.length };
+}
+
 export function analyzeFromCandles(candles) {
   const closes = candles.map(c => c.c);
   const rsi = calcRSI(closes);
@@ -149,6 +184,7 @@ export function analyzeFromCandles(candles) {
     stoch,
     sr,
     liquidity,
+    session: calcIntradaySession(candles),
     price,
     summary: [
       { n: 'RSI (14)', v: rsi.toFixed(1), sig: rsi > 70 ? 'Overbought' : rsi < 30 ? 'Oversold' : 'Neutral', t: rsi > 70 ? 'SELL' : rsi < 30 ? 'BUY' : 'HOLD' },

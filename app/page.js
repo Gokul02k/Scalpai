@@ -1109,6 +1109,7 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
   // NIFTY = scalping only. Use the app-computed (gated) scalp call so Home and this
   // view always agree.
   const scalpCall = isNifty ? (macroCalls?.NIFTY ?? null) : null;
+  const niftySession = isNifty ? (analysisByTf["5m"]?.session ?? null) : null;
 
   const shortCall = useMemo(() => {
     if (isNifty) return null;
@@ -1212,6 +1213,26 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
             {scalpCall?.gatedReason && (
               <div style={{ ...S.card, marginTop: -2, marginBottom: 10, color: C.muted, fontSize: 12, lineHeight: 1.5 }}>
                 {scalpCall.gatedReason}
+              </div>
+            )}
+            {niftySession && (
+              <div style={{ ...S.card }}>
+                <div style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>Intraday levels</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+                  <div style={{ background: C.dim, borderRadius: 8, padding: "8px 10px" }}>
+                    <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase" }}>VWAP</div>
+                    <div style={{ color: price >= niftySession.vwap ? C.green : C.red, fontSize: 13, fontWeight: 800 }}>₹{fmt(niftySession.vwap, dec)}</div>
+                    <div style={{ color: C.muted, fontSize: 9 }}>{price >= niftySession.vwap ? "above · long bias" : "below · short bias"}</div>
+                  </div>
+                  <div style={{ background: C.dim, borderRadius: 8, padding: "8px 10px" }}>
+                    <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase" }}>Open high (15m)</div>
+                    <div style={{ color: C.text, fontSize: 13, fontWeight: 800 }}>₹{fmt(niftySession.orHigh, dec)}</div>
+                  </div>
+                  <div style={{ background: C.dim, borderRadius: 8, padding: "8px 10px" }}>
+                    <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase" }}>Open low (15m)</div>
+                    <div style={{ color: C.text, fontSize: 13, fontWeight: 800 }}>₹{fmt(niftySession.orLow, dec)}</div>
+                  </div>
+                </div>
               </div>
             )}
           </>

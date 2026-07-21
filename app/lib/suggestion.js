@@ -161,11 +161,41 @@ function analyzeLiquidityFactor(liquidity) {
   };
 }
 
+function analyzeSessionFactors(price, session) {
+  if (!session || !price) return [];
+  const out = [];
+
+  if (session.vwap) {
+    const above = price >= session.vwap;
+    out.push({
+      type: above ? 'BUY' : 'SELL',
+      name: 'VWAP',
+      reason: above
+        ? `Price above VWAP (₹${session.vwap}) — intraday long bias`
+        : `Price below VWAP (₹${session.vwap}) — intraday short bias`,
+      weight: 2,
+    });
+  }
+
+  if (session.orReady && session.orHigh && session.orLow) {
+    if (price > session.orHigh) {
+      out.push({ type: 'BUY', name: 'Opening range', reason: `Broke above 15-min opening high ₹${session.orHigh}`, weight: 2 });
+    } else if (price < session.orLow) {
+      out.push({ type: 'SELL', name: 'Opening range', reason: `Broke below 15-min opening low ₹${session.orLow}`, weight: 2 });
+    } else {
+      out.push({ type: 'HOLD', name: 'Opening range', reason: `Inside opening range ₹${session.orLow}–₹${session.orHigh}`, weight: 1 });
+    }
+  }
+
+  return out;
+}
+
 function collectFactors(analysis, indexSignals = [], { niftyScalp = false } = {}) {
   const factors = [];
 
   if (niftyScalp && analysis) {
     factors.push(...analyzeSRFactors(analysis.price, analysis));
+    factors.push(...analyzeSessionFactors(analysis.price, analysis.session));
     const liq = analyzeLiquidityFactor(analysis.liquidity);
     if (liq) factors.push(liq);
   }
@@ -231,31 +261,56 @@ function voteFromFactors(factors, chgPct, mode) {
   return { action, buyW, sellW, confidence };
 }
 
+/**
+ * Risk-first trade levels with an enforced minimum reward:risk.
+ *
+ * The target is capped at the next structural level (resistance for longs,
+ * support for shorts) so it is realistic. The stop is then sized to the target:
+ * we use the *largest* stop that still yields at least `minRR`, capped at a sane
+ * %-based max and floored at ATR-based volatility. If the target is so close that
+ * even a volatility-safe stop cannot reach `minRR`, the setup is flagged
+ * `viable: false` (i.e. "don't take this trade") instead of emitting a lop-sided
+ * risk:reward like target +33 / stop -193.
+ */
 function tradeLevels(price, action, mode, settings = {}, analysis = null) {
   if (!price || action === 'HOLD' || action === 'WAIT') {
-    return { entry: price, target: null, stopLoss: null, rr: null };
+    return { entry: price, target: null, stopLoss: null, rr: null, viable: false };
   }
-  const profitPct = settings.profitPct ?? 1.5;
-  const slPct = settings.slPct ?? 0.8;
-  const pt = mode === 'longterm' ? 0.1 : mode === 'swing' ? profitPct * 2.5 / 100 : profitPct / 100;
-  const sl = mode === 'longterm' ? 0.06 : mode === 'swing' ? slPct * 2 / 100 : slPct / 100;
+
   const buy = action === 'BUY';
   const entry = +price.toFixed(2);
-  let target = +(price * (buy ? 1 + pt : 1 - pt)).toFixed(2);
-  let stopLoss = +(price * (buy ? 1 - sl : 1 + sl)).toFixed(2);
+  const atr = analysis?.atr > 0 ? analysis.atr : 0;
+  const sr = analysis?.sr || {};
 
-  if (mode === 'scalp' && analysis?.sr) {
-    const { support, resistance } = analysis.sr;
-    if (buy) {
-      stopLoss = +Math.min(stopLoss, support * 0.999).toFixed(2);
-      target = +Math.min(Math.max(target, price * (1 + pt)), resistance * 0.998).toFixed(2);
-    } else {
-      stopLoss = +Math.max(stopLoss, resistance * 1.001).toFixed(2);
-      target = +Math.max(Math.min(target, price * (1 - pt)), support * 1.002).toFixed(2);
-    }
+  const profitPct = settings.profitPct ?? 1.5;
+  const slPct = settings.slPct ?? 0.8;
+  const tgtPct = mode === 'longterm' ? 0.10 : mode === 'swing' ? (profitPct * 2.5) / 100 : profitPct / 100;
+  const baseSlPct = mode === 'longterm' ? 0.06 : mode === 'swing' ? (slPct * 2) / 100 : slPct / 100;
+  const minRR = settings.minRR ?? (mode === 'longterm' ? 1.2 : 1.5);
+  const minStopPct = mode === 'longterm' ? 0.01 : mode === 'swing' ? 0.005 : 0.002;
+
+  // 1) Target — capped at the next structural level so it is achievable.
+  let target = buy ? entry * (1 + tgtPct) : entry * (1 - tgtPct);
+  if (buy && sr.resistance > entry) target = Math.min(target, sr.resistance * 0.999);
+  else if (!buy && sr.support > 0 && sr.support < entry) target = Math.max(target, sr.support * 1.001);
+  target = +target.toFixed(2);
+  const reward = Math.abs(target - entry);
+
+  // 2) Stop bounds: a volatility floor (don't sit inside the noise) and a sane %-cap.
+  const atrFloor = Math.max(atr * (mode === 'scalp' ? 0.8 : 0.6), entry * minStopPct);
+  const maxRisk = Math.max(entry * baseSlPct, atrFloor);
+
+  // No worthwhile trade if the target is too close to allow a safe stop at min R:R.
+  if (reward <= 0 || reward / minRR < atrFloor) {
+    return { entry, target: null, stopLoss: null, rr: null, viable: false };
   }
-  const rr = (Math.abs(target - entry) / Math.abs(entry - stopLoss)).toFixed(1);
-  return { entry, target, stopLoss, rr };
+
+  // 3) Largest stop that still meets min R:R, capped at the sane max (a tighter
+  //    cap only improves R:R). Guarantees reward:risk >= minRR.
+  const riskDist = Math.min(reward / minRR, maxRisk);
+  const stopLoss = +(buy ? entry - riskDist : entry + riskDist).toFixed(2);
+  const rr = +(reward / riskDist).toFixed(1);
+  return { entry, target, stopLoss, rr, viable: true };
 }
 
 const FINAL_LABELS = {
@@ -293,12 +348,30 @@ export function buildUnifiedSuggestion({
   const { action, confidence } = voteFromFactors(factors, chgPct, mode);
   const levels = tradeLevels(price, action, mode, settings, analysis);
 
+  let finalAction = action;
+  let finalConfidence = confidence;
+  let gatedReason = null;
+
+  if ((action === 'BUY' || action === 'SELL') && !levels.viable) {
+    // The directional read may be right, but there's no room for a sane stop —
+    // don't issue a lop-sided-risk trade.
+    finalAction = 'HOLD';
+    finalConfidence = Math.max(35, confidence - 20);
+    gatedReason = 'No favourable risk:reward right now — the next resistance/support is too close to justify the stop. Wait for a pullback or a clean breakout.';
+  } else if (levels.viable && levels.rr >= 2) {
+    finalConfidence = Math.min(94, confidence + 3);
+  }
+
   return {
-    action,
-    label: FINAL_LABELS[action] || action,
-    confidence,
+    action: finalAction,
+    label: FINAL_LABELS[finalAction] || finalAction,
+    confidence: finalConfidence,
     factors,
-    ...levels,
+    gatedReason,
+    entry: levels.entry ?? price,
+    target: levels.target,
+    stopLoss: levels.stopLoss,
+    rr: levels.rr,
   };
 }
 
@@ -622,6 +695,15 @@ export function getPortfolioSuggestion({ stock, analysis, newsItems = [], quote,
     confidence = Math.round(clampNum(confidence, 30, 95));
   }
 
+  // 4) Recompute levels for the FINAL action and enforce a sane risk:reward.
+  const levels = tradeLevels(price, action, mode, settings, analysis);
+  let gatedReason = null;
+  if ((action === 'BUY' || action === 'SELL') && !levels.viable) {
+    action = 'HOLD';
+    confidence = Math.round(clampNum(confidence - 12, 30, 95));
+    gatedReason = 'Poor risk:reward right now — the next level is too close to justify the stop. Wait for a better entry.';
+  }
+
   const labelMap = { BUY: 'Add / Buy', SELL: 'Trim / Sell', HOLD: 'Hold', WAIT: 'Analyzing…' };
   const rankedFund = [...fund.factors].sort((a, b) => (b.type === action ? 1 : 0) - (a.type === action ? 1 : 0));
   const factors = [...rankedFund.slice(0, 3), ...newsFactors, ...techFactors].slice(0, 7);
@@ -636,13 +718,14 @@ export function getPortfolioSuggestion({ stock, analysis, newsItems = [], quote,
     action,
     label: labelMap[action] || action,
     confidence,
-    reason: `${techReason} · ${fundReason} · ${newsReason}`,
+    reason: gatedReason || `${techReason} · ${fundReason} · ${newsReason}`,
     detail: 'Blends chart technicals, fundamentals (P/E, ROE, debt, growth…) and recent news.',
     factors,
-    entry: base.entry,
-    target: base.target,
-    stopLoss: base.stopLoss,
-    rr: base.rr,
+    gatedReason,
+    entry: levels.entry,
+    target: levels.target,
+    stopLoss: levels.stopLoss,
+    rr: levels.rr,
     dayPct,
     newsCount: recent.length,
     fundamentalScore: fund.available ? fund.score : null,
