@@ -173,6 +173,9 @@ function collectFactors(analysis, indexSignals = [], { niftyScalp = false } = {}
   for (const row of analysis?.summary || []) {
     if (/^support$|^resistance$/i.test(row.n)) continue;
     if (!niftyScalp && row.t === 'HOLD' && /atr/i.test(row.n)) continue;
+    // NIFTY scalping: drop redundant / non-directional checks that only dilute the
+    // buy/sell probability — Stochastic overlaps RSI, and ATR is volatility, not direction.
+    if (niftyScalp && /^(stochastic|atr)\b/i.test(row.n)) continue;
     factors.push({ type: row.t, name: row.n, reason: `${row.sig} · ${row.v}`, weight: 1 });
   }
 
