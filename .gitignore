@@ -1,0 +1,27 @@
+# Dependencies
+/node_modules
+
+# Next.js build output
+/.next
+/out
+
+# Production
+/build
+
+# Environment variables (keep your API keys out of git)
+.env
+.env.local
+.env*.local
+
+# run.sh / run.ps1 background server artifacts
+dev-server.log
+dev-server.pid
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
