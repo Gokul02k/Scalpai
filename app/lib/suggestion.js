@@ -190,8 +190,23 @@ function analyzeSessionFactors(price, session) {
   return out;
 }
 
+function analyzeFVGFactor(analysis) {
+  const sig = analysis?.fvg?.signal;
+  if (!sig) return null;
+  const inside = sig.status === 'inside';
+  return {
+    type: sig.type,
+    name: 'Fair Value Gap',
+    reason: sig.reason,
+    weight: inside ? 3 : 2,
+  };
+}
+
 function collectFactors(analysis, indexSignals = [], { niftyScalp = false } = {}) {
   const factors = [];
+
+  const fvg = analyzeFVGFactor(analysis);
+  if (fvg) factors.push(fvg);
 
   if (niftyScalp && analysis) {
     factors.push(...analyzeSRFactors(analysis.price, analysis));
@@ -202,6 +217,8 @@ function collectFactors(analysis, indexSignals = [], { niftyScalp = false } = {}
 
   for (const row of analysis?.summary || []) {
     if (/^support$|^resistance$/i.test(row.n)) continue;
+    // FVG is already added above as a weighted factor — don't double-count it.
+    if (/^fair value gap$/i.test(row.n)) continue;
     if (!niftyScalp && row.t === 'HOLD' && /atr/i.test(row.n)) continue;
     // NIFTY scalping: drop redundant / non-directional checks that only dilute the
     // buy/sell probability — Stochastic overlaps RSI, and ATR is volatility, not direction.

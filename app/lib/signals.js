@@ -1,16 +1,31 @@
 export function generateIndexSignals(analysis, price, instrument, settings) {
-  const { rsi, macd, bb, sr, stoch, atr } = analysis;
+  const { rsi, macd, bb, sr, stoch, atr, fvg } = analysis;
   const pt = settings.profitPct / 100;
   const sl = settings.slPct / 100;
   const signals = [];
 
-  const add = (type, str, reason, prob) => {
+  const add = (type, str, reason, prob, opts = {}) => {
     const buy = type === 'BUY';
     const target = +(price * (buy ? 1 + pt : 1 - pt)).toFixed(2);
     const stopLoss = +(price * (buy ? 1 - sl : 1 + sl)).toFixed(2);
     const rr = (Math.abs(target - price) / Math.abs(price - stopLoss)).toFixed(1);
-    signals.push({ type, str, reason, prob, instrument, target, stopLoss, rr, scope: 'index' });
+    signals.push({ type, str, reason, prob, instrument, target, stopLoss, rr, scope: 'index', ...opts });
   };
+
+  // Fair Value Gap: price-action imbalance. Fires independently of the
+  // momentum ladder below so an FVG retest can stand on its own.
+  const fvgSig = fvg?.signal;
+  if (fvgSig) {
+    const z = fvgSig.zone;
+    const inside = fvgSig.status === 'inside';
+    add(
+      fvgSig.type,
+      inside ? 'STRONG' : 'MODERATE',
+      fvgSig.reason,
+      inside ? 68 : 60,
+      { tag: 'FVG', fvgZone: { type: z.type, top: z.top, bottom: z.bottom } },
+    );
+  }
 
   if (rsi < 30 && macd.h > 0) add('BUY', 'STRONG', `RSI oversold (${rsi}) + MACD turning bullish + near support ₹${sr.support}`, 72);
   else if (rsi < 35) add('BUY', 'MODERATE', `RSI ${rsi} approaching oversold + price near support`, 62);

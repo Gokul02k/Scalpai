@@ -147,6 +147,91 @@ export function calcIntradaySession(candles = [], openMinutes = 15, barMinutes =
   return { vwap, orHigh, orLow, orReady: session.length > orBars, bars: session.length };
 }
 
+/**
+ * Fair Value Gap (FVG) detection — a 3-candle imbalance pattern used in
+ * price-action / ICT trading.
+ *
+ *  - Bullish FVG: candle[i-1].high < candle[i+1].low. The untouched space
+ *    between them (bottom = prev high, top = next low) acts as a demand zone —
+ *    price often revisits it before continuing up → BUY interest.
+ *  - Bearish FVG: candle[i-1].low > candle[i+1].high. The gap (top = prev low,
+ *    bottom = next high) acts as a supply zone → SELL interest.
+ *
+ * A zone is "filled" (mitigated) once a later candle trades fully back through
+ * the far edge of the gap. `index` is the middle candle's index in `candles`.
+ *
+ * @returns {Array<{type:'bullish'|'bearish', top:number, bottom:number, mid:number,
+ *   index:number, gap:number, gapPct:number, filled:boolean, touched:boolean, ts?:number, t?:string}>}
+ */
+export function detectFVG(candles = [], { lookback = 80, minGapPct = 0.03, maxZones = 8 } = {}) {
+  const n = candles.length;
+  if (n < 3) return [];
+  const startScan = Math.max(1, n - lookback);
+  const zones = [];
+
+  for (let i = startScan; i < n - 1; i++) {
+    const prev = candles[i - 1];
+    const next = candles[i + 1];
+    const mid = candles[i];
+    const ref = mid.c || mid.o || 1;
+
+    if (prev.h < next.l) {
+      const bottom = prev.h;
+      const top = next.l;
+      const gap = top - bottom;
+      const gapPct = (gap / ref) * 100;
+      if (gapPct >= minGapPct) {
+        zones.push({ type: 'bullish', top: +top.toFixed(2), bottom: +bottom.toFixed(2), mid: +ref.toFixed(2), index: i, gap: +gap.toFixed(2), gapPct: +gapPct.toFixed(3), ts: mid.ts, t: mid.t });
+      }
+    } else if (prev.l > next.h) {
+      const top = prev.l;
+      const bottom = next.h;
+      const gap = top - bottom;
+      const gapPct = (gap / ref) * 100;
+      if (gapPct >= minGapPct) {
+        zones.push({ type: 'bearish', top: +top.toFixed(2), bottom: +bottom.toFixed(2), mid: +ref.toFixed(2), index: i, gap: +gap.toFixed(2), gapPct: +gapPct.toFixed(3), ts: mid.ts, t: mid.t });
+      }
+    }
+  }
+
+  for (const z of zones) {
+    let filled = false;
+    let touched = false;
+    for (let j = z.index + 2; j < n; j++) {
+      const cc = candles[j];
+      if (cc.l <= z.top && cc.h >= z.bottom) touched = true;
+      if (z.type === 'bullish' && cc.l <= z.bottom) { filled = true; break; }
+      if (z.type === 'bearish' && cc.h >= z.top) { filled = true; break; }
+    }
+    z.filled = filled;
+    z.touched = touched;
+  }
+
+  return zones.slice(-maxZones);
+}
+
+/**
+ * Turns detected FVG zones into a single actionable BUY/SELL bias.
+ *  - Price currently inside an unfilled bullish gap → BUY (demand retest).
+ *  - Price currently inside an unfilled bearish gap → SELL (supply retest).
+ *  - Otherwise the newest unfilled gap sets the directional bias (buy/sell on retest).
+ * Returns null when there is no fresh (unfilled) gap to act on.
+ */
+export function fvgSignal(zones = [], price) {
+  if (!zones.length || !price) return null;
+  const fresh = zones.filter((z) => !z.filled);
+  if (!fresh.length) return null;
+
+  const inBull = [...fresh].reverse().find((z) => z.type === 'bullish' && price >= z.bottom && price <= z.top);
+  const inBear = [...fresh].reverse().find((z) => z.type === 'bearish' && price >= z.bottom && price <= z.top);
+  if (inBull) return { type: 'BUY', status: 'inside', zone: inBull, reason: `Price trading inside bullish FVG ${inBull.bottom}–${inBull.top} (demand imbalance) — long bias` };
+  if (inBear) return { type: 'SELL', status: 'inside', zone: inBear, reason: `Price trading inside bearish FVG ${inBear.bottom}–${inBear.top} (supply imbalance) — short bias` };
+
+  const newest = fresh[fresh.length - 1];
+  if (newest.type === 'bullish') return { type: 'BUY', status: 'formed', zone: newest, reason: `Bullish FVG formed ${newest.bottom}–${newest.top} — buy on retest of the gap` };
+  return { type: 'SELL', status: 'formed', zone: newest, reason: `Bearish FVG formed ${newest.bottom}–${newest.top} — sell on retest of the gap` };
+}
+
 export function analyzeFromCandles(candles) {
   const closes = candles.map(c => c.c);
   const rsi = calcRSI(closes);
@@ -159,6 +244,8 @@ export function analyzeFromCandles(candles) {
   const stoch = calcStochastic(candles);
   const sr = calcSupportResistance(candles);
   const liquidity = calcLiquidity(candles);
+  const fvgZones = detectFVG(candles);
+  const fvgSig = fvgSignal(fvgZones, price);
   const ema20v = ema20[ema20.length - 1];
   const ema50v = ema50[ema50.length - 1];
 
@@ -184,6 +271,7 @@ export function analyzeFromCandles(candles) {
     stoch,
     sr,
     liquidity,
+    fvg: { zones: fvgZones, signal: fvgSig },
     session: calcIntradaySession(candles),
     price,
     summary: [
@@ -195,6 +283,12 @@ export function analyzeFromCandles(candles) {
       { n: 'ATR', v: atr.toFixed(2), sig: 'Intraday volatility measure', t: 'HOLD' },
       { n: 'Support', v: sr.support.toFixed(2), sig: 'Recent swing low', t: 'HOLD' },
       { n: 'Resistance', v: sr.resistance.toFixed(2), sig: 'Recent swing high', t: 'HOLD' },
+      {
+        n: 'Fair Value Gap',
+        v: fvgSig ? `${fvgSig.zone.bottom}–${fvgSig.zone.top}` : (fvgZones.length ? `${fvgZones.length} zones` : 'None'),
+        sig: fvgSig ? (fvgSig.status === 'inside' ? `Price inside ${fvgSig.zone.type} gap` : `${fvgSig.zone.type} gap formed`) : 'No unfilled imbalance',
+        t: fvgSig ? fvgSig.type : 'HOLD',
+      },
     ],
   };
 }

@@ -218,6 +218,7 @@ function niceTicks(min, max, count = 5) {
 function PriceChart({
   candles = [], view = 50, height = 260, C, overlays = null, decimals = 2,
   chartType = "candle", showEMA = true, showBB = false, showVolume = true, sym = "",
+  fvgs = null, showFVG = false,
 }) {
   const wrapRef = useRef(null);
   const [W, setW] = useState(360);
@@ -373,6 +374,31 @@ function PriceChart({
           </g>
         ))}
 
+        {showFVG && fvgs && fvgs.map((z, i) => {
+          const di = z.index - start;
+          const x0 = Math.max(mL, Math.min(mL + plotW - 2, x(Math.max(0, di - 1))));
+          const yT = yP(z.top), yB = yP(z.bottom);
+          const top = Math.min(yT, yB), boxH = Math.max(1.5, Math.abs(yB - yT));
+          if (top > priceBottom || top + boxH < mT) return null;
+          const clr = z.type === "bullish" ? C.green : C.red;
+          const fresh = !z.filled;
+          return (
+            <g key={`fvg-${i}`} pointerEvents="none">
+              <rect
+                x={x0} y={top} width={Math.max(2, mL + plotW - x0)} height={boxH}
+                fill={clr} opacity={fresh ? 0.14 : 0.05}
+                stroke={clr} strokeOpacity={fresh ? 0.5 : 0.18} strokeWidth={0.6}
+                strokeDasharray={fresh ? "" : "3 3"}
+              />
+              {fresh && boxH > 9 && (
+                <text x={x0 + 3} y={top + 9} fill={clr} fontSize={7.5} fontWeight={700}>
+                  FVG {z.type === "bullish" ? "▲" : "▼"}
+                </text>
+              )}
+            </g>
+          );
+        })}
+
         {chartType === "area" && <path d={areaPath} fill="url(#pcArea)" stroke="none" />}
         {(chartType === "area" || chartType === "line") && (
           <path d={closeLine} fill="none" stroke={lastClr} strokeWidth={1.8} strokeLinejoin="round" strokeLinecap="round" />
@@ -396,6 +422,24 @@ function PriceChart({
             <path d={lineFrom(ema50, x, yP)} fill="none" stroke={C.yellow} strokeWidth={1.4} opacity={0.9} />
           </>
         )}
+
+        {showFVG && fvgs && fvgs.filter((z) => !z.filled).map((z, i) => {
+          const di = (z.index + 1) - start;
+          if (di < 0 || di >= n) return null;
+          const buy = z.type === "bullish";
+          const cx = x(di);
+          const clr = buy ? C.green : C.red;
+          const my = buy
+            ? Math.min(priceBottom - 2, yP(z.bottom) + 13)
+            : Math.max(mT + 9, yP(z.top) - 5);
+          return (
+            <g key={`fvgm-${i}`} pointerEvents="none">
+              <text x={cx} y={my} fill={clr} fontSize={8} fontWeight={800} textAnchor="middle">
+                {buy ? "▲ BUY" : "▼ SELL"}
+              </text>
+            </g>
+          );
+        })}
 
         <line x1={mL} y1={yP(last.c)} x2={mL + plotW} y2={yP(last.c)} stroke={lastClr} strokeWidth={0.8} strokeDasharray="4 3" opacity={0.7} />
         <g>
@@ -1044,7 +1088,7 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
   const [loading, setLoading] = useState(true);
   const [showSummary, setShowSummary] = useState(false);
   const [chartType, setChartType] = useState("candle");
-  const [chartOv, setChartOv] = useState({ ema: true, bb: false, vol: true });
+  const [chartOv, setChartOv] = useState({ ema: true, bb: false, vol: true, fvg: true });
 
   const HORIZONS = [
     { tf: "5m", label: "Intraday" },
@@ -1287,7 +1331,7 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
           </div>
 
           <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-            {[{ k: "ema", l: "EMA 20/50" }, { k: "bb", l: "Bollinger" }, { k: "vol", l: "Volume" }].map((o) => (
+            {[{ k: "ema", l: "EMA 20/50" }, { k: "bb", l: "Bollinger" }, { k: "vol", l: "Volume" }, { k: "fvg", l: "FVG" }].map((o) => (
               <button
                 key={o.k}
                 type="button"
@@ -1317,9 +1361,23 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
                 showEMA={chartOv.ema}
                 showBB={chartOv.bb}
                 showVolume={chartOv.vol}
+                showFVG={chartOv.fvg}
+                fvgs={chartAnalysis?.fvg?.zones}
                 sym={sym}
               />
               <ChartLegend overlays={overlays} decimals={dec} C={C} />
+              {chartOv.fvg && chartAnalysis?.fvg?.signal && (() => {
+                const s = chartAnalysis.fvg.signal;
+                const clr = s.type === "BUY" ? C.green : C.red;
+                return (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, padding: "8px 10px", borderRadius: 8, background: `${clr}14`, border: `1px solid ${clr}55` }}>
+                    <span style={{ fontSize: 11, fontWeight: 800, color: "#000", background: clr, borderRadius: 6, padding: "2px 8px" }}>
+                      FVG {s.type}
+                    </span>
+                    <span style={{ color: C.text, fontSize: 11, lineHeight: 1.35 }}>{s.reason}</span>
+                  </div>
+                );
+              })()}
             </>
           ) : (
             <div style={{ height: 180, display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontSize: 12 }}>
