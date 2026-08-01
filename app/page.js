@@ -1951,6 +1951,7 @@ export default function App() {
     ind: { rsi: true, macd: true, bb: true, ema20: true, ema50: true, vol: true },
   });
   const [alerts, setAlerts] = useState({ sound: true, notification: true });
+  const [bgAlerts, setBgAlerts] = useState({ enabled: false, configured: false, loaded: false, busy: false });
 
   const [marketStatus, setMarketStatus] = useState(() => getMarketStatus());
   const [selectedStock, setSelectedStock] = useState(null);
@@ -2020,6 +2021,41 @@ export default function App() {
     const id = setInterval(syncNiftyLogFromServer, 60_000);
     return () => clearInterval(id);
   }, [hydrated, syncNiftyLogFromServer]);
+
+  // Background alert switch lives on the server, so the cron sees it too.
+  useEffect(() => {
+    if (!hydrated) return;
+    let cancelled = false;
+    fetch("/api/alerts", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        setBgAlerts({ enabled: Boolean(d.enabled), configured: Boolean(d.configured), loaded: true, busy: false });
+      })
+      .catch(() => {
+        if (!cancelled) setBgAlerts((p) => ({ ...p, loaded: true }));
+      });
+    return () => { cancelled = true; };
+  }, [hydrated]);
+
+  const toggleBackgroundAlerts = useCallback(async () => {
+    if (!bgAlerts.configured || bgAlerts.busy) return;
+    const next = !bgAlerts.enabled;
+    setBgAlerts((p) => ({ ...p, enabled: next, busy: true }));
+
+    try {
+      const res = await fetch("/api/alerts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+      if (!res.ok) throw new Error("save failed");
+      const data = await res.json();
+      setBgAlerts({ enabled: Boolean(data.enabled), configured: Boolean(data.configured), loaded: true, busy: false });
+    } catch {
+      setBgAlerts((p) => ({ ...p, enabled: !next, busy: false }));
+    }
+  }, [bgAlerts.configured, bgAlerts.busy, bgAlerts.enabled]);
 
   // Persist on change
   useEffect(() => {
@@ -2778,6 +2814,21 @@ Tabs: dashboard|portfolio|news|settings`;
             <Toggle on={alerts[k]} onToggle={() => { if (k === "notification") requestNotifPerm(); setAlerts((p) => ({ ...p, [k]: !p[k] })); }} C={C} />
           </div>
         ))}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "10px 0 2px" }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ color: C.text, fontSize: 13 }}>Background alerts</div>
+            <div style={{ color: C.muted, fontSize: 10, lineHeight: 1.45, marginTop: 3 }}>
+              {!bgAlerts.loaded
+                ? "Checking…"
+                : !bgAlerts.configured
+                  ? "Needs Upstash Redis on Vercel — see README."
+                  : bgAlerts.enabled
+                    ? "On — the server tracks NIFTY and messages you on Telegram even with this app closed."
+                    : "Off — no background tracking and no Telegram messages."}
+            </div>
+          </div>
+          <Toggle on={bgAlerts.enabled} onToggle={toggleBackgroundAlerts} C={C} />
+        </div>
       </div>
     </div>
   );

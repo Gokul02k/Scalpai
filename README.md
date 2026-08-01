@@ -99,6 +99,18 @@ Alerts fire on **new** signals only (BUY/SELL at 80%+ confidence). A signal that
 or drifts in confidence updates its existing log row without re-notifying, so a live signal
 won't message you every minute.
 
+#### Turning alerts on and off
+
+**Settings → Alerts → Background alerts** is the master switch. It's stored on the server
+(in Upstash), not in your browser, which is what lets the cron see it — so flipping it on
+one device applies everywhere, and works even with every copy of the app closed.
+
+The scheduler keeps calling your endpoint either way; the switch decides whether the tick
+does anything. With it off, each call returns `{"skipped":true,"reason":"alerts_disabled"}`
+after one cheap storage read — no Yahoo fetch, no signal logging, no Telegram. Note this
+pauses the **signal log too**, not just the messages, so your track record won't record
+anything while it's off. If the setting was never touched it defaults to on.
+
 ### Use your own domain (instead of vercel.app link)
 
 1. Vercel → your project → **Settings** → **Domains**

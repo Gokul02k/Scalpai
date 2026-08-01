@@ -139,6 +139,7 @@ export function formatTestAlert(context = {}) {
     'Real alerts fire only for NIFTY BUY/SELL signals at 80%+ confidence during market hours.',
     '',
     `Signal storage: ${context.storage ? 'configured' : '<b>NOT configured</b>'}`,
+    `Background alerts: ${context.enabled === false ? '<b>OFF</b> — turn the toggle on in Settings' : 'on'}`,
     `Market: ${esc(context.market || 'unknown')}`,
     '',
     `<i>${esc(stamp)} IST</i>`,

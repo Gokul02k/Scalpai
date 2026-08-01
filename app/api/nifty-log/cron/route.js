@@ -6,6 +6,7 @@ import { runNiftyLogTick } from '../../../lib/niftyLogTick';
 import { isNiftyLogStorageConfigured } from '../../../lib/niftyLogStore';
 import { isTelegramConfigured, sendTelegramMessage, formatTestAlert } from '../../../lib/telegram';
 import { getMarketStatus } from '../../../lib/marketHours';
+import { getAlertsEnabled } from '../../../lib/alertSettings';
 
 export async function GET(request) {
   if (!authorizeCron(request)) {
@@ -18,10 +19,16 @@ export async function GET(request) {
   // ?test=1 verifies auth, config and Telegram delivery without waiting for a
   // real signal — the tick itself only does anything during market hours.
   if (new URL(request.url).searchParams.get('test')) {
-    const alert = await sendTelegramMessage(formatTestAlert({ storage, market: market.label }));
+    const { enabled } = await getAlertsEnabled();
+    const alert = await sendTelegramMessage(formatTestAlert({ storage, market: market.label, enabled }));
     return Response.json({
       test: true,
-      config: { storage, telegram: isTelegramConfigured(), market: market.label },
+      config: {
+        storage,
+        telegram: isTelegramConfigured(),
+        alertsEnabled: enabled,
+        market: market.label,
+      },
       alert,
     });
   }

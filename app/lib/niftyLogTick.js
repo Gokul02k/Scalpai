@@ -11,6 +11,7 @@ import {
 import { getMarketStatus } from './marketHours';
 import { getNiftyLogs, saveNiftyLogs, isNiftyLogStorageConfigured } from './niftyLogStore';
 import { sendTelegramMessage, formatNiftySignalAlert } from './telegram';
+import { getAlertsEnabled } from './alertSettings';
 
 const DEFAULT_SETT = {
   riskLimit: 10000,
@@ -27,6 +28,13 @@ export async function runNiftyLogTick() {
   const marketStatus = getMarketStatus();
   if (!marketStatus.open) {
     return { skipped: true, reason: 'market_closed', label: marketStatus.label };
+  }
+
+  // Master switch from the app's Alerts panel. Checked after the (free) market
+  // test so a closed market costs no storage reads.
+  const { enabled } = await getAlertsEnabled();
+  if (!enabled) {
+    return { skipped: true, reason: 'alerts_disabled' };
   }
 
   const quote = await fetchYahooQuote('^NSEI');
