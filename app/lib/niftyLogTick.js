@@ -10,6 +10,7 @@ import {
 } from './signalLog';
 import { getMarketStatus } from './marketHours';
 import { getNiftyLogs, saveNiftyLogs, isNiftyLogStorageConfigured } from './niftyLogStore';
+import { sendTelegramMessage, formatNiftySignalAlert } from './telegram';
 
 const DEFAULT_SETT = {
   riskLimit: 10000,
@@ -84,6 +85,12 @@ export async function runNiftyLogTick() {
   const { logs, changed, decision } = applyNiftyLogUpdate(existing, entry);
   if (changed) await saveNiftyLogs(logs);
 
+  // Only an appended row is a new signal. 'update' is the same signal being
+  // re-read inside its session window, so alerting on it would spam the chat.
+  const alert = decision === 'append'
+    ? await sendTelegramMessage(formatNiftySignalAlert(logs[0]))
+    : { sent: false, reason: `deduped_${decision}` };
+
   return {
     ok: true,
     changed,
@@ -91,5 +98,6 @@ export async function runNiftyLogTick() {
     action: entry.action,
     confidence: entry.confidence,
     logCount: logs.length,
+    alert,
   };
 }
