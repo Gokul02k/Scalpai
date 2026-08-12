@@ -105,6 +105,70 @@ def cmd_inventory(args) -> int:
     return 0
 
 
+def cmd_backtest(args) -> int:
+    from .backtest import BacktestConfig, get_cost_model, run_backtest
+
+    store = CandleStore()
+    candles = store.read(args.symbol, args.segment, args.interval)
+    if len(candles) < 200:
+        print(
+            f"Only {len(candles)} bars archived for {args.symbol} {args.interval}. "
+            f"Run: python -m engine.cli sync --symbol {args.symbol} --interval {args.interval}"
+        )
+        return 1
+
+    config = BacktestConfig(
+        symbol=args.symbol,
+        interval=args.interval,
+        instrument=args.symbol,
+        mode=args.mode,
+        window=args.window,
+        min_confidence=args.min_confidence,
+        min_pass_points=args.min_pass_points,
+        step=args.step,
+    )
+    if args.profit_pct is not None:
+        config.settings["profitPct"] = args.profit_pct
+    if args.sl_pct is not None:
+        config.settings["slPct"] = args.sl_pct
+
+    result = run_backtest(candles, config, get_cost_model(args.costs))
+
+    print()
+    for line in result.summary_lines():
+        print("  " + line)
+    print()
+
+    if args.show and result.logs:
+        print(f"  {'date':12} {'time':11} {'act':4} {'conf':>4} "
+              f"{'entry':>9} {'target':>9} {'stop':>9} {'outcome':8} {'pts':>7}")
+        print("  " + "-" * 84)
+        for e in result.logs[: args.show]:
+            o = e.get("outcome") or {}
+            pts = ""
+            if o.get("resolvedPrice") is not None and e.get("entry") is not None:
+                d = 1 if e["action"] == "BUY" else -1
+                pts = f"{(o['resolvedPrice'] - e['entry']) * d:+.1f}"
+            print(
+                f"  {e['date']:12} {e['time']:11} {e['action']:4} {e['confidence']:4} "
+                f"{e.get('entry') or 0:9.2f} {e.get('target') or 0:9.2f} "
+                f"{e.get('stopLoss') or 0:9.2f} "
+                f"{slog_label(o.get('status')):8} {pts:>7}"
+            )
+        print()
+
+    stats = result.stats
+    if stats["resolved"] and stats["expectancyNetPts"] <= 0:
+        print("  Negative expectancy after costs. Automating this loses money faster.")
+    return 0
+
+
+def slog_label(status: str | None) -> str:
+    from .core.signal_log import OUTCOME_LABELS
+
+    return OUTCOME_LABELS.get(status or "pending", "Active")
+
+
 def cmd_fyers_auth(args) -> int:
     """Fyers tokens last one trading day, so this runs every morning."""
     from .data.fyers_source import build_auth_url, exchange_auth_code
@@ -162,6 +226,24 @@ def main(argv: list[str] | None = None) -> int:
 
     st = sub.add_parser("status", help="market open/closed right now")
     st.set_defaults(fn=cmd_status)
+
+    bt = sub.add_parser("backtest", help="replay the live decision path over archived candles")
+    bt.add_argument("--symbol", default="NIFTY")
+    bt.add_argument("--segment", default="INDEX")
+    bt.add_argument("--interval", default="5m")
+    bt.add_argument("--mode", default="scalp", choices=["scalp", "swing", "longterm"])
+    bt.add_argument("--window", type=int, default=375,
+                    help="bars fed to the engine per evaluation (default matches production)")
+    bt.add_argument("--min-confidence", type=int, default=80)
+    bt.add_argument("--min-pass-points", type=float, default=50,
+                    help="favourable move required to count as a pass")
+    bt.add_argument("--profit-pct", type=float, help="override settings.profitPct")
+    bt.add_argument("--sl-pct", type=float, help="override settings.slPct")
+    bt.add_argument("--step", type=int, default=1, help="evaluate every Nth bar")
+    bt.add_argument("--costs", default="index_points",
+                    choices=["index_points", "option_buy", "equity_intraday", "equity_delivery"])
+    bt.add_argument("--show", type=int, default=0, help="print the N most recent signals")
+    bt.set_defaults(fn=cmd_backtest)
 
     fa = sub.add_parser("fyers-auth", help="daily Fyers login (tokens expire each day)")
     fa.add_argument("--auth-code", help="the code from the redirect URL")

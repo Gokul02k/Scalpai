@@ -337,7 +337,10 @@ def fvg_signal(zones: Sequence[dict], price: float | None) -> dict | None:
 
 # ── aggregate ──────────────────────────────────────────────────────────────
 
-def analyze_from_candles(candles: Sequence[CandleDict]) -> dict:
+def analyze_from_candles(candles: Sequence[CandleDict], include_history: bool = True) -> dict:
+    """`include_history=False` drops `rsiHist` and `macdHist`, which exist only
+    to draw sparklines. Nothing in the decision path reads them, and computing
+    them is O(n²) — dominating a backtest that re-analyses at every bar."""
     closes = [c["c"] for c in candles]
     r = rsi(closes)
     m = macd(closes)
@@ -380,8 +383,8 @@ def analyze_from_candles(candles: Sequence[CandleDict]) -> dict:
 
     return {
         "rsi": r,
-        "rsiHist": rsi_history(closes),
-        "macdHist": macd_history(closes),
+        "rsiHist": rsi_history(closes) if include_history else [],
+        "macdHist": macd_history(closes) if include_history else [],
         "macd": m,
         "bb": bb,
         "ema20": ema20v,
