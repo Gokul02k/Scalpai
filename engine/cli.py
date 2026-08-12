@@ -170,6 +170,55 @@ def slog_label(status: str | None) -> str:
     return OUTCOME_LABELS.get(status or "pending", "Active")
 
 
+def cmd_research(args) -> int:
+    from .research import bonferroni_threshold, run_all
+
+    store = CandleStore()
+    daily = store.read(args.symbol, "INDEX", "1d")
+    hourly = store.read(args.symbol, "INDEX", "1h")
+    intraday = store.read(args.symbol, "INDEX", "5m")
+
+    if not daily:
+        print(f"No daily history for {args.symbol}. Run: python -m engine.cli sync")
+        return 1
+
+    print(f"\n  {args.symbol}: {len(daily)} daily, {len(hourly)} hourly, "
+          f"{len(intraday)} 5m bars")
+
+    findings = run_all(daily, hourly, intraday)
+    threshold = bonferroni_threshold(len(findings))
+
+    print(f"  {len(findings)} hypotheses tested — significance bar after "
+          f"multiple-testing correction: p < {threshold:.4f}\n")
+    print(f"  {'hypothesis':46} {'n':>6} {'mean%':>8} {'95% CI':>19} {'p':>8}")
+    print("  " + "-" * 92)
+
+    survivors = []
+    for f in findings:
+        lo, hi = f.ci95
+        mark = "  <-- survives" if (f.p_value < threshold and f.n >= 30) else ""
+        if mark:
+            survivors.append(f)
+        print(
+            f"  {f.name[:46]:46} {f.n:6} {f.mean:+8.4f} "
+            f"[{lo:+7.4f},{hi:+7.4f}] {f.p_value:8.4f}{mark}"
+        )
+
+    print()
+    if not survivors:
+        print("  Nothing survives correction. No conditional structure large enough")
+        print("  to build on was found in this data.")
+    else:
+        print(f"  {len(survivors)} effect(s) survive. Before trusting any of them, check")
+        print("  the effect size against round-trip costs — significance is not edge:")
+        for f in survivors:
+            print(f"    {f.name}: {f.mean:+.4f}% per occurrence, n={f.n}")
+            if f.note:
+                print(f"      {f.note}")
+    print()
+    return 0
+
+
 def cmd_fyers_auth(args) -> int:
     """Fyers tokens last one trading day, so this runs every morning."""
     from .data.fyers_source import build_auth_url, exchange_auth_code
@@ -248,6 +297,10 @@ def main(argv: list[str] | None = None) -> int:
                     choices=["index_points", "option_buy", "equity_intraday", "equity_delivery"])
     bt.add_argument("--show", type=int, default=0, help="print the N most recent signals")
     bt.set_defaults(fn=cmd_backtest)
+
+    rs = sub.add_parser("research", help="test for conditional structure worth trading")
+    rs.add_argument("--symbol", default="NIFTY")
+    rs.set_defaults(fn=cmd_research)
 
     fa = sub.add_parser("fyers-auth", help="daily Fyers login (tokens expire each day)")
     fa.add_argument("--auth-code", help="the code from the redirect URL")

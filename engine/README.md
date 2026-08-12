@@ -216,6 +216,68 @@ not a defect in the implementation.
 
 ---
 
+## Edge research
+
+```bash
+.venv/bin/python -m engine.cli research --symbol NIFTY
+```
+
+Different in kind from the backtest. The backtest asks "does this strategy make
+money"; this asks "is there any conditional structure worth building a strategy
+around". Measuring the conditional distribution first is what stops rules being
+fitted to noise.
+
+Every test reports sample size, effect size and a 95% confidence interval, not
+just a p-value — on nineteen years of data an effect can be highly significant
+and still far too small to survive costs. Fifty hypotheses are tested, so the
+bar is Bonferroni-corrected to p < 0.001; at plain p < 0.05 you would expect
+two or three false positives by construction.
+
+### What it found
+
+Most of the usual suspects are empty: weekday effects, month effects, gap
+continuation, streak reversal and opening-range breakout all fail to clear the
+corrected bar. The opening-range result matters for v1 specifically, since
+`suggestion.py` votes on breaks of the opening range — that factor is
+contributing noise.
+
+One large effect is real. **NIFTY's entire return happens overnight:**
+
+| Component | Mean per day | 95% CI | p |
+|---|---|---|---|
+| Overnight (prev close → open) | **+0.094%** | [+0.078, +0.111] | ~0 |
+| Intraday (open → close) | **−0.049%** | [−0.083, −0.015] | 0.004 |
+| Full day (close → close) | +0.045% | [+0.008, +0.082] | 0.018 |
+
+The session itself has *negative* drift. Over 250 sessions that is roughly
+−12% a year, which means **any intraday long-biased strategy starts behind
+before its signals do anything at all**. That is structural, not a flaw in the
+signal logic, and it is part of why the scalp cannot get above break-even.
+
+### And why it is not a free lunch
+
+Splitting by period shows the effect decaying:
+
+| Period | NIFTY overnight | BANKNIFTY overnight |
+|---|---|---|
+| 2008–2011 | +0.053% | +0.086% |
+| 2012–2015 | +0.101% | +0.126% |
+| 2016–2019 | +0.127% | +0.113% |
+| 2020–2023 | +0.133% | +0.127% |
+| **2024–2027** | **+0.049%** (p=0.03) | **+0.016%** (p=0.55) |
+
+NIFTY's overnight drift is now roughly a third of its 2020–2023 level and no
+longer clears the corrected bar. BANKNIFTY's has gone entirely. This is the
+ordinary life cycle of a published anomaly, and it is exactly what the
+period-split test exists to catch.
+
+What remains for NIFTY is about 12 index points a night against roughly 8
+points of round-trip cost on futures — and it requires carrying overnight gap
+risk, which is the fat tail that ends accounts. Not worth trading on that
+margin.
+
+---
+
 ## Status
 
 Done: data layer, local archive, Fyers adapter, verified strategy port,
@@ -225,20 +287,27 @@ backtest with costs, and an edge measurement across 19 years and ~2,700 trades.
 VPS, static IP, OAuth, order management, reconciliation, risk limits — is
 several weeks and only pays off on top of a real edge. There isn't one yet.
 
+Price-only structure has now been searched fairly thoroughly: fifty hypotheses
+across nineteen years, and the one large effect found is decaying out of
+tradeability. That is informative rather than merely disappointing — it says
+the remaining edge, if any, is not in the price series alone.
+
 Reasonable next steps, in rough order of expected value:
 
-1. **Look for a different signal.** Standard indicators are exhausted.
-   Candidates with better priors: options positioning (open-interest shifts,
-   put/call skew), overnight-gap statistics, index-rebalance flows, or
-   intraday seasonality. All need the Fyers option-chain data.
-2. **Try LightGBM on the existing features** — cheap to test, and it can find
+1. **Options positioning.** The one major data source not yet examined, and
+   the one with the best prior: open-interest shifts, put/call skew, max-pain
+   drift into expiry, and India VIX term structure. This is information about
+   *positioning* rather than past prices, so it is not ruled out by anything
+   above. Needs a Fyers account for the chain data.
+2. **Drop the opening-range factor from the vote**, or verify it separately.
+   The research finds no predictive content in opening-range breaks, so it is
+   currently adding noise to every signal.
+3. **Try LightGBM on the existing features** — cheap, and it can find
    nonlinear combinations a linear vote misses. Calibrate expectations: if the
    features carry no information, no model manufactures any.
-3. **Re-run on Fyers minute data** to confirm the 5-minute result on a real
-   sample rather than 11 trades.
 4. **Keep v1 as decision support.** A dashboard that surfaces levels and
-   context for a human is a legitimately useful thing, and is what the current
-   signal quality actually supports.
+   context for a human is legitimately useful, and is what the current signal
+   quality actually supports.
 
-Paper trading is deliberately absent from that list. Paper trading a
-zero-edge strategy confirms it makes no money, slowly.
+Paper trading is deliberately absent from that list. Paper trading a zero-edge
+strategy confirms it makes no money, slowly.
