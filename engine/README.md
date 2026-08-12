@@ -174,48 +174,71 @@ Where a single bar contains both target and stop, the stop wins. Intrabar
 ordering is unknown, and assuming the favourable fill is the standard way a
 backtest flatters itself.
 
-### Current result
+### Current result: no measurable edge
 
-On 60 days of 5-minute data:
+NIFTY, across every timeframe and mode currently available:
 
-| Threshold | NIFTY | BANKNIFTY |
-|---|---|---|
-| conf ≥ 75 | 21% win, **−40.2** pts/trade | 46% win, +3.6 |
-| conf ≥ 80 | 18% win, **−40.8** pts/trade | 45% win, −4.4 |
-| conf ≥ 85 | 22% win, **−40.9** pts/trade | 47% win, +6.6 |
-| conf ≥ 90 | 20% win, **−53.9** pts/trade | 44% win, −12.9 |
+| Timeframe | Mode | Trades | Period | Win rate | Profit factor | Net pts/trade |
+|---|---|---|---|---|---|---|
+| 5m | scalp | 11 | 60 days | 18% | 0.36 | −40.8 |
+| 1h | scalp | 292 | 23 months | 36% | 0.92 | −12.4 |
+| 1d | swing | 1,235 | 19 years | 37% | 0.99 | −6.5 |
+| 1d | longterm | 1,150 | 19 years | 47% | 1.02 | −3.5 |
 
-NIFTY is negative at every threshold. The reward:risk is actually fine — average
-win +107 points against average loss −66 — but a 18–22% win rate cannot carry
-it: break-even needs about 38% before costs and 42% after them. Raising the
-confidence bar does not help, which says the confidence score is not currently
-ranking signals by quality.
+The important column is profit factor, and the important fact is that **it
+converges to 1.00 as the sample grows**: 0.36 on 11 trades, 0.92 on 292, 0.99
+on 1,235, 1.02 on 1,150. Gross wins and gross losses cancel almost exactly.
 
-BANKNIFTY hovers around break-even and flips sign with the threshold, which is
-the signature of noise rather than edge. It also takes a different code path:
-`collect_factors` only applies the scalp-specific factor set when the
-instrument is NIFTY, so these are two different strategies, not one strategy on
-two symbols.
+That is the signature of no edge rather than of a bad edge. The small-sample
+results are not evidence of a worse strategy — they are noise around the same
+zero. On the largest samples the strategy is a fair coin flip before costs and
+a losing one after.
 
-**Caveat:** 11–14 resolved NIFTY trades is far too small to be conclusive. The
-consistency of the sign is suggestive, not proof. Deeper history via Fyers is
-the next step before treating this as settled.
+Reward:risk is consistently fine (roughly 1.6:1); the hit rate simply lands
+wherever break-even is. On the daily swing series break-even needs 37.6% and
+the strategy delivers 37%.
+
+Two supporting observations:
+
+* **Raising the confidence threshold does not help.** On 5-minute data results
+  are flat from 75 through 90. If confidence ranked signals by quality the
+  90+ subset would outperform. It does not, so the number reads like a
+  confidence without behaving like one.
+* **BANKNIFTY flips sign with the threshold** (+3.6, −4.4, +6.6, −12.9 across
+  75/80/85/90), which is noise, not edge. It also runs a different code path —
+  `collect_factors` only applies the scalp factor set when the instrument is
+  NIFTY, so those are two strategies, not one on two symbols.
+
+The most likely explanation is the ordinary one: RSI, MACD, Bollinger Bands and
+moving-average crossovers on a liquid index contain no information the market
+has not already priced. This is the expected result for standard indicators,
+not a defect in the implementation.
 
 ---
 
 ## Status
 
 Done: data layer, local archive, Fyers adapter, verified strategy port,
-backtest with costs, first edge measurement.
+backtest with costs, and an edge measurement across 19 years and ~2,700 trades.
 
-Next, in order:
+**Do not build execution against this strategy.** The infrastructure work —
+VPS, static IP, OAuth, order management, reconciliation, risk limits — is
+several weeks and only pays off on top of a real edge. There isn't one yet.
 
-1. **Deeper history.** Fyers account → 9 years of minute data → re-run the
-   backtest on a sample large enough to conclude from.
-2. **Fix or replace the confidence score.** It does not currently rank signals
-   by quality, which is why raising the threshold does not improve results.
-   This is the LightGBM job.
-3. **Only then** paper trading, and only if a real edge survives costs.
+Reasonable next steps, in rough order of expected value:
 
-Do not skip to paper trading. Paper trading a negative-expectancy strategy
-confirms it loses money, slowly, using time you could spend finding an edge.
+1. **Look for a different signal.** Standard indicators are exhausted.
+   Candidates with better priors: options positioning (open-interest shifts,
+   put/call skew), overnight-gap statistics, index-rebalance flows, or
+   intraday seasonality. All need the Fyers option-chain data.
+2. **Try LightGBM on the existing features** — cheap to test, and it can find
+   nonlinear combinations a linear vote misses. Calibrate expectations: if the
+   features carry no information, no model manufactures any.
+3. **Re-run on Fyers minute data** to confirm the 5-minute result on a real
+   sample rather than 11 trades.
+4. **Keep v1 as decision support.** A dashboard that surfaces levels and
+   context for a human is a legitimately useful thing, and is what the current
+   signal quality actually supports.
+
+Paper trading is deliberately absent from that list. Paper trading a
+zero-edge strategy confirms it makes no money, slowly.

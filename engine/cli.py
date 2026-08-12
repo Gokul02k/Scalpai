@@ -126,6 +126,7 @@ def cmd_backtest(args) -> int:
         min_confidence=args.min_confidence,
         min_pass_points=args.min_pass_points,
         step=args.step,
+        eval_window_ms=int(args.eval_hours * 3600 * 1000),
     )
     if args.profit_pct is not None:
         config.settings["profitPct"] = args.profit_pct
@@ -237,6 +238,9 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("--min-confidence", type=int, default=80)
     bt.add_argument("--min-pass-points", type=float, default=50,
                     help="favourable move required to count as a pass")
+    bt.add_argument("--eval-hours", type=float, default=24,
+                    help="how long a signal stays live before expiring; scale this "
+                         "with the timeframe or every daily-bar signal expires unresolved")
     bt.add_argument("--profit-pct", type=float, help="override settings.profitPct")
     bt.add_argument("--sl-pct", type=float, help="override settings.slPct")
     bt.add_argument("--step", type=int, default=1, help="evaluate every Nth bar")

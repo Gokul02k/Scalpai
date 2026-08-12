@@ -194,7 +194,12 @@ def is_loggable_nifty_signal(final_call: dict | None) -> bool:
     return final_call.get("confidence", 0) >= NIFTY_LOG_MIN_CONFIDENCE
 
 
-def apply_nifty_log_update(logs: Sequence[dict], entry: dict) -> dict:
+def apply_nifty_log_update(
+    logs: Sequence[dict], entry: dict, max_entries: int = NIFTY_LOG_MAX_ENTRIES
+) -> dict:
+    """`max_entries` bounds the stored log so the dashboard stays light. A
+    backtest must raise it, or a long replay silently discards its own early
+    history and reports on a truncated period."""
     logs = list(logs)
     last = logs[0] if logs else None
     decision = decide_signal_log(last, entry)
@@ -204,12 +209,12 @@ def apply_nifty_log_update(logs: Sequence[dict], entry: dict) -> dict:
     if decision == "update":
         merged = merge_signal_log_entry(last, entry)
         return {
-            "logs": [merged, *logs[1:]][:NIFTY_LOG_MAX_ENTRIES],
+            "logs": [merged, *logs[1:]][:max_entries],
             "changed": True,
             "decision": decision,
         }
     return {
-        "logs": [entry, *logs][:NIFTY_LOG_MAX_ENTRIES],
+        "logs": [entry, *logs][:max_entries],
         "changed": True,
         "decision": "append",
     }

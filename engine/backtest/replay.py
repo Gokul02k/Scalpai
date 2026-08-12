@@ -54,7 +54,10 @@ class BacktestConfig:
     #: Evaluate every Nth bar. The live cron ticks every 2 minutes against
     #: 5-minute candles, so 1 is the faithful setting.
     step: int = 1
-    session_only: bool = True
+    #: Production caps the log at 300 to keep the dashboard light. A replay
+    #: must not, or it quietly throws away its own early history and reports
+    #: on a shorter period than it ran.
+    max_entries: int = 100_000
 
 
 @dataclass
@@ -159,7 +162,7 @@ def run_backtest(
             now=datetime.fromtimestamp(bar["ts"] / 1000, tz=timezone.utc),
         )
         entry["instrument"] = config.instrument
-        logs = slog.apply_nifty_log_update(logs, entry)["logs"]
+        logs = slog.apply_nifty_log_update(logs, entry, config.max_entries)["logs"]
 
     # Grading uses the full price path. This is not lookahead: each decision
     # above was already fixed using only bars available at that moment.
