@@ -1,0 +1,28 @@
+# ScalpAI v2 engine — Python 3.13
+# Install:  python3 -m venv .venv && .venv/bin/pip install -r engine/requirements.txt
+
+# ── Market data ────────────────────────────────────────────────────────────
+# yfinance is the no-account starting point. Its ceiling is a rolling 60 days
+# of 5m bars and no options coverage, so a free broker adapter (Angel One
+# SmartAPI or Fyers — both ₹0/month with far deeper intraday history) replaces
+# it before any serious backtest.
+yfinance>=1.5.0
+pandas>=2.2
+numpy>=2.0
+requests>=2.32
+
+# ── Machine learning ───────────────────────────────────────────────────────
+# CPU-only by design; no GPU needed. LightGBM replaces the hand-tuned
+# confidence formula in suggestion.js with a probability calibrated on actual
+# graded outcomes.
+lightgbm>=4.5
+scikit-learn>=1.5
+
+# ── Testing ────────────────────────────────────────────────────────────────
+pytest>=8.0
+
+# ── Not yet required ───────────────────────────────────────────────────────
+# Added when the relevant phase starts, to keep the install light:
+#   transformers + torch   -> FinBERT news sentiment veto (~2 GB)
+#   growwapi               -> Groww execution adapter (paid, Phase 4)
+#   fastapi + uvicorn      -> read-only JSON API for the Next.js dashboard

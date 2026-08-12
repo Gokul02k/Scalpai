@@ -25,3 +25,12 @@ yarn-error.log*
 # OS files
 .DS_Store
 Thumbs.db
+
+# Python engine
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Archived candle store and engine runtime artifacts
+engine/var/
