@@ -13,6 +13,7 @@ _REGISTRY: dict[str, str] = {
     # name -> "module:class", imported lazily so an unconfigured provider's
     # missing dependency never breaks the ones that are configured.
     "yfinance": "engine.data.yfinance_source:YFinanceSource",
+    "fyers": "engine.data.fyers_source:FyersSource",
 }
 
 

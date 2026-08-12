@@ -12,7 +12,8 @@ import argparse
 import logging
 import sys
 
-from .data import CandleStore, get_source, market_status, now_ist
+from .config import load_env
+from .data import CandleStore, available_sources, get_source, market_status, now_ist
 from .data.base import DataSourceError
 from .data.timeutil import HolidayCalendarMissing
 
@@ -32,7 +33,7 @@ def cmd_probe(args) -> int:
     from datetime import timedelta
 
     ok = True
-    for name in (args.source,) if args.source else ("yfinance",):
+    for name in (args.source,) if args.source else available_sources():
         print(f"\n=== {name} ===")
         try:
             src = get_source(name)
@@ -104,6 +105,29 @@ def cmd_inventory(args) -> int:
     return 0
 
 
+def cmd_fyers_auth(args) -> int:
+    """Fyers tokens last one trading day, so this runs every morning."""
+    from .data.fyers_source import build_auth_url, exchange_auth_code
+
+    if args.auth_code:
+        exchange_auth_code(args.auth_code)
+        print("Token saved. Verify with: python -m engine.cli probe --source fyers")
+        return 0
+
+    try:
+        url = build_auth_url()
+    except Exception as e:
+        print(f"Cannot build auth URL: {e}")
+        return 1
+
+    print("1. Open this URL in a browser and log in:\n")
+    print(f"   {url}\n")
+    print("2. You land on your redirect URI with ?auth_code=... in the address bar.")
+    print("3. Copy that value and run:\n")
+    print("   python -m engine.cli fyers-auth --auth-code <PASTE>\n")
+    return 0
+
+
 def cmd_status(args) -> int:
     try:
         st = market_status()
@@ -139,11 +163,16 @@ def main(argv: list[str] | None = None) -> int:
     st = sub.add_parser("status", help="market open/closed right now")
     st.set_defaults(fn=cmd_status)
 
+    fa = sub.add_parser("fyers-auth", help="daily Fyers login (tokens expire each day)")
+    fa.add_argument("--auth-code", help="the code from the redirect URL")
+    fa.set_defaults(fn=cmd_fyers_auth)
+
     args = p.parse_args(argv)
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.WARNING,
+        level=logging.INFO if args.verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
     )
+    load_env()
     return args.fn(args)
 
 
