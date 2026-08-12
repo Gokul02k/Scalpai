@@ -187,9 +187,9 @@ On 60 days of 5-minute data:
 
 NIFTY is negative at every threshold. The reward:risk is actually fine — average
 win +107 points against average loss −66 — but a 18–22% win rate cannot carry
-it; roughly 38% would be needed just to break even. Raising the confidence bar
-does not help, which says the confidence score is not currently ranking signals
-by quality.
+it: break-even needs about 38% before costs and 42% after them. Raising the
+confidence bar does not help, which says the confidence score is not currently
+ranking signals by quality.
 
 BANKNIFTY hovers around break-even and flips sign with the threshold, which is
 the signature of noise rather than edge. It also takes a different code path:
