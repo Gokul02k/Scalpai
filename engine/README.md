@@ -81,15 +81,15 @@ eventually be an order-placing process.
 engine/
 ├── data/          provider adapters, SQLite archive, IST + NSE holiday calendar
 ├── core/          strategy ported from app/lib/*.js, behaviourally identical
-├── backtest/      bar-by-bar replay, Indian cost models, variant comparison
+├── backtest/      replay, cost models, variant comparison, option re-pricing
 ├── research/      hypothesis tests with multiple-testing correction
 ├── ml/            signal features and the walk-forward-validated filter
-├── tests/         102 tests, most of them parity against the live JavaScript
+├── tests/         137 tests, most of them parity against the live JavaScript
 └── cli.py
 ```
 
 Commands: `status`, `probe`, `sync`, `inventory`, `backtest`, `ab`, `ml`,
-`research`, `fyers-auth`.
+`costs`, `option-pnl`, `research`, `fyers-auth`.
 
 ### On the port
 
@@ -312,11 +312,117 @@ all 10 seeds.
 
 ### What this does not establish
 
-* Costs are the assumed 6 index points. Real weekly-option round trips near
-  the money may differ, and at +3.20 net there is not much room.
 * 130 trades in the deployable fold. Meaningful, not conclusive.
 * Fold 0 shows the filter needs roughly 600+ graded trades before it helps.
 * Backtest, not live. Nothing here has met a real spread.
+
+---
+
+## What a round trip really costs
+
+```bash
+.venv/bin/python -m engine.cli costs                  # measure a live chain
+.venv/bin/python -m engine.cli option-pnl --sweep     # re-price the backtest
+```
+
+Everything above is denominated in index points, but the index is not
+tradeable. The execution vehicle is a weekly option, and until its cost is
+measured the whole result rests on an assumed 6 points per round trip.
+
+### Measuring the chain
+
+Measured on a live NIFTY weekly chain (18 Aug 2026 expiry, 4.7 days out,
+India VIX 11.4), for strikes with delta between 0.35 and 0.70:
+
+| | |
+|---|---|
+| median spread | 0.60 premium pts |
+| median statutory charges | 0.83 premium pts |
+| median delta | 0.52 |
+| **round trip** | **2.75 index pts** |
+
+The conversion is the part worth internalising: **premium points divide by
+delta to become index points.** At delta 0.52, every premium point of cost is
+about two index points. A 0.60-point spread that looks trivial against a
+78-point average win is really 1.15 index points before any fee.
+
+One correction was needed to get this right. The chain reports a futures price
+of 24,467 while put-call parity across all 21 strikes gives 24,438 — the
+reported figure belongs to a different contract. Feeding the wrong forward to
+the solver split call and put implied vols apart (6–8% against 10–15%) and
+biased every delta. `forward_from_parity` recovers the right one, after which
+both sides agree at 9–11%, consistent with VIX at 11.4.
+
+### Re-pricing the trades as options
+
+A scalar cost cannot represent an option, because the instrument is nonlinear
+in two directions at once:
+
+* **Theta** bleeds the position while held — a cost the index-points backtest
+  cannot see at all.
+* **Gamma** pays the buyer. A winning move earns more than `delta x move`
+  because delta grows into it, and a losing move costs less for the same
+  reason.
+
+So `option-pnl` prices each of the 1,494 trades at entry and at exit with
+Black-76, using its actual holding period. Median hold is 1.4 hours, which
+matters: an assumed six-hour hold overstates theta roughly fourfold.
+
+| Per trade, in index points | |
+|---|---|
+| theta | −5.06 |
+| gamma | **+6.66** |
+| spread + charges | −2.86 |
+| **net effect of using options** | **−1.26** |
+| index-points gross | +6.32 |
+| **option net** | **+5.07** |
+
+Gamma more than covers theta. The effective all-in cost is about **1.3 index
+points, not 6.0** — because this strategy's payoff shape (+78 average win
+against −46 average loss) is exactly what long convexity rewards.
+
+Expired signals are included. They are the trades that sat there decaying and
+paid nothing, and dropping them — as an earlier version of this did — removes
+the worst cases and flatters the answer.
+
+### The finding that actually matters
+
+Buying options only pays when realised movement beats implied. Holding the
+strategy's realised moves fixed and varying implied vol:
+
+| IV | spread 0.30 | 0.60 | 1.20 | 2.00 |
+|---|---|---|---|---|
+| 8% | +8.34 | +7.74 | +6.54 | +4.95 |
+| 10% | +5.66 | **+5.07** | +3.87 | +2.28 |
+| 14% | +1.63 | +1.04 | −0.16 | −1.75 |
+| 18% | −1.58 | −2.17 | −3.37 | −4.95 |
+| 25% | −6.38 | −6.97 | −8.16 | −9.74 |
+
+**Break-even is around 14% implied vol.** Below it the strategy is a buyer of
+cheap convexity; above it, it is paying for movement it does not get. India
+VIX is 11.4 today, which is why the headline number is positive — but VIX
+averages nearer 15 and spikes past 25 in stress, and those are exactly the
+conditions in which the signals fire most.
+
+That converts a vague worry into a checkable rule: **read live India VIX
+before trading, and stand aside above ~14.** It is also a cleaner statement of
+the edge than any win rate — the strategy is short implied vol relative to the
+moves it selects, and 14% is the price at which that stops being true.
+
+Shorter-dated options score better (+12.97 at half a day against +5.07 at 4.7
+days) because gamma concentrates near expiry. Treat that with suspicion: on
+expiry day the constant-vol assumption breaks down, and holds routinely exceed
+the option's remaining life.
+
+### Still not modelled
+
+* **Vega.** Implied vol is held constant from entry to exit. A vol crush after
+  a directional move is common and would eat into the gamma gain.
+* Closing quotes, measured with the market shut. Spreads at the close are
+  usually wider than intraday, so re-measure during a session.
+* Depth past one lot, and spread widening in fast conditions.
+* One snapshot in a calm regime. The table above is the substitute for having
+  measured a stressed one; measure again when VIX is 20+.
 
 ---
 
@@ -406,23 +512,33 @@ Filtering it with a learned model turns the recent out-of-sample period from
 130 deployable-fold trades, against an assumed cost model. But it is the first
 result here that justifies continuing rather than stopping.
 
+Costs have now been measured rather than assumed, and they came in better than
+the assumption: about 1.3 index points all-in against the 6.0 guessed, because
+long gamma covers theta on this payoff shape. That makes the unfiltered
+strategy look positive too, which is a bigger claim than anything earlier here
+and deserves matching suspicion.
+
 Next steps, in rough order of expected value:
 
-1. **Confirm the real cost per round trip.** The whole conclusion sits on the
-   6-point assumption. Pull actual weekly-option spreads near the money from
-   the Fyers chain and re-run. If the true cost is 10 points, the filtered edge
-   mostly disappears and everything below is moot.
-2. **Forward-test the filter on paper.** Now worth doing, which it was not
-   before: run the filter live against real ticks and compare its selections to
-   backtest expectations. No orders.
-3. **Test momentum after a large up day** (+0.238%, n=698). Largest untested
+1. **Add a VIX gate and re-run everything.** The single most actionable finding
+   above: the option edge breaks even near 14% implied vol. Split the backtest
+   by VIX regime and confirm the low-vol subset carries the result. If it does,
+   the gate is the strategy, and the filter is a refinement on top of it.
+2. **Model vega.** Implied vol is currently frozen between entry and exit. A
+   crush after a directional move is common and attacks the gamma term the
+   conclusion depends on. This is the largest remaining hole.
+3. **Re-measure the chain intraday**, and again in a stressed tape. Everything
+   here comes from one closing snapshot at VIX 11.4.
+4. **Forward-test on paper.** Now worth doing, which it was not before: run the
+   filter live against real ticks and compare selections to expectations. No
+   orders.
+5. **Test momentum after a large up day** (+0.238%, n=698). Largest untested
    effect in the research table, and cheap to check.
-4. **Options positioning.** Open-interest shifts, put/call skew, max-pain drift
-   into expiry, India VIX term structure. The one major data source not yet
-   examined, and information about *positioning* rather than past prices, so
-   nothing above rules it out.
-5. **Retrain cadence.** Fold 0 shows the filter needs ~600 graded trades to
-   help. Decide how often it refits and on what window before it runs live.
+6. **Options positioning.** Open-interest shifts, put/call skew, max-pain drift
+   into expiry, VIX term structure. Information about *positioning* rather than
+   past prices, so nothing above rules it out.
+7. **Retrain cadence.** Fold 0 shows the filter needs ~600 graded trades to
+   help. Decide how often it refits, and on what window, before it runs live.
 
 Keeping v1 as decision support remains legitimate regardless. A dashboard that
 surfaces levels and context for a human is useful independently of whether the

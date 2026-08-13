@@ -56,21 +56,33 @@ class Sample:
     label: int  # 1 = reached target, 0 = hit stop
     points: float  # realised index points, signed for direction
     date: str = ""
+    #: Wall-clock hours from entry to resolution. Needed to price theta, which
+    #: an index-points backtest cannot see: holding a decaying option for six
+    #: hours costs real money even when the trade is eventually right.
+    hold_hours: float = 0.0
+    #: "target", "stop" or "expired". Expired trades carry no training label,
+    #: but they must appear in any P&L that prices the instrument: they are
+    #: precisely the trades that sat there decaying and paid for nothing.
+    status: str = ""
 
 
-def build_dataset(logs: Sequence[dict]) -> list[Sample]:
+def build_dataset(logs: Sequence[dict], include_expired: bool = False) -> list[Sample]:
     """Graded signals to training samples, oldest first.
 
-    Expired and still-active signals are dropped: they have no outcome to
-    learn from. That does mean the model is trained on resolved trades only,
-    so it predicts "target before stop given one of them happens", which is
-    exactly the question the filter needs answered.
+    Still-active signals are always dropped; they have no outcome yet.
+
+    Expired signals are dropped for *training* — "target before stop" is the
+    question the filter needs answered, and a trade where neither happened
+    carries no answer. They must be kept for *P&L*, though, because they are
+    the trades that were held, decayed, and paid nothing. Excluding them from
+    an options P&L quietly removes the worst cases and flatters the result.
     """
+    keep = ("target", "stop", "expired") if include_expired else ("target", "stop")
     out: list[Sample] = []
     for e in logs:
         outcome = e.get("outcome") or {}
         status = outcome.get("status")
-        if status not in ("target", "stop"):
+        if status not in keep:
             continue
         feats = e.get("features")
         if not feats:
@@ -81,14 +93,18 @@ def build_dataset(logs: Sequence[dict]) -> list[Sample]:
         if entry is None or resolved is None:
             continue
         direction = 1 if e.get("action") == "BUY" else -1
+        started = _ts_of(e)
+        ended = _iso_ms(outcome.get("resolvedTs"))
 
         out.append(
             Sample(
-                ts_ms=_ts_of(e),
+                ts_ms=started,
                 features=feats,
-                label=1 if status == "target" else 0,
+                label=1 if status == "target" else 0,  # expired counts as "not target"
                 points=(resolved - entry) * direction,
                 date=e.get("date", ""),
+                hold_hours=(ended - started) / 3_600_000 if ended and started else 0.0,
+                status=status,
             )
         )
     out.sort(key=lambda s: s.ts_ms)
@@ -113,13 +129,19 @@ def load_dataset(path: Path) -> tuple[list[Sample], float]:
     return [Sample(**row) for row in blob["samples"]], blob["cost_pts"]
 
 
-def _ts_of(entry: dict) -> int:
+def _iso_ms(value: str | None) -> int:
     from datetime import datetime
 
-    try:
-        return int(datetime.fromisoformat(entry["ts"].replace("Z", "+00:00")).timestamp() * 1000)
-    except Exception:
+    if not value:
         return 0
+    try:
+        return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return 0
+
+
+def _ts_of(entry: dict) -> int:
+    return _iso_ms(entry.get("ts"))
 
 
 @dataclass

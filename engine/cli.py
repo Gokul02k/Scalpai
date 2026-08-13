@@ -221,6 +221,154 @@ def cmd_ab(args) -> int:
     return 0
 
 
+def cmd_costs(args) -> int:
+    """Measure the real round-trip cost from a live option chain."""
+    from .backtest.calibrate import (
+        StrikeCost, measure_chain, summarize, theta_for_hold, tradeable,
+    )
+    from .backtest.costs import OptionBuyCost
+    from .data import get_source
+
+    try:
+        chain = get_source("fyers").option_chain(args.symbol, strike_count=args.strikes)
+    except Exception as e:
+        print(f"Cannot fetch chain: {e}")
+        print("Fyers token expires daily. Refresh: python -m engine.cli fyers-auth")
+        return 1
+
+    rows, meta = measure_chain(chain, OptionBuyCost(lot_size=args.lot_size))
+    if not rows:
+        print("Chain returned no usable quotes.")
+        return 1
+
+    status = market_status()
+    print(f"\n  {args.symbol}  spot {meta['spot']:.2f}  "
+          f"forward {meta['future']:.2f} (parity)  "
+          f"expiry {meta['expiry_date']} ({meta['days_to_expiry']:.1f}d)  "
+          f"VIX {meta['vix']:.2f}  lot {meta['lot_size']}")
+    drift = meta["future"] - meta["reported_future"]
+    if abs(drift) > 5:
+        print(f"  chain reports fp={meta['reported_future']:.2f}, {drift:+.1f} from the "
+              f"parity forward — using parity, fp is a different contract")
+    if not status.get("open"):
+        print("\n  MARKET CLOSED — these are closing quotes. Spreads at the close are")
+        print("  usually wider than during active trading, so read this as an upper")
+        print("  bound and re-run between 09:15 and 15:30 before acting on it.")
+    print()
+
+    print(StrikeCost.header())
+    print("  " + "-" * 112)
+    for r in rows:
+        print(r.line())
+
+    near = tradeable(rows)
+    print(f"\n  tradeable strikes (delta 0.35-0.70, with volume), {len(near)} of them:")
+    stats = summarize(near) or summarize(rows)
+    if not stats:
+        print("  no strike had a solvable delta")
+        return 1
+
+    print(f"    median spread          {stats['median_spread_pts']:.2f} premium pts")
+    print(f"    median statutory       {stats['median_charges_pts']:.2f} premium pts")
+    print(f"    median delta           {stats['median_delta']:.2f}")
+    print(f"    MEDIAN INDEX-PT COST   {stats['median_index_pts']:.2f} pts per round trip")
+    print(f"    best / worst strike    {stats['best_index_pts']:.2f} / "
+          f"{stats['worst_index_pts']:.2f}")
+
+    friction = stats["median_index_pts"]
+    theta = theta_for_hold(near, meta["future"], meta["days_to_expiry"] / 365, args.hold_hours)
+
+    print(f"\n  spread + charges       {friction:.2f} index pts")
+    if theta:
+        print(f"    theta over {args.hold_hours:.1f}h      {theta.index_pts:.2f} index pts  "
+              f"({theta.theta_per_day:.1f} premium pts/day at delta {theta.delta:.2f})")
+        total = friction + theta.index_pts
+        print(f"  TOTAL ROUND TRIP       {total:.2f} index pts")
+    else:
+        total = friction
+        print("  (theta not priced — no strike had a solvable vol)")
+
+    print(f"\n  The backtest assumes 6.00. Measured: {total:.2f}.")
+    if total > 6.0:
+        print(f"  Understated by {total - 6.0:.2f} pts/trade.")
+    else:
+        print(f"  Conservative by {6.0 - total:.2f} pts/trade.")
+    print(f"    python -m engine.cli ml --cached --cost-pts {total:.2f}")
+
+    print("\n  Not included: slippage beyond the touch on market orders, book depth")
+    print("  past one lot, and spread widening in fast conditions. VIX is "
+          f"{meta['vix']:.1f} here,")
+    print("  which is a calm regime — measure again when it is 20+.")
+    print()
+    return 0
+
+
+def cmd_option_pnl(args) -> int:
+    """Re-price the strategy's trades as options rather than index points."""
+    from pathlib import Path
+
+    from .backtest.option_pnl import OptionMarket, repriced
+    from .ml.model import load_dataset
+
+    cache = Path(__file__).parent / "var" / f"mlset_{args.symbol}_{args.interval}.json"
+    if not cache.exists():
+        print(f"No dataset at {cache.name}. Run: python -m engine.cli ml")
+        return 1
+
+    samples, _ = load_dataset(cache)
+    if args.resolved_only:
+        samples = [s for s in samples if s.status in ("target", "stop")]
+    market = OptionMarket(
+        days_to_expiry=args.days_to_expiry,
+        iv=args.iv / 100,
+        spread_pts=args.spread,
+        lot_size=args.lot_size,
+        strike_offset=args.strike_offset,
+    )
+
+    n_expired = sum(1 for s in samples if s.status == "expired")
+    print(f"\n  {len(samples)} trades re-priced as long options"
+          + (f" ({n_expired} expired, held to the window and closed out)"
+             if n_expired else ""))
+    print(f"  {market.days_to_expiry:.1f}d to expiry, IV {args.iv:.1f}%, "
+          f"spread {market.spread_pts:.2f} premium pts, "
+          f"strike {market.strike_offset:+.0f} from spot\n")
+
+    result = repriced(samples, market)
+    if result is None:
+        print("  Could not price any trade.")
+        return 1
+
+    for line in result.lines():
+        print(line)
+
+    if args.sweep:
+        print("\n  sensitivity — net index pts/trade:\n")
+        ivs = [8.0, 10.0, 14.0, 18.0, 25.0]
+        spreads = [0.30, 0.60, 1.20, 2.00]
+        print("    " + "IV%".ljust(8) + "".join(f"sprd {s:<7.2f}" for s in spreads))
+        for iv in ivs:
+            cells = []
+            for sp in spreads:
+                r = repriced(samples, OptionMarket(
+                    days_to_expiry=args.days_to_expiry, iv=iv / 100, spread_pts=sp,
+                    lot_size=args.lot_size, strike_offset=args.strike_offset,
+                ))
+                cells.append(f"{r.option_net_per_trade:+11.2f}" if r else f"{'-':>11}")
+            print(f"    {iv:<8.0f}" + "".join(cells))
+        print("\n  Higher IV cuts both ways: it raises the premium paid and the theta")
+        print("  bled, but the same move earns less because delta is spread wider.")
+
+    print()
+    if result.option_net_per_trade > 0:
+        print("  Survives as an option.")
+    else:
+        print("  Does not survive as an option. The index-point edge is consumed by")
+        print("  the cost of the instrument used to capture it.")
+    print()
+    return 0
+
+
 def cmd_ml(args) -> int:
     """Fit the signal filter and report what it is worth out of sample."""
     from pathlib import Path
@@ -237,6 +385,8 @@ def cmd_ml(args) -> int:
     if args.cached and cache.exists():
         samples, cost = load_dataset(cache)
         print(f"\n  loaded {len(samples)} cached samples from {cache.name}\n")
+        if args.cost_pts is not None:
+            cost = args.cost_pts
     else:
         candles = _load_candles(args.symbol, args.segment, args.interval)
         if candles is None:
@@ -255,10 +405,21 @@ def cmd_ml(args) -> int:
         )
         print(f"\n  replaying {len(candles)} bars to collect training data…")
         result = run_backtest(candles, config, get_cost_model(args.costs))
-        samples = build_dataset(result.logs)
+        # Cached with expired trades included so `option-pnl` can price them;
+        # training drops them below.
+        samples = build_dataset(result.logs, include_expired=True)
         cost = result.stats.get("costPerTradePts") or 6.0
         save_dataset(samples, cache, cost)
-        print(f"  {len(samples)} resolved signals with features (cached to {cache.name})\n")
+        print(f"  {len(samples)} signals with features (cached to {cache.name})\n")
+        if args.cost_pts is not None:
+            cost = args.cost_pts
+
+    expired = [s for s in samples if s.status == "expired"]
+    samples = [s for s in samples if s.status in ("target", "stop")]
+    if expired:
+        print(f"  {len(expired)} expired signals held back from training "
+              f"(no target/stop to learn from)")
+    print(f"  {len(samples)} resolved signals, cost assumption {cost:.2f} index pts")
     if len(samples) < 500:
         print("  Too few samples to validate a model honestly. Widen the period.")
         return 1
@@ -464,6 +625,32 @@ def main(argv: list[str] | None = None) -> int:
                     help="reuse the last collected dataset instead of replaying")
     ml.add_argument("--seeds", type=int, default=10,
                     help="rerun under N seeds to separate edge from luck (1 to skip)")
+    ml.add_argument("--cost-pts", type=float,
+                    help="override the round-trip cost, e.g. from `engine.cli costs`")
+
+    ct = sub.add_parser("costs", help="measure real round-trip cost from a live option chain")
+    ct.add_argument("--symbol", default="NIFTY")
+    ct.add_argument("--strikes", type=int, default=10, help="strikes each side of ATM")
+    ct.add_argument("--lot-size", type=int, default=75)
+    ct.add_argument("--hold-hours", type=float, default=6.0,
+                    help="average holding period, for pricing theta")
+    ct.set_defaults(fn=cmd_costs)
+
+    op = sub.add_parser("option-pnl",
+                        help="re-price the backtest's trades as options, with theta and gamma")
+    op.add_argument("--symbol", default="NIFTY")
+    op.add_argument("--interval", default="5m")
+    op.add_argument("--days-to-expiry", type=float, default=4.7)
+    op.add_argument("--iv", type=float, default=10.0, help="implied vol in percent")
+    op.add_argument("--spread", type=float, default=0.60, help="premium points of spread")
+    op.add_argument("--lot-size", type=int, default=75)
+    op.add_argument("--strike-offset", type=float, default=0.0,
+                    help="strike distance from spot in index points; 0 is ATM")
+    op.add_argument("--resolved-only", action="store_true",
+                    help="exclude expired trades (flatters the result; for comparison only)")
+    op.add_argument("--sweep", action="store_true",
+                    help="grid the result over implied vol and spread")
+    op.set_defaults(fn=cmd_option_pnl)
     ml.add_argument("--no-opening-range", action="store_true",
                     help="collect data from the variant with the opening-range factor removed")
     ml.add_argument("--costs", default="index_points",
