@@ -84,12 +84,12 @@ engine/
 ├── backtest/      replay, cost models, variant comparison, option re-pricing
 ├── research/      hypothesis tests with multiple-testing correction
 ├── ml/            signal features and the walk-forward-validated filter
-├── tests/         137 tests, most of them parity against the live JavaScript
+├── tests/         153 tests, most of them parity against the live JavaScript
 └── cli.py
 ```
 
 Commands: `status`, `probe`, `sync`, `inventory`, `backtest`, `ab`, `ml`,
-`costs`, `option-pnl`, `research`, `fyers-auth`.
+`costs`, `option-pnl`, `regime`, `research`, `fyers-auth`.
 
 ### On the port
 
@@ -385,10 +385,41 @@ Expired signals are included. They are the trades that sat there decaying and
 paid nothing, and dropping them — as an earlier version of this did — removes
 the worst cases and flatters the answer.
 
-### The finding that actually matters
+### Correction: that number was measured in the wrong regime
 
-Buying options only pays when realised movement beats implied. Holding the
-strategy's realised moves fixed and varying implied vol:
+The +5.07 above prices every trade at one snapshot's 10% implied vol — a calm
+day in August 2026. Nine years of trades did not happen in August 2026.
+
+Pricing each trade at the India VIX that actually prevailed on its date
+reverses the conclusion:
+
+| VIX regime | Trades | Share | Index pts | Option pts |
+|---|---|---|---|---|
+| below 12 | 57 | 3.8% | −5.43 | **−10.02** |
+| 12–14 | 163 | 10.9% | +12.35 | **+9.17** |
+| 14–18 | 421 | 28.2% | +6.38 | +1.50 |
+| 18–25 | 548 | 36.7% | +2.87 | −4.63 |
+| above 25 | 305 | 20.4% | +11.43 | −3.58 |
+
+*(weekly IV taken as 0.85 x VIX, the ratio measured on the live chain: 9.7%
+against VIX 11.4)*
+
+**The strategy's signals cluster in exactly the regimes where options are
+expensive.** Fifty-seven percent of trades fire above VIX 18, and those lose
+money as options no matter how good the index-point call was. The
+index-points column stays positive throughout; the option column does not.
+That gap is the cost of the instrument, and it is regime-dependent.
+
+The bottom row of the earlier sensitivity table was not hypothetical. It was
+where most of the trades actually lived.
+
+Note also that **below 12 is bad too**, and not because of cost — the
+index-point P&L is itself negative there. Dead-calm tape gives the signals
+nothing to catch. The strategy needs movement to be right and cheap options to
+get paid, and those two conditions overlap in a narrow band.
+
+For reference, the sensitivity that produced this, holding realised moves
+fixed and varying implied vol:
 
 | IV | spread 0.30 | 0.60 | 1.20 | 2.00 |
 |---|---|---|---|---|
@@ -399,30 +430,86 @@ strategy's realised moves fixed and varying implied vol:
 | 25% | −6.38 | −6.97 | −8.16 | −9.74 |
 
 **Break-even is around 14% implied vol.** Below it the strategy is a buyer of
-cheap convexity; above it, it is paying for movement it does not get. India
-VIX is 11.4 today, which is why the headline number is positive — but VIX
-averages nearer 15 and spikes past 25 in stress, and those are exactly the
-conditions in which the signals fire most.
-
-That converts a vague worry into a checkable rule: **read live India VIX
-before trading, and stand aside above ~14.** It is also a cleaner statement of
-the edge than any win rate — the strategy is short implied vol relative to the
-moves it selects, and 14% is the price at which that stops being true.
+cheap convexity; above it, it is paying for movement it does not get.
 
 Shorter-dated options score better (+12.97 at half a day against +5.07 at 4.7
 days) because gamma concentrates near expiry. Treat that with suspicion: on
 expiry day the constant-vol assumption breaks down, and holds routinely exceed
 the option's remaining life.
 
+---
+
+## Regime gate plus filter
+
+```bash
+.venv/bin/python -m engine.cli regime --iv-scale 0.85 --with-filter
+```
+
+Standing aside above VIX 14 and keeping the top half of the filter's picks, on
+out-of-sample trades only:
+
+| | Trades | Net/trade | Total |
+|---|---|---|---|
+| neither | 956 | −1.67 | −1,600 |
+| gate only | 130 | +7.86 | +1,022 |
+| filter only | 477 | +2.13 | +1,016 |
+| **both** | **57** | **+37.53** | **+2,139** |
+
+They stack rather than overlap, which makes sense — they filter on different
+things. The gate asks whether the instrument is cheap; the filter asks whether
+the setup is good.
+
+### Checking whether 57 trades means anything
+
+A large mean over a small sample is the most common way a backtest lies, so:
+
+```
+mean                 +37.53      median               +58.31
+winners              31/57 (54%) mean without best 3   +21.38
+by year   2021:+32(6) 2022:+70(1) 2023:+12(16) 2024:+72(11) 2025:+25(14) 2026:+61(9)
+```
+
+The median sits *above* the mean, so the result is not a few lucky winners
+carrying a mass of losers — if anything a few large losers drag the average
+down. Removing the best three trades still leaves +21.38. All six years are
+positive.
+
+It is also not knife-edge on the gate level, which would suggest a threshold
+fitted to noise. Sweeping it gives a plateau:
+
+| Gate | Trades | Net/trade | Total | Net/trade at IV = 1.0 x VIX |
+|---|---|---|---|---|
+| 12 | 15 | −4.17 | −63 | — |
+| 13 | 29 | +25.00 | +725 | — |
+| 14 | 57 | +37.53 | +2,139 | +34.48 |
+| 16 | 128 | +21.21 | +2,715 | +18.48 |
+| 18 | 160 | +18.51 | +2,962 | +15.82 |
+
+Anywhere from 13 to 18 works, trading per-trade edge against trade count, and
+it survives the pessimistic assumption that weekly IV equals VIX outright.
+Gate 16–18 is the more practical setting: roughly 21–27 trades a year instead
+of 9, at a still-large per-trade edge.
+
+### What this is worth, concretely
+
+At gate 18: ~27 trades a year at +18.5 index points, which at delta 0.52 on a
+75-unit lot is about **₹21,600 per year per lot**. Real, but small enough that
+execution quality and a single bad fill matter. This is not a strategy that
+tolerates sloppiness, and the trade count is low enough that a bad quarter
+tells you very little.
+
 ### Still not modelled
 
 * **Vega.** Implied vol is held constant from entry to exit. A vol crush after
   a directional move is common and would eat into the gamma gain.
-* Closing quotes, measured with the market shut. Spreads at the close are
-  usually wider than intraday, so re-measure during a session.
-* Depth past one lot, and spread widening in fast conditions.
-* One snapshot in a calm regime. The table above is the substitute for having
-  measured a stressed one; measure again when VIX is 20+.
+* **The VIX proxy.** VIX is a 30-day measure applied to weeklies, at a fixed
+  0.85 ratio taken from one calm chain. In stress the weekly term structure
+  inverts and weekly IV exceeds VIX, so the high-VIX buckets are flattered
+  here — which strengthens the case for the gate rather than weakening it.
+* Spread is held at 0.60 premium points across all regimes. It widens in
+  stress, again penalising the buckets the gate already excludes.
+* Closing quotes, measured with the market shut, at one point in a calm
+  regime. Depth past one lot is unmeasured.
 
 ---
 
@@ -512,26 +599,33 @@ Filtering it with a learned model turns the recent out-of-sample period from
 130 deployable-fold trades, against an assumed cost model. But it is the first
 result here that justifies continuing rather than stopping.
 
-Costs have now been measured rather than assumed, and they came in better than
-the assumption: about 1.3 index points all-in against the 6.0 guessed, because
-long gamma covers theta on this payoff shape. That makes the unfiltered
-strategy look positive too, which is a bigger claim than anything earlier here
-and deserves matching suspicion.
+Costs are now measured rather than assumed, and measured *per regime* rather
+than from one snapshot. That second step mattered more than the first: pricing
+at a single calm-day vol said the strategy cleared costs comfortably, and
+pricing at the vol that actually prevailed said it does not.
+
+What survives is narrower and better supported than the raw strategy. Stand
+aside above VIX 16–18, take the filter's better half, and roughly 25 trades a
+year clear costs with a per-trade edge that holds up under seed changes, gate
+changes, year-by-year splits, and the pessimistic IV assumption.
+
+**This is still not a reason to send orders.** It is a backtest whose
+conclusion has already flipped once, on a correction I would not have caught
+without the VIX join.
 
 Next steps, in rough order of expected value:
 
-1. **Add a VIX gate and re-run everything.** The single most actionable finding
-   above: the option edge breaks even near 14% implied vol. Split the backtest
-   by VIX regime and confirm the low-vol subset carries the result. If it does,
-   the gate is the strategy, and the filter is a refinement on top of it.
-2. **Model vega.** Implied vol is currently frozen between entry and exit. A
-   crush after a directional move is common and attacks the gamma term the
-   conclusion depends on. This is the largest remaining hole.
-3. **Re-measure the chain intraday**, and again in a stressed tape. Everything
-   here comes from one closing snapshot at VIX 11.4.
-4. **Forward-test on paper.** Now worth doing, which it was not before: run the
-   filter live against real ticks and compare selections to expectations. No
-   orders.
+1. **Model vega.** Implied vol is frozen between entry and exit. A crush after
+   a directional move is common and attacks the gamma term the whole result
+   depends on. Largest remaining hole by some distance.
+2. **Add VIX as a model feature** rather than a hard gate, and let the filter
+   learn the interaction. The plateau from 13 to 18 suggests a soft boundary
+   is closer to the truth than a cliff.
+3. **Re-measure the chain intraday, and in a stressed tape.** Both the 0.85 IV
+   ratio and the 0.60 spread come from one calm closing snapshot, and both are
+   applied to regimes where neither holds.
+4. **Forward-test on paper.** Log what the gate plus filter would take, against
+   live quotes, and compare fills to the model. No orders.
 5. **Test momentum after a large up day** (+0.238%, n=698). Largest untested
    effect in the research table, and cheap to check.
 6. **Options positioning.** Open-interest shifts, put/call skew, max-pain drift

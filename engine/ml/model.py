@@ -470,6 +470,58 @@ def seed_robustness(
     return spreads, aucs, recent
 
 
+def walk_forward_selection(
+    samples: Sequence[Sample],
+    keep_frac: float = 0.5,
+    n_folds: int = 4,
+    seeds: Sequence[int] = tuple(range(10)),
+    rounds: int = DEFAULT_ROUNDS,
+) -> set[int]:
+    """Indices the filter would have kept, out of sample.
+
+    Each fold's threshold comes from its own training scores, and a sample is
+    kept only if a majority of seeds agree — one seed's opinion is a draw, and
+    the point of this is to feed a downstream comparison something stable.
+
+    Samples in the first fold's training block are never scored out of sample
+    and so are never returned. That is correct rather than a gap: the filter
+    did not exist yet for those trades.
+    """
+    folds = walk_forward_folds(samples, n_folds=n_folds)
+    if not folds:
+        return set()
+
+    index_of = {id(s): i for i, s in enumerate(samples)}
+    votes: dict[int, int] = {}
+
+    for seed in seeds:
+        params = {"seed": seed, "bagging_seed": seed, "feature_fraction_seed": seed}
+        for fold in folds:
+            model = train(fold.train, params, rounds)
+            train_scores = sorted(predict(model, fold.train))
+            test_scores = predict(model, fold.test)
+
+            pos = min(
+                len(train_scores) - 1,
+                max(0, int(math.ceil((1 - keep_frac) * len(train_scores))) - 1),
+            )
+            threshold = train_scores[pos]
+            for s, sc in zip(fold.test, test_scores):
+                if sc >= threshold:
+                    votes[index_of[id(s)]] = votes.get(index_of[id(s)], 0) + 1
+
+    majority = len(seeds) / 2
+    return {i for i, v in votes.items() if v > majority}
+
+
+def out_of_sample_indices(samples: Sequence[Sample], n_folds: int = 4) -> set[int]:
+    """Indices that appear in some fold's test block, so filtered and
+    unfiltered results are compared over the same trades."""
+    folds = walk_forward_folds(samples, n_folds=n_folds)
+    index_of = {id(s): i for i, s in enumerate(samples)}
+    return {index_of[id(s)] for f in folds for s in f.test}
+
+
 def importances(model) -> list[tuple[str, float]]:
     gains = model.feature_importance(importance_type="gain")
     total = sum(gains) or 1.0

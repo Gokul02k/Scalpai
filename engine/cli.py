@@ -369,6 +369,172 @@ def cmd_option_pnl(args) -> int:
     return 0
 
 
+def cmd_regime(args) -> int:
+    """Slice results by volatility regime, pricing each trade at its own VIX."""
+    from pathlib import Path
+
+    from .backtest.option_pnl import OptionMarket, price_all
+    from .backtest.regime import load_vix, split_by_regime
+    from .ml.model import load_dataset
+
+    cache = Path(__file__).parent / "var" / f"mlset_{args.symbol}_{args.interval}.json"
+    if not cache.exists():
+        print(f"No dataset at {cache.name}. Run: python -m engine.cli ml")
+        return 1
+
+    samples, _ = load_dataset(cache)
+    vix = load_vix()
+    if not len(vix):
+        print("No VIX history archived. Run:")
+        print("  python -m engine.cli sync --source fyers --symbol INDIAVIX "
+              "--interval 1d --days 4000")
+        return 1
+
+    lo, hi = vix.span
+    print(f"\n  {len(vix)} daily VIX bars, {lo} .. {hi}")
+    print(f"  {len(samples)} trades, priced at the VIX prevailing on each date")
+    print("  (previous close — the day's own close is not knowable intraday)\n")
+
+    market = OptionMarket(
+        days_to_expiry=args.days_to_expiry, spread_pts=args.spread, lot_size=args.lot_size
+    )
+    scale = args.iv_scale
+    if scale != 1.0:
+        print(f"  weekly IV taken as {scale:.2f} x VIX "
+              f"(measured 9.7% against VIX 11.4 on a live chain)\n")
+    rows = price_all(
+        samples, market,
+        iv_for=lambda s: (v * scale / 100 if (v := vix.vix_at(s.ts_ms)) else None),
+    )
+    priced = [s for s, _, _ in rows]
+    nets = [r.net_index_pts for _, r, _ in rows]
+
+    stats, unmatched = split_by_regime(priced, vix, option_net=nets)
+    print(f"  {'regime':12} {'trades':>6} {'share':>6}  {'win':>9}   "
+          f"{'index pts':>13}   {'option pts':>15}")
+    print("  " + "-" * 76)
+    for s in stats:
+        if s.trades:
+            print(s.line())
+    if unmatched:
+        print(f"\n  {unmatched} trades had no VIX reading and were skipped")
+
+    import statistics as st
+
+    below = [n for (s, _, _), n in zip(rows, nets) if (v := vix.vix_at(s.ts_ms)) and v < args.gate]
+    above = [n for (s, _, _), n in zip(rows, nets) if (v := vix.vix_at(s.ts_ms)) and v >= args.gate]
+    print(f"\n  gate at VIX {args.gate:.0f}:")
+    if below:
+        print(f"    below   {len(below):5d} trades   net {st.mean(below):+7.2f} pts/trade   "
+              f"total {sum(below):+9.0f}")
+    if above:
+        print(f"    above   {len(above):5d} trades   net {st.mean(above):+7.2f} pts/trade   "
+              f"total {sum(above):+9.0f}")
+    if below and above:
+        kept = len(below) / (len(below) + len(above)) * 100
+        print(f"    gating keeps {kept:.0f}% of trades and avoids "
+              f"{sum(above):+.0f} pts")
+        if st.mean(above) > 0:
+            print("\n  The high-vol side is also positive, so the gate is not obviously")
+            print("  needed. Prefer fewer moving parts unless it earns its place.")
+
+    if args.with_filter:
+        _gate_and_filter(rows, nets, vix, args, st)
+    print()
+    return 0
+
+
+def _gate_and_filter(rows, nets, vix, args, st) -> None:
+    """Do the VIX gate and the learned filter stack, or overlap?"""
+    from .ml.model import out_of_sample_indices, walk_forward_selection
+
+    resolved = [(i, s) for i, (s, _, _) in enumerate(rows)
+                if s.status in ("target", "stop")]
+    trainable = [s for _, s in resolved]
+    if len(trainable) < 500:
+        print("\n  Too few resolved trades to fit the filter.")
+        return
+
+    print(f"\n  stacking the filter on the gate ({len(trainable)} resolved trades,"
+          f" {args.seeds} seeds):")
+
+    kept = walk_forward_selection(trainable, keep_frac=args.keep, seeds=range(args.seeds))
+    scored = out_of_sample_indices(trainable)
+
+    # Map positions in `trainable` back to positions in `rows`.
+    row_of = {j: i for j, (i, _) in enumerate(resolved)}
+
+    def net_of(js) -> list[float]:
+        return [nets[row_of[j]] for j in js]
+
+    def calm(j) -> bool:
+        v = vix.vix_at(trainable[j].ts_ms)
+        return v is not None and v < args.gate
+
+    groups = {
+        "no filter, no gate": [j for j in scored],
+        "gate only": [j for j in scored if calm(j)],
+        "filter only": [j for j in scored if j in kept],
+        "filter + gate": [j for j in scored if j in kept and calm(j)],
+    }
+
+    print(f"    {'':22}{'trades':>7}{'net/trade':>12}{'total':>10}")
+    for label, js in groups.items():
+        vals = net_of(js)
+        if not vals:
+            print(f"    {label:22}{0:>7}{'-':>12}{'-':>10}")
+            continue
+        print(f"    {label:22}{len(vals):>7}{st.mean(vals):>+12.2f}{sum(vals):>+10.0f}")
+
+    both, gate_only = net_of(groups["filter + gate"]), net_of(groups["gate only"])
+    if both and gate_only and st.mean(both) <= st.mean(gate_only):
+        print("\n    The filter adds nothing on top of the gate. Once the regime is")
+        print("    right, it is not finding anything further.")
+
+    if both:
+        _stress(both, groups["filter + gate"], trainable, st)
+
+
+def _stress(values: list[float], js: list[int], samples, st) -> None:
+    """Is the mean the population, or a handful of trades?
+
+    A large mean over a small sample is the most common way a backtest lies.
+    Three checks that usually expose it: the median (unaffected by outliers),
+    the mean after removing the best few, and whether the result appears in
+    more than one year.
+    """
+    n = len(values)
+    ordered = sorted(values, reverse=True)
+    top3 = sum(ordered[:3])
+    without_top3 = st.mean(ordered[3:]) if n > 3 else 0.0
+    positive = sum(1 for v in values if v > 0)
+
+    print(f"\n    is that real? {n} trades is few enough to check:")
+    print(f"      mean                 {st.mean(values):+.2f}")
+    print(f"      median               {st.median(values):+.2f}")
+    print(f"      winners              {positive}/{n} ({positive / n * 100:.0f}%)")
+    print(f"      best 3 contribute    {top3:+.0f} of {sum(values):+.0f} "
+          f"({top3 / sum(values) * 100:.0f}%)" if sum(values) else "")
+    print(f"      mean without best 3  {without_top3:+.2f}")
+
+    by_year: dict[str, list[float]] = {}
+    for j, v in zip(js, values):
+        year = (samples[j].date or "")[-4:]
+        by_year.setdefault(year, []).append(v)
+    spread = " ".join(
+        f"{y}:{st.mean(vs):+.0f}({len(vs)})" for y, vs in sorted(by_year.items()) if y
+    )
+    print(f"      by year              {spread}")
+
+    years_positive = sum(1 for vs in by_year.values() if st.mean(vs) > 0)
+    if without_top3 <= 0:
+        print("\n      Remove three trades and the edge is gone. This is a handful of")
+        print("      outliers, not a strategy.")
+    elif years_positive < len(by_year) * 0.6:
+        print("\n      Most years are negative. The mean is carried by a minority of")
+        print("      the period, which is not something to trade forward.")
+
+
 def cmd_ml(args) -> int:
     """Fit the signal filter and report what it is worth out of sample."""
     from pathlib import Path
@@ -651,6 +817,22 @@ def main(argv: list[str] | None = None) -> int:
     op.add_argument("--sweep", action="store_true",
                     help="grid the result over implied vol and spread")
     op.set_defaults(fn=cmd_option_pnl)
+
+    rg = sub.add_parser("regime", help="slice results by India VIX regime")
+    rg.add_argument("--symbol", default="NIFTY")
+    rg.add_argument("--interval", default="5m")
+    rg.add_argument("--days-to-expiry", type=float, default=4.7)
+    rg.add_argument("--spread", type=float, default=0.60)
+    rg.add_argument("--lot-size", type=int, default=75)
+    rg.add_argument("--gate", type=float, default=14.0,
+                    help="VIX level to test as a stand-aside threshold")
+    rg.add_argument("--iv-scale", type=float, default=1.0,
+                    help="weekly IV as a multiple of VIX; VIX is a 30-day measure")
+    rg.add_argument("--with-filter", action="store_true",
+                    help="also test the learned filter stacked on the gate")
+    rg.add_argument("--keep", type=float, default=0.5, help="filter keep fraction")
+    rg.add_argument("--seeds", type=int, default=10)
+    rg.set_defaults(fn=cmd_regime)
     ml.add_argument("--no-opening-range", action="store_true",
                     help="collect data from the variant with the opening-range factor removed")
     ml.add_argument("--costs", default="index_points",

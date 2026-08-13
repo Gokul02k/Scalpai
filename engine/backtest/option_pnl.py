@@ -21,8 +21,8 @@ unit nobody can compare.
 from __future__ import annotations
 
 import statistics
-from dataclasses import dataclass
-from typing import Sequence
+from dataclasses import dataclass, replace
+from typing import Callable, Sequence
 
 from .calibrate import black76_delta, black76_price
 from .costs import OptionBuyCost
@@ -155,10 +155,45 @@ class OptionBacktestResult:
         ]
 
 
+def price_all(
+    samples: Sequence,
+    market: OptionMarket | None = None,
+    index_entry: float = 24000.0,
+    iv_for: Callable[[object], float | None] | None = None,
+) -> list[tuple[object, OptionTradeResult, float]]:
+    """Price every sample, optionally at its own implied vol.
+
+    `iv_for` is how a historical VIX series gets used: pricing every trade at
+    one snapshot's volatility answers "what if today's regime had always held",
+    which is not a question anyone asked. Supplying the vol that actually
+    prevailed on each date turns the sensitivity table into a result.
+    """
+    market = market or OptionMarket()
+    rows = []
+    for s in samples:
+        hold = s.hold_hours if s.hold_hours > 0 else 6.0
+        m = market
+        if iv_for is not None:
+            iv = iv_for(s)
+            if iv is None:
+                continue
+            m = replace(market, iv=iv)
+        res = price_trade(
+            entry_index=index_entry,
+            favourable_move=s.points,
+            hold_hours=hold,
+            market=m,
+        )
+        if res:
+            rows.append((s, res, hold))
+    return rows
+
+
 def repriced(
     samples: Sequence,
     market: OptionMarket | None = None,
     index_entry: float = 24000.0,
+    iv_for: Callable[[object], float | None] | None = None,
 ) -> OptionBacktestResult | None:
     """Re-price a whole sample set as options.
 
@@ -167,19 +202,7 @@ def repriced(
     level, so this mainly affects the absolute premium and barely affects the
     index-point result, which is a ratio.
     """
-    market = market or OptionMarket()
-    rows = []
-    for s in samples:
-        hold = s.hold_hours if s.hold_hours > 0 else 6.0
-        res = price_trade(
-            entry_index=index_entry,
-            favourable_move=s.points,
-            hold_hours=hold,
-            market=market,
-        )
-        if res:
-            rows.append((s, res, hold))
-
+    rows = price_all(samples, market, index_entry, iv_for)
     if not rows:
         return None
 
