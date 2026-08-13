@@ -32,14 +32,17 @@ DEFAULT_SYNC: list[tuple[str, str, str]] = [
 def cmd_probe(args) -> int:
     from datetime import timedelta
 
-    ok = True
-    for name in (args.source,) if args.source else available_sources():
+    names = (args.source,) if args.source else available_sources()
+    any_working = False
+
+    for name in names:
         print(f"\n=== {name} ===")
+        source_ok = True
         try:
             src = get_source(name)
         except DataSourceError as e:
             print(f"  unavailable: {e}")
-            ok = False
+            source_ok = False
             continue
 
         end = now_ist()
@@ -57,11 +60,17 @@ def cmd_probe(args) -> int:
                     )
                 else:
                     print(f"  EMPTY {symbol:10} {segment:7} {interval:4}")
-                    ok = False
+                    source_ok = False
             except Exception as e:
                 print(f"  FAIL {symbol:10} {segment:7} {interval:4}  {type(e).__name__}: {e}")
-                ok = False
-    return 0 if ok else 1
+                source_ok = False
+        if source_ok:
+            any_working = True
+
+    if args.source:
+        return 0 if any_working else 1
+    # Probing all providers: succeed if at least one works (Fyers is optional).
+    return 0 if any_working else 1
 
 
 def cmd_sync(args) -> int:
@@ -161,6 +170,138 @@ def cmd_backtest(args) -> int:
     stats = result.stats
     if stats["resolved"] and stats["expectancyNetPts"] <= 0:
         print("  Negative expectancy after costs. Automating this loses money faster.")
+    return 0
+
+
+def _load_candles(symbol: str, segment: str, interval: str):
+    store = CandleStore()
+    candles = store.read(symbol, segment, interval)
+    if len(candles) < 200:
+        print(
+            f"Only {len(candles)} bars archived for {symbol} {interval}. "
+            f"Run: python -m engine.cli sync --symbol {symbol} --interval {interval}"
+        )
+        return None
+    return candles
+
+
+def cmd_ab(args) -> int:
+    """Measure strategy variants against v1 over identical bars."""
+    from .backtest import BacktestConfig, Variant, format_comparison, get_cost_model, run_variants
+    from .core.suggestion import StrategyFlags
+
+    candles = _load_candles(args.symbol, args.segment, args.interval)
+    if candles is None:
+        return 1
+
+    def cfg(**kw) -> BacktestConfig:
+        c = BacktestConfig(
+            symbol=args.symbol,
+            interval=args.interval,
+            instrument=args.symbol,
+            mode=args.mode,
+            min_confidence=args.min_confidence,
+            min_pass_points=args.min_pass_points,
+            step=args.step,
+        )
+        for k, v in kw.items():
+            setattr(c, k, v)
+        return c
+
+    variants = [
+        Variant("v1", cfg()),
+        Variant("no-opening-range", cfg(flags=StrategyFlags(use_opening_range=False))),
+    ]
+
+    print(f"\n  {len(candles)} bars, {args.symbol} {args.interval}\n")
+    results = run_variants(candles, variants, get_cost_model(args.costs))
+    for line in format_comparison(results):
+        print(line)
+    print()
+    return 0
+
+
+def cmd_ml(args) -> int:
+    """Fit the signal filter and report what it is worth out of sample."""
+    from pathlib import Path
+
+    from .backtest import BacktestConfig, get_cost_model, run_backtest
+    from .core.suggestion import StrategyFlags
+    from .ml.model import (
+        build_dataset, importances, load_dataset, save_dataset, seed_robustness,
+        train, walk_forward,
+    )
+
+    cache = Path(__file__).parent / "var" / f"mlset_{args.symbol}_{args.interval}.json"
+
+    if args.cached and cache.exists():
+        samples, cost = load_dataset(cache)
+        print(f"\n  loaded {len(samples)} cached samples from {cache.name}\n")
+    else:
+        candles = _load_candles(args.symbol, args.segment, args.interval)
+        if candles is None:
+            return 1
+
+        config = BacktestConfig(
+            symbol=args.symbol,
+            interval=args.interval,
+            instrument=args.symbol,
+            mode=args.mode,
+            min_confidence=args.min_confidence,
+            min_pass_points=args.min_pass_points,
+            step=args.step,
+            collect_features=True,
+            flags=StrategyFlags(use_opening_range=not args.no_opening_range),
+        )
+        print(f"\n  replaying {len(candles)} bars to collect training data…")
+        result = run_backtest(candles, config, get_cost_model(args.costs))
+        samples = build_dataset(result.logs)
+        cost = result.stats.get("costPerTradePts") or 6.0
+        save_dataset(samples, cache, cost)
+        print(f"  {len(samples)} resolved signals with features (cached to {cache.name})\n")
+    if len(samples) < 500:
+        print("  Too few samples to validate a model honestly. Widen the period.")
+        return 1
+
+    report = walk_forward(samples, cost_pts=cost, n_folds=args.folds)
+    if report is None:
+        print("  Not enough samples to build walk-forward folds.")
+        return 1
+
+    for line in report.lines():
+        print(line)
+
+    if args.seeds > 1:
+        print(f"\n  re-running under {args.seeds} seeds — a result that depends on the")
+        print("  draw is not a result:\n")
+        spreads, aucs, recent = seed_robustness(
+            samples, cost_pts=cost, n_folds=args.folds, seeds=range(args.seeds)
+        )
+        for s in spreads:
+            print(s.line())
+        print(f"\n  AUC across seeds  {min(aucs):.3f} .. {max(aucs):.3f}")
+        if recent:
+            ok = sum(1 for v in recent if v > 0)
+            print(f"  most recent fold  net {min(recent):+.2f} .. {max(recent):+.2f} "
+                  f"across seeds, {ok}/{len(recent)} positive")
+            if ok < len(recent):
+                print("  The filter does not hold in the current regime. Older folds")
+                print("  carrying the average is not a reason to switch it on.")
+        if not any(s.robust for s in spreads):
+            print("\n  No keep-fraction holds up across seeds. The apparent gain is")
+            print("  sampling noise, not an edge.")
+
+    print("\n  feature importance (model fit on all samples, for reading only):")
+    for name, pct in importances(train(samples))[:12]:
+        print(f"    {name:22} {pct:5.1f}%")
+
+    print()
+    if report.oos_auc < 0.55:
+        print("  AUC is close to chance, so the model barely ranks winners above")
+        print("  losers. Any economic gain is coming from trade selection by size")
+        print("  rather than by direction — check it holds across seeds before")
+        print("  trusting it.")
+    print()
     return 0
 
 
@@ -297,6 +438,37 @@ def main(argv: list[str] | None = None) -> int:
                     choices=["index_points", "option_buy", "equity_intraday", "equity_delivery"])
     bt.add_argument("--show", type=int, default=0, help="print the N most recent signals")
     bt.set_defaults(fn=cmd_backtest)
+
+    ab = sub.add_parser("ab", help="compare strategy variants over identical bars")
+    ab.add_argument("--symbol", default="NIFTY")
+    ab.add_argument("--segment", default="INDEX")
+    ab.add_argument("--interval", default="5m")
+    ab.add_argument("--mode", default="scalp", choices=["scalp", "swing", "longterm"])
+    ab.add_argument("--min-confidence", type=int, default=80)
+    ab.add_argument("--min-pass-points", type=float, default=50)
+    ab.add_argument("--step", type=int, default=1)
+    ab.add_argument("--costs", default="index_points",
+                    choices=["index_points", "option_buy", "equity_intraday", "equity_delivery"])
+    ab.set_defaults(fn=cmd_ab)
+
+    ml = sub.add_parser("ml", help="fit and validate the learned signal filter")
+    ml.add_argument("--symbol", default="NIFTY")
+    ml.add_argument("--segment", default="INDEX")
+    ml.add_argument("--interval", default="5m")
+    ml.add_argument("--mode", default="scalp", choices=["scalp", "swing", "longterm"])
+    ml.add_argument("--min-confidence", type=int, default=80)
+    ml.add_argument("--min-pass-points", type=float, default=50)
+    ml.add_argument("--step", type=int, default=1)
+    ml.add_argument("--folds", type=int, default=4)
+    ml.add_argument("--cached", action="store_true",
+                    help="reuse the last collected dataset instead of replaying")
+    ml.add_argument("--seeds", type=int, default=10,
+                    help="rerun under N seeds to separate edge from luck (1 to skip)")
+    ml.add_argument("--no-opening-range", action="store_true",
+                    help="collect data from the variant with the opening-range factor removed")
+    ml.add_argument("--costs", default="index_points",
+                    choices=["index_points", "option_buy", "equity_intraday", "equity_delivery"])
+    ml.set_defaults(fn=cmd_ml)
 
     rs = sub.add_parser("research", help="test for conditional structure worth trading")
     rs.add_argument("--symbol", default="NIFTY")

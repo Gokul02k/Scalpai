@@ -81,10 +81,15 @@ eventually be an order-placing process.
 engine/
 ├── data/          provider adapters, SQLite archive, IST + NSE holiday calendar
 ├── core/          strategy ported from app/lib/*.js, behaviourally identical
-├── backtest/      bar-by-bar replay, Indian cost models
-├── tests/         66 tests, most of them parity against the live JavaScript
+├── backtest/      bar-by-bar replay, Indian cost models, variant comparison
+├── research/      hypothesis tests with multiple-testing correction
+├── ml/            signal features and the walk-forward-validated filter
+├── tests/         102 tests, most of them parity against the live JavaScript
 └── cli.py
 ```
+
+Commands: `status`, `probe`, `sync`, `inventory`, `backtest`, `ab`, `ml`,
+`research`, `fyers-auth`.
 
 ### On the port
 
@@ -174,45 +179,144 @@ Where a single bar contains both target and stop, the stop wins. Intrabar
 ordering is unknown, and assuming the favourable fill is the standard way a
 backtest flatters itself.
 
-### Current result: no measurable edge
+### Current result: a real but too-thin edge
 
-NIFTY, across every timeframe and mode currently available:
+On the full 5-minute archive — 168,177 bars, 21 Jul 2017 to 11 Aug 2026:
+
+```
+signals logged    1494        win rate          42%
+resolved          1356        avg win           +78.3 pts
+                              avg loss          −46.4 pts
+profit factor     1.21        gross/trade       +5.65 pts
+max drawdown      3402 pts    cost/trade        −6.00 pts
+                              net/trade         −0.35 pts
+```
+
+The number that matters is the profit factor of **1.21 gross**. The indicators
+do carry signal; over nine years they extracted about 7,660 index points. Costs
+took 8,140. The strategy is not wrong about direction — it is too small to
+survive its own friction.
+
+That distinction changes what "improve the strategy" means. Break-even needs
+either 6% more gross per trade or 6% fewer trades at the same quality, so
+**cutting bad trades is worth more than finding a new signal**.
+
+Longer timeframes on the same code, for reference:
 
 | Timeframe | Mode | Trades | Period | Win rate | Profit factor | Net pts/trade |
 |---|---|---|---|---|---|---|
-| 5m | scalp | 11 | 60 days | 18% | 0.36 | −40.8 |
+| 5m | scalp | 1,356 | 9 years | 42% | 1.21 | −0.35 |
 | 1h | scalp | 292 | 23 months | 36% | 0.92 | −12.4 |
 | 1d | swing | 1,235 | 19 years | 37% | 0.99 | −6.5 |
 | 1d | longterm | 1,150 | 19 years | 47% | 1.02 | −3.5 |
 
-The important column is profit factor, and the important fact is that **it
-converges to 1.00 as the sample grows**: 0.36 on 11 trades, 0.92 on 292, 0.99
-on 1,235, 1.02 on 1,150. Gross wins and gross losses cancel almost exactly.
+One supporting observation that motivated everything below: **raising the
+confidence threshold does not help.** Results are flat from 75 through 90. If
+`vote_from_factors` ranked signals by quality, the 90+ subset would outperform.
+It does not, so the number reads like a confidence without behaving like one —
+and that is a fixable problem rather than an absence of edge.
 
-That is the signature of no edge rather than of a bad edge. The small-sample
-results are not evidence of a worse strategy — they are noise around the same
-zero. On the largest samples the strategy is a fair coin flip before costs and
-a losing one after.
+---
 
-Reward:risk is consistently fine (roughly 1.6:1); the hit rate simply lands
-wherever break-even is. On the daily swing series break-even needs 37.6% and
-the strategy delivers 37%.
+## Strategy variants
 
-Two supporting observations:
+```bash
+.venv/bin/python -m engine.cli ab      # v1 vs variants over identical bars
+```
 
-* **Raising the confidence threshold does not help.** On 5-minute data results
-  are flat from 75 through 90. If confidence ranked signals by quality the
-  90+ subset would outperform. It does not, so the number reads like a
-  confidence without behaving like one.
-* **BANKNIFTY flips sign with the threshold** (+3.6, −4.4, +6.6, −12.9 across
-  75/80/85/90), which is noise, not edge. It also runs a different code path —
-  `collect_factors` only applies the scalp factor set when the instrument is
-  NIFTY, so those are two strategies, not one on two symbols.
+Variants live behind `StrategyFlags` rather than as edits to the strategy, so
+the default path stays byte-identical to v1 and the parity tests keep meaning
+what they say. A failing parity test is then always a port bug, never an
+intentional change hiding in the same diff.
 
-The most likely explanation is the ordinary one: RSI, MACD, Bollinger Bands and
-moving-average crossovers on a liquid index contain no information the market
-has not already priced. This is the expected result for standard indicators,
-not a defect in the implementation.
+### Removing the opening-range factor makes things worse
+
+The research below finds no directional edge in opening-range breaks
+(mean ≈ 0.0003%, p = 0.99), which looked like a clear case for deleting the
+factor. Measured over the same 168k bars, it is not:
+
+| | v1 | opening range removed |
+|---|---|---|
+| trades | 1,356 | 1,298 |
+| win rate | 42.0% | 41.0% |
+| gross pts/trade | +5.65 | +5.16 |
+| **net pts/trade** | **−0.35** | **−0.84** |
+| profit factor | 1.21 | 1.19 |
+| max drawdown | 3,402 | 4,054 |
+
+The factor is not a directional predictor, and it is also not noise. It votes
+`HOLD` while price sits inside the opening range, which damps confidence on
+setups that have not yet chosen a side, and removing that damping lets worse
+trades through. The learned filter independently agrees: `or_pos` is its third
+most useful feature.
+
+The general lesson is worth more than the specific result. A univariate test
+answers "does this predict direction on its own", which is not the question
+"does removing this from a multi-factor vote help".
+
+---
+
+## Learned signal filter
+
+```bash
+.venv/bin/python -m engine.cli ml               # collect, train, validate
+.venv/bin/python -m engine.cli ml --cached      # reuse the dataset (fast)
+```
+
+Replaces the hand-tuned confidence with a LightGBM model fit on 37 features
+extracted at signal time, trained on the strategy's own graded outcomes. It
+does not predict the market; it predicts which of *this strategy's* signals
+reach target, so the rest can be skipped.
+
+Validation is chronological and expanding: fold *k* trains on everything before
+a cut date and tests after it. The keep-threshold is a quantile of the
+**training** predictions, never the test set — choosing it on test data is the
+easiest way to leak the answer and the hardest to notice afterwards.
+
+### Result
+
+Out-of-sample AUC is **0.528**, which is barely above chance. Taken alone that
+reads as failure, and the economics still improve sharply:
+
+| Keep | Trades | Win rate | Gross/trade | Net/trade |
+|---|---|---|---|---|
+| all (baseline) | 956 | 41.0% | +4.21 | **−1.79** |
+| top 50% | 483 | 44.1% | +9.20 | **+3.20** |
+| top 40% | 344 | 43.9% | +11.86 | +5.86 |
+| top 30% | 196 | 44.9% | +12.60 | +6.60 |
+| top 20% | 94 | 46.8% | +13.13 | +7.13 |
+
+Win rate moves only 3 points while gross more than doubles, which says the
+model is selecting for **payoff rather than direction** — it is finding setups
+where the fixed target/stop geometry is favourable, not calling the market
+better. That is a weaker claim than "it predicts winners", and it is the claim
+the data actually supports.
+
+Two checks before believing it. Across 10 seeds, every keep-fraction stays
+positive (top 50%: +1.62 to +3.09, 10/10 positive), so the result is not a
+lucky draw. And by fold:
+
+| Fold | Period | Train | AUC | Baseline | Filtered |
+|---|---|---|---|---|---|
+| 0 | Apr 2020 – Jan 2021 | 400 | 0.452 | −7.86 | **−9.95** |
+| 1 | Jan 2021 – Feb 2022 | 639 | 0.576 | −2.60 | +5.30 |
+| 2 | Feb 2022 – Feb 2024 | 878 | 0.566 | +4.01 | +11.76 |
+| 3 | **Feb 2024 – Aug 2026** | 1,117 | 0.549 | −0.69 | **+8.08** |
+
+Fold 0 is a genuine failure — the filter made a bad period worse, on the
+smallest training set and with sub-chance AUC. That the failure is at the
+*start* rather than the end is the encouraging direction: it looks like a
+learning curve, not a decaying edge. Fold 3 is the current regime and the only
+one that speaks to switching this on today; it holds at +5.31 to +11.30 across
+all 10 seeds.
+
+### What this does not establish
+
+* Costs are the assumed 6 index points. Real weekly-option round trips near
+  the money may differ, and at +3.20 net there is not much room.
+* 130 trades in the deployable fold. Meaningful, not conclusive.
+* Fold 0 shows the filter needs roughly 600+ graded trades before it helps.
+* Backtest, not live. Nothing here has met a real spread.
 
 ---
 
@@ -237,9 +341,18 @@ two or three false positives by construction.
 
 Most of the usual suspects are empty: weekday effects, month effects, gap
 continuation, streak reversal and opening-range breakout all fail to clear the
-corrected bar. The opening-range result matters for v1 specifically, since
-`suggestion.py` votes on breaks of the opening range — that factor is
-contributing noise.
+corrected bar.
+
+The opening-range result looked like an immediate fix for v1, since
+`suggestion.py` votes on breaks of the opening range. Backtesting the removal
+showed the opposite (see above) — a univariate test cannot answer what a factor
+contributes inside a multi-factor vote.
+
+The strongest survivor-adjacent finding, and the best untested lead here, is
+**momentum after a large up day**: following any close of +1% or more, the next
+day averages +0.238% (n=698, CI [+0.111, +0.365], p=0.0029). That misses the
+corrected bar of p<0.001, but +0.238% is roughly 57 index points against ~6
+points of cost, so the effect size is large enough to be worth a proper test.
 
 One large effect is real. **NIFTY's entire return happens overnight:**
 
@@ -281,33 +394,36 @@ margin.
 ## Status
 
 Done: data layer, local archive, Fyers adapter, verified strategy port,
-backtest with costs, and an edge measurement across 19 years and ~2,700 trades.
+backtest with costs, edge research across 19 years, a strategy-variant harness,
+and a walk-forward-validated signal filter.
 
-**Do not build execution against this strategy.** The infrastructure work —
-VPS, static IP, OAuth, order management, reconciliation, risk limits — is
-several weeks and only pays off on top of a real edge. There isn't one yet.
+The picture changed with the full 5-minute archive. The raw strategy is not
+edgeless — it is gross-positive at a profit factor of 1.21 and loses to costs.
+Filtering it with a learned model turns the recent out-of-sample period from
+−0.69 to +8.08 net points per trade, robust across seeds.
 
-Price-only structure has now been searched fairly thoroughly: fifty hypotheses
-across nineteen years, and the one large effect found is decaying out of
-tradeability. That is informative rather than merely disappointing — it says
-the remaining edge, if any, is not in the price series alone.
+**That is still not a reason to build execution yet.** It is one backtest, on
+130 deployable-fold trades, against an assumed cost model. But it is the first
+result here that justifies continuing rather than stopping.
 
-Reasonable next steps, in rough order of expected value:
+Next steps, in rough order of expected value:
 
-1. **Options positioning.** The one major data source not yet examined, and
-   the one with the best prior: open-interest shifts, put/call skew, max-pain
-   drift into expiry, and India VIX term structure. This is information about
-   *positioning* rather than past prices, so it is not ruled out by anything
-   above. Needs a Fyers account for the chain data.
-2. **Drop the opening-range factor from the vote**, or verify it separately.
-   The research finds no predictive content in opening-range breaks, so it is
-   currently adding noise to every signal.
-3. **Try LightGBM on the existing features** — cheap, and it can find
-   nonlinear combinations a linear vote misses. Calibrate expectations: if the
-   features carry no information, no model manufactures any.
-4. **Keep v1 as decision support.** A dashboard that surfaces levels and
-   context for a human is legitimately useful, and is what the current signal
-   quality actually supports.
+1. **Confirm the real cost per round trip.** The whole conclusion sits on the
+   6-point assumption. Pull actual weekly-option spreads near the money from
+   the Fyers chain and re-run. If the true cost is 10 points, the filtered edge
+   mostly disappears and everything below is moot.
+2. **Forward-test the filter on paper.** Now worth doing, which it was not
+   before: run the filter live against real ticks and compare its selections to
+   backtest expectations. No orders.
+3. **Test momentum after a large up day** (+0.238%, n=698). Largest untested
+   effect in the research table, and cheap to check.
+4. **Options positioning.** Open-interest shifts, put/call skew, max-pain drift
+   into expiry, India VIX term structure. The one major data source not yet
+   examined, and information about *positioning* rather than past prices, so
+   nothing above rules it out.
+5. **Retrain cadence.** Fold 0 shows the filter needs ~600 graded trades to
+   help. Decide how often it refits and on what window before it runs live.
 
-Paper trading is deliberately absent from that list. Paper trading a zero-edge
-strategy confirms it makes no money, slowly.
+Keeping v1 as decision support remains legitimate regardless. A dashboard that
+surfaces levels and context for a human is useful independently of whether the
+automated version clears costs.

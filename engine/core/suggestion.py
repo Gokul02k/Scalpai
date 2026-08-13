@@ -17,6 +17,7 @@ eventually tuned:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Sequence
 
 from .jsnum import clamp, fixed_str, js_round, js_str, locale_en_in, to_fixed
@@ -24,6 +25,28 @@ from .jsnum import clamp, fixed_str, js_round, js_str, locale_en_in, to_fixed
 Settings = dict[str, Any]
 
 STRENGTH_W = {"STRONG": 3, "MODERATE": 2, "WEAK": 1}
+
+
+@dataclass(frozen=True)
+class StrategyFlags:
+    """Toggles for deviations from v1, so a change can be measured before it
+    is adopted.
+
+    Defaults reproduce v1 exactly, which keeps the parity tests meaningful:
+    a failing parity test then always means a port bug, never an intentional
+    strategy change hiding in the same diff.
+
+    `use_opening_range`: v1 votes weight 2 on opening-range breaks. Research
+    over 19 years puts that factor's predictive value at +0.0003% (p=0.99),
+    i.e. none, so it is a candidate for removal — but only once the backtest
+    has confirmed removing it helps.
+    """
+
+    use_opening_range: bool = True
+
+
+#: v1 behaviour. Anything comparing against the live dashboard uses this.
+V1_FLAGS = StrategyFlags()
 
 FINAL_LABELS = {
     "BUY": "BUY NOW",
@@ -105,7 +128,9 @@ def analyze_liquidity_factor(liq: dict | None) -> dict | None:
     }
 
 
-def analyze_session_factors(price: float | None, session: dict | None) -> list[dict]:
+def analyze_session_factors(
+    price: float | None, session: dict | None, flags: StrategyFlags = V1_FLAGS
+) -> list[dict]:
     if session is None or not price:
         return []
     out: list[dict] = []
@@ -122,7 +147,7 @@ def analyze_session_factors(price: float | None, session: dict | None) -> list[d
             "weight": 2,
         })
 
-    if session.get("orReady") and session.get("orHigh") and session.get("orLow"):
+    if flags.use_opening_range and session.get("orReady") and session.get("orHigh") and session.get("orLow"):
         or_high, or_low = js_str(session["orHigh"]), js_str(session["orLow"])
         if price > session["orHigh"]:
             out.append({"type": "BUY", "name": "Opening range",
@@ -153,7 +178,10 @@ def analyze_fvg_factor(analysis: dict) -> dict | None:
 
 
 def collect_factors(
-    analysis: dict, index_signals: Sequence[dict] = (), nifty_scalp: bool = False
+    analysis: dict,
+    index_signals: Sequence[dict] = (),
+    nifty_scalp: bool = False,
+    flags: StrategyFlags = V1_FLAGS,
 ) -> list[dict]:
     import re
 
@@ -165,7 +193,9 @@ def collect_factors(
 
     if nifty_scalp and analysis:
         factors += analyze_sr_factors(analysis.get("price"), analysis)
-        factors += analyze_session_factors(analysis.get("price"), analysis.get("session"))
+        factors += analyze_session_factors(
+            analysis.get("price"), analysis.get("session"), flags
+        )
         liq = analyze_liquidity_factor(analysis.get("liquidity"))
         if liq:
             factors.append(liq)
@@ -322,6 +352,7 @@ def build_unified_suggestion(
     settings: Settings | None = None,
     mode: str = "scalp",
     instrument: str = "",
+    flags: StrategyFlags = V1_FLAGS,
 ) -> dict:
     settings = settings or {}
     if analysis is None or not price:
@@ -331,7 +362,7 @@ def build_unified_suggestion(
         }
 
     nifty_scalp = mode == "scalp" and instrument == "NIFTY"
-    factors = collect_factors(analysis, index_signals, nifty_scalp)
+    factors = collect_factors(analysis, index_signals, nifty_scalp, flags)
     vote = vote_from_factors(factors, chg_pct, mode)
     action, confidence = vote["action"], vote["confidence"]
     levels = trade_levels(price, action, mode, settings, analysis)

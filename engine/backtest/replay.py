@@ -16,7 +16,7 @@ from __future__ import annotations
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from ..core import indicators as ind
 from ..core import signal_log as slog
@@ -58,6 +58,16 @@ class BacktestConfig:
     #: must not, or it quietly throws away its own early history and reports
     #: on a shorter period than it ran.
     max_entries: int = 100_000
+    #: Strategy variant. Defaults to v1 so a run is comparable to the
+    #: dashboard unless a deviation is asked for explicitly.
+    flags: sug.StrategyFlags = sug.V1_FLAGS
+    #: Attach a feature row to each logged signal, for model training. Off by
+    #: default so a plain replay produces logs shaped exactly like production.
+    collect_features: bool = False
+    #: Gate applied after the engine produces a signal and before it is logged.
+    #: Returning False drops the signal as if it never fired. Used by the ML
+    #: filter; requires `collect_features`.
+    signal_filter: Callable[[dict], bool] | None = None
 
 
 @dataclass
@@ -68,6 +78,7 @@ class BacktestResult:
     evaluated: int
     stats: dict
     cost_model: str
+    filtered: int = 0
 
     def summary_lines(self) -> list[str]:
         s = self.stats
@@ -78,6 +89,10 @@ class BacktestResult:
             f"mode={self.config.mode}",
             f"bars              {self.bars}  (evaluated {self.evaluated})",
             f"period            {first} .. {last}",
+        ]
+        if self.filtered:
+            out.append(f"dropped by filter {self.filtered}")
+        out += [
             f"signals logged    {s['total']}",
             f"  passed          {s['passed']}",
             f"  failed          {s['failed']}",
@@ -126,6 +141,7 @@ def run_backtest(
 
     logs: list[dict] = []
     evaluated = 0
+    filtered = 0
 
     for i in range(config.warmup, len(rows), config.step):
         window = rows[max(0, i - config.window + 1): i + 1]
@@ -145,6 +161,7 @@ def run_backtest(
         final_call = sug.build_unified_suggestion(
             analysis, price, chg_pct, index_signals,
             config.settings, config.mode, config.instrument,
+            config.flags,
         )
 
         if final_call.get("action") not in ("BUY", "SELL"):
@@ -162,6 +179,19 @@ def run_backtest(
             now=datetime.fromtimestamp(bar["ts"] / 1000, tz=timezone.utc),
         )
         entry["instrument"] = config.instrument
+
+        if config.collect_features:
+            from ..ml.features import extract_features
+
+            entry["features"] = extract_features(final_call, analysis, window, chg_pct)
+
+        # Filtering here rather than after grading is deliberate: a dropped
+        # signal must not occupy the dedupe slot, or the filter would silently
+        # change which *other* signals get merged away.
+        if config.signal_filter is not None and not config.signal_filter(entry):
+            filtered += 1
+            continue
+
         logs = slog.apply_nifty_log_update(logs, entry, config.max_entries)["logs"]
 
     # Grading uses the full price path. This is not lookahead: each decision
@@ -178,6 +208,7 @@ def run_backtest(
         logs=graded,
         bars=len(rows),
         evaluated=evaluated,
+        filtered=filtered,
         stats=summarize(graded, cost_model),
         cost_model=cost_model.name,
     )
