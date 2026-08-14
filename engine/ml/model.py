@@ -470,6 +470,84 @@ def seed_robustness(
     return spreads, aucs, recent
 
 
+def enrich_with_vix(samples: Sequence[Sample], vix) -> int:
+    """Attach volatility-regime features to samples already collected.
+
+    Joined here rather than inside `extract_features` because VIX is a
+    separate daily series and threading it through the bar-by-bar replay would
+    couple the strategy path to a second data source for no gain. The join key
+    is the trade's own timestamp, and `VixSeries` only ever exposes closes from
+    strictly earlier days.
+
+    Returns how many samples were matched, which matters: VIX history starts in
+    2015 and the archive in 2017, but any gap leaves zeroed columns that would
+    otherwise pass unnoticed.
+    """
+    matched = 0
+    for s in samples:
+        context = vix.context_at(s.ts_ms)
+        if context:
+            s.features.update(context)
+            matched += 1
+    return matched
+
+
+def save_model(model, path: Path, meta: dict | None = None) -> None:
+    """Persist a fitted booster plus the context needed to trust it later.
+
+    The metadata is not decoration. A model file with no record of which
+    features it was fit on, over what period, is impossible to audit once the
+    feature list changes — and the feature list will change.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    model.save_model(str(path))
+    path.with_suffix(".meta.json").write_text(
+        json.dumps({"features": list(FEATURE_NAMES), **(meta or {})}, indent=1)
+    )
+
+
+def load_model(path: Path):
+    """Load a booster, refusing it if the feature list has moved underneath.
+
+    Silently scoring today's features through a model fit on a different
+    column order would produce plausible-looking nonsense, which is worse than
+    an error.
+    """
+    import lightgbm as lgb
+
+    meta_path = path.with_suffix(".meta.json")
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    trained_on = meta.get("features")
+    if trained_on and trained_on != list(FEATURE_NAMES):
+        raise ValueError(
+            f"{path.name} was fit on {len(trained_on)} features that no longer "
+            f"match the current {len(FEATURE_NAMES)}. Retrain: engine.cli train"
+        )
+    return lgb.Booster(model_file=str(path)), meta
+
+
+def score_one(model, features: dict[str, float]) -> float:
+    """Probability that a single live signal reaches target before stop."""
+    import numpy as np
+
+    return float(model.predict(np.array([to_row(features)], dtype=np.float64))[0])
+
+
+def threshold_for(model, samples: Sequence[Sample], keep_frac: float) -> float:
+    """Score above which a signal is taken, set so that `keep_frac` of the
+    training population would have qualified.
+
+    Derived from the training distribution rather than picked as a round
+    number, because the raw probabilities are not calibrated — 0.5 means
+    nothing in particular, while "top 40% of what I have seen" does.
+    """
+    scores = sorted(predict(model, samples))
+    if not scores:
+        return 0.0
+    idx = min(len(scores) - 1, max(0, int(math.ceil((1 - keep_frac) * len(scores))) - 1))
+    return scores[idx]
+
+
 def walk_forward_selection(
     samples: Sequence[Sample],
     keep_frac: float = 0.5,

@@ -59,6 +59,13 @@ FEATURE_NAMES: list[str] = [
     "realized_vol_pct",
     "bar_range_pct",
     "streak",
+    # Volatility regime. Appended rather than inserted, because the list is the
+    # model's column order and reordering it silently invalidates saved models.
+    # Zero when no VIX history is joined, which is what an unenriched dataset
+    # produces and is harmless: a constant column carries no information.
+    "vix_level",
+    "vix_vs_20d",
+    "vix_pctile_1y",
 ]
 
 _OPEN_MINUTES = 9 * 60 + 15
@@ -193,6 +200,13 @@ def extract_features(
         "realized_vol_pct": statistics.pstdev(rets[-20:]) * 100 if len(rets) >= 20 else 0.0,
         "bar_range_pct": _pct(_safe(last.get("h")) - _safe(last.get("l")), price),
         "streak": _streak(closes),
+        # Placeholders. VIX is a separate daily series joined afterwards by
+        # `enrich_with_vix`; emitting the keys here keeps every row shaped like
+        # FEATURE_NAMES, so a missing join shows up as a constant column rather
+        # than as a differently shaped dict much later.
+        "vix_level": 0.0,
+        "vix_vs_20d": 0.0,
+        "vix_pctile_1y": 0.0,
     }
 
 

@@ -64,6 +64,120 @@ def test_empty_series_is_harmless():
     assert len(empty) == 0
     assert empty.span == ("", "")
     assert empty.vix_at(_ts("2026-01-02")) is None
+    assert empty.context_at(_ts("2026-01-02")) == {}
+
+
+# ── regime context as model features ───────────────────────────────────────
+
+
+def _ramp(n: int, start: float = 10.0, step: float = 0.1) -> VixSeries:
+    """A long, slowly rising series — enough history for the trailing windows
+    to be populated rather than degenerate."""
+    from datetime import timedelta
+
+    day0 = datetime(2024, 1, 1, tzinfo=IST)
+    return VixSeries({
+        (day0 + timedelta(days=i)).strftime("%Y-%m-%d"): start + i * step
+        for i in range(n)
+    })
+
+
+def test_context_reports_the_previous_close_as_level(vix):
+    """Same no-lookahead rule as the plain lookup: the day's own close is not
+    knowable while the session is running."""
+    context = vix.context_at(_ts("2026-01-05"))
+    assert context["vix_level"] == 13.0
+    assert context["vix_level"] == vix.vix_at(_ts("2026-01-05"))
+
+
+def test_context_is_empty_on_the_first_day(vix):
+    """Nothing earlier exists, so there is no honest context to report."""
+    assert vix.context_at(_ts("2026-01-01")) == {}
+
+
+def test_context_is_empty_for_an_unknown_day(vix):
+    assert vix.context_at(_ts("2026-06-30")) == {}
+    assert vix.context_at(0) == {}
+
+
+def test_ratio_to_the_trailing_month_detects_a_spike():
+    from datetime import timedelta
+
+    day0 = datetime(2024, 1, 1, tzinfo=IST)
+    closes = {(day0 + timedelta(days=i)).strftime("%Y-%m-%d"): 12.0 for i in range(60)}
+    closes[(day0 + timedelta(days=60)).strftime("%Y-%m-%d")] = 30.0
+    # The day being asked about must itself be a trading day in the series;
+    # context is read from the closes strictly before it.
+    after = (day0 + timedelta(days=61)).strftime("%Y-%m-%d")
+    closes[after] = 26.0
+    series = VixSeries(closes)
+
+    calm = series.context_at(_ts((day0 + timedelta(days=59)).strftime("%Y-%m-%d")))
+    assert calm["vix_vs_20d"] == pytest.approx(1.0)
+
+    spiked = series.context_at(_ts(after))
+    assert spiked["vix_level"] == 30.0
+    assert spiked["vix_vs_20d"] > 1.5
+
+
+def test_percentile_places_the_level_within_its_own_year():
+    series = _ramp(300)
+    from datetime import timedelta
+
+    day = (datetime(2024, 1, 1, tzinfo=IST) + timedelta(days=299)).strftime("%Y-%m-%d")
+    context = series.context_at(_ts(day))
+    # A monotonically rising series means the latest close is the highest.
+    assert context["vix_pctile_1y"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_context_never_reads_beyond_the_trade_day():
+    """The decisive property. Appending later history must not change what the
+    features said about an earlier trade."""
+    from datetime import timedelta
+
+    day0 = datetime(2024, 1, 1, tzinfo=IST)
+    closes = {(day0 + timedelta(days=i)).strftime("%Y-%m-%d"): 10.0 + i * 0.1
+              for i in range(120)}
+    day = (day0 + timedelta(days=100)).strftime("%Y-%m-%d")
+
+    before = VixSeries(closes).context_at(_ts(day))
+    extended = dict(closes)
+    for i in range(120, 200):
+        extended[(day0 + timedelta(days=i)).strftime("%Y-%m-%d")] = 45.0
+    after = VixSeries(extended).context_at(_ts(day))
+
+    assert before == after
+
+
+def test_enrichment_fills_features_and_counts_matches():
+    from engine.ml.model import enrich_with_vix
+
+    series = _ramp(300)
+    from datetime import timedelta
+
+    day0 = datetime(2024, 1, 1, tzinfo=IST)
+    inside = _sample((day0 + timedelta(days=200)).strftime("%Y-%m-%d"), 10.0)
+    outside = _sample("2019-05-05", 10.0)   # before the series begins
+
+    matched = enrich_with_vix([inside, outside], series)
+
+    assert matched == 1
+    assert inside.features["vix_level"] > 0
+    assert "vix_level" not in outside.features
+
+
+def test_enrichment_columns_reach_the_model_row():
+    """A feature the model cannot see is not a feature."""
+    from engine.ml.features import FEATURE_NAMES, to_row
+
+    for name in ("vix_level", "vix_vs_20d", "vix_pctile_1y"):
+        assert name in FEATURE_NAMES
+
+    row = to_row({"vix_level": 18.0, "vix_vs_20d": 1.4, "vix_pctile_1y": 0.9})
+    assert row[FEATURE_NAMES.index("vix_level")] == 18.0
+    assert row[FEATURE_NAMES.index("vix_pctile_1y")] == 0.9
+    # An unenriched sample must degrade to a constant, not blow up.
+    assert to_row({})[FEATURE_NAMES.index("vix_level")] == 0.0
 
 
 # ── bucketing ──────────────────────────────────────────────────────────────

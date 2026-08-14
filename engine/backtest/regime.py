@@ -33,6 +33,7 @@ class VixSeries:
     def __init__(self, closes: dict[str, float]) -> None:
         self._by_day = dict(closes)
         self._days = sorted(self._by_day)
+        self._index = {day: i for i, day in enumerate(self._days)}
         # Previous trading day's close, which is what is knowable intraday.
         self._prev = {
             day: self._by_day[self._days[i - 1]]
@@ -52,6 +53,50 @@ class VixSeries:
             return None
         day = datetime.fromtimestamp(ts_ms / 1000, tz=IST).strftime("%Y-%m-%d")
         return self._prev.get(day)
+
+    def live_context(self, level: float) -> dict[str, float]:
+        """Regime features for a VIX print that is not in the archive yet.
+
+        The training-time join reads the previous close from history; live, the
+        current print is on the screen and the history behind it is whatever
+        has been archived. Without this the model would be scored with three of
+        its columns zeroed while it was fitted on real values — a train/serve
+        skew that produces confident nonsense rather than an error.
+        """
+        if not level or not self._days:
+            return {}
+        prior = [self._by_day[d] for d in self._days[-252:]]
+        recent = prior[-20:]
+        return {
+            "vix_level": level,
+            "vix_vs_20d": level / (sum(recent) / len(recent)),
+            "vix_pctile_1y": sum(1 for v in prior if v < level) / len(prior),
+        }
+
+    def context_at(self, ts_ms: int) -> dict[str, float]:
+        """Volatility regime as a live system would see it at `ts_ms`.
+
+        The level alone is not enough to learn from: 14 is calm after a
+        stressed month and elevated after a quiet one. The ratio to the
+        trailing month and the position within the trailing year carry that
+        distinction, and both are built only from closes strictly before the
+        trade's own day.
+        """
+        if not ts_ms:
+            return {}
+        day = datetime.fromtimestamp(ts_ms / 1000, tz=IST).strftime("%Y-%m-%d")
+        idx = self._index.get(day)
+        if idx is None or idx == 0:
+            return {}
+
+        prior = [self._by_day[d] for d in self._days[max(0, idx - 252): idx]]
+        level = prior[-1]
+        recent = prior[-20:]
+        return {
+            "vix_level": level,
+            "vix_vs_20d": level / (sum(recent) / len(recent)),
+            "vix_pctile_1y": sum(1 for v in prior if v < level) / len(prior),
+        }
 
     def close_on(self, day: str) -> float | None:
         return self._by_day.get(day)
