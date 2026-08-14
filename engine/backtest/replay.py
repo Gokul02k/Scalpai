@@ -68,6 +68,10 @@ class BacktestConfig:
     #: Returning False drops the signal as if it never fired. Used by the ML
     #: filter; requires `collect_features`.
     signal_filter: Callable[[dict], bool] | None = None
+    #: Settle signals that never touched either level at the last price rather
+    #: than discarding them. Required for any comparison that shortens
+    #: `eval_window_ms` into a time-based exit.
+    count_expired: bool = False
 
 
 @dataclass
@@ -209,13 +213,26 @@ def run_backtest(
         bars=len(rows),
         evaluated=evaluated,
         filtered=filtered,
-        stats=summarize(graded, cost_model),
+        stats=summarize(graded, cost_model, config.count_expired),
         cost_model=cost_model.name,
     )
 
 
-def summarize(logs: Sequence[dict], cost_model: CostModel) -> dict:
+def summarize(
+    logs: Sequence[dict], cost_model: CostModel, count_expired: bool = False
+) -> dict:
+    """Aggregate graded signals into economics.
+
+    `count_expired` decides whether signals that ran out their window without
+    touching either level are settled at the last price or dropped. Dropping
+    them is v1's behaviour and flatters the result — those trades paid the
+    spread and got nothing — but changing the default would silently move every
+    number already published here. It must be on when comparing a time-based
+    exit against the baseline, since a shorter window converts resolutions into
+    expiries and would otherwise delete the trades it was meant to measure.
+    """
     base = slog.summarize_outcomes(logs)
+    settled = ("target", "stop", "expired") if count_expired else ("target", "stop")
 
     wins: list[float] = []
     losses: list[float] = []
@@ -224,7 +241,7 @@ def summarize(logs: Sequence[dict], cost_model: CostModel) -> dict:
 
     for e in sorted(logs, key=lambda x: x["ts"]):
         outcome = e.get("outcome") or {}
-        if outcome.get("status") not in ("target", "stop"):
+        if outcome.get("status") not in settled:
             continue
         entry_px = e.get("entry")
         exit_px = outcome.get("resolvedPrice")
@@ -262,6 +279,10 @@ def summarize(logs: Sequence[dict], cost_model: CostModel) -> dict:
     return {
         **base,
         "total": len(logs),
+        # Overrides the base count, which only ever recognises target and stop.
+        # Leaving it would report a total net over a trade count that excludes
+        # the settled expiries the total includes.
+        "resolved": resolved,
         "avgWinPts": statistics.mean(wins) if wins else 0.0,
         "avgLossPts": statistics.mean(losses) if losses else 0.0,
         "expectancyGrossPts": gross_total / resolved,

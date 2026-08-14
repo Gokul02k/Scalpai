@@ -40,9 +40,27 @@ class StrategyFlags:
     over 19 years puts that factor's predictive value at +0.0003% (p=0.99),
     i.e. none, so it is a candidate for removal — but only once the backtest
     has confirmed removing it helps.
+
+    `long_only`: suppress short signals. v1 fires 60% more shorts than longs
+    and the shorts are where the money goes (+4.74 vs −3.76 net points per
+    trade over nine years). The mechanism is plausible — RSI and Bollinger are
+    mean-reversion factors, so they call "overbought, sell" continuously in an
+    uptrend — but NIFTY roughly tripled over the sample, so part of this is
+    certainly just the trend, and the split reverses in 2017 and 2026.
+
+    `atr_target_mult` / `atr_stop_mult`: size levels in ATR units instead of
+    fixed percentages. v1 uses a flat 1.5% target and 0.8% stop regardless of
+    how much the index is actually moving, which is a fantasy in a quiet tape
+    and leaves money behind in a fast one. The learned filter more than doubles
+    gross while barely moving win rate, which reads as it finding the setups
+    where the fixed geometry happens to fit — a mis-specified parameter the
+    model is being paid to work around. None keeps v1's percentages.
     """
 
     use_opening_range: bool = True
+    long_only: bool = False
+    atr_target_mult: float | None = None
+    atr_stop_mult: float | None = None
 
 
 #: v1 behaviour. Anything comparing against the live dashboard uses this.
@@ -291,6 +309,7 @@ def trade_levels(
     mode: str,
     settings: Settings | None = None,
     analysis: dict | None = None,
+    flags: StrategyFlags = V1_FLAGS,
 ) -> dict:
     """Risk-first levels with an enforced minimum reward:risk.
 
@@ -317,7 +336,15 @@ def trade_levels(
     min_rr = settings.get("minRR", 1.2 if mode == "longterm" else 1.5)
     min_stop_pct = 0.01 if mode == "longterm" else 0.005 if mode == "swing" else 0.002
 
-    target = entry * (1 + tgt_pct) if buy else entry * (1 - tgt_pct)
+    # Volatility-scaled distance when asked for, falling back to the fixed
+    # percentage whenever ATR is unavailable — an ATR of zero would otherwise
+    # collapse the target onto the entry and produce a guaranteed stop-out.
+    if flags.atr_target_mult and atr > 0:
+        tgt_dist = atr * flags.atr_target_mult
+    else:
+        tgt_dist = entry * tgt_pct
+
+    target = entry + tgt_dist if buy else entry - tgt_dist
     if buy and (sr.get("resistance") or 0) > entry:
         target = min(target, sr["resistance"] * 0.999)
     elif not buy and (sr.get("support") or 0) > 0 and sr["support"] < entry:
@@ -326,7 +353,10 @@ def trade_levels(
     reward = abs(target - entry)
 
     atr_floor = max(atr * (0.8 if mode == "scalp" else 0.6), entry * min_stop_pct)
-    max_risk = max(entry * base_sl_pct, atr_floor)
+    if flags.atr_stop_mult and atr > 0:
+        max_risk = max(atr * flags.atr_stop_mult, atr_floor)
+    else:
+        max_risk = max(entry * base_sl_pct, atr_floor)
 
     if reward <= 0 or reward / min_rr < atr_floor:
         return {"entry": entry, "target": None, "stopLoss": None, "rr": None, "viable": False}
@@ -365,7 +395,13 @@ def build_unified_suggestion(
     factors = collect_factors(analysis, index_signals, nifty_scalp, flags)
     vote = vote_from_factors(factors, chg_pct, mode)
     action, confidence = vote["action"], vote["confidence"]
-    levels = trade_levels(price, action, mode, settings, analysis)
+
+    # Suppressed before levels are computed, so a short cannot occupy the
+    # dedupe slot of a long that fires moments later.
+    if flags.long_only and action == "SELL":
+        action = "HOLD"
+
+    levels = trade_levels(price, action, mode, settings, analysis, flags)
 
     final_action = action
     final_confidence = confidence
