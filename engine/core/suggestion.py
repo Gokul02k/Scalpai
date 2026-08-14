@@ -76,6 +76,24 @@ class StrategyFlags:
 #: v1 behaviour. Anything comparing against the live dashboard uses this.
 V1_FLAGS = StrategyFlags()
 
+#: What the engine actually trades. Differs from v1 in one place: the stop
+#: floor falls back to volatility instead of a flat 0.2% of price.
+#:
+#: v1's constant demands ~73 points of room before a setup is allowed, which
+#: on a range-bound day admits nothing -- a 108-point day produced 22
+#: directional votes and zero trades. Removing it and taking everything is
+#: much worse (gross per trade falls from +6.41 to +3.58). Removing it and
+#: letting the learned filter choose from the wider pool is better than both:
+#: out-of-sample AUC rises from 0.548 to 0.612 on 3.5x the training data, and
+#: under the VIX gate the recent fold runs +13.33 per trade across 86 trades,
+#: positive under all six seeds.
+#:
+#: The decisive argument is not the average, which is thin at +2.97 over the
+#: whole period. It is that v1's floor leaves only 384 samples once the gate
+#: is applied -- too few to validate honestly, so the configuration that ran
+#: before this could not be checked at all.
+PRODUCTION_FLAGS = StrategyFlags(min_stop_pct=0.0)
+
 FINAL_LABELS = {
     "BUY": "BUY NOW",
     "SELL": "SELL NOW",

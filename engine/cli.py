@@ -540,13 +540,14 @@ def cmd_ml(args) -> int:
     from pathlib import Path
 
     from .backtest import BacktestConfig, get_cost_model, run_backtest
-    from .core.suggestion import StrategyFlags
+    from .core.suggestion import PRODUCTION_FLAGS, StrategyFlags
     from .ml.model import (
         build_dataset, importances, load_dataset, save_dataset, seed_robustness,
         train, walk_forward,
     )
 
-    cache = Path(__file__).parent / "var" / f"mlset_{args.symbol}_{args.interval}.json"
+    cache = (Path(__file__).parent / "var"
+             / f"mlset_{args.symbol}_{args.interval}_prod.json")
 
     if args.cached and cache.exists():
         samples, cost = load_dataset(cache)
@@ -567,7 +568,12 @@ def cmd_ml(args) -> int:
             min_pass_points=args.min_pass_points,
             step=args.step,
             collect_features=True,
-            flags=StrategyFlags(use_opening_range=not args.no_opening_range),
+            # Validation has to measure the geometry production trades, or the
+            # number it reports belongs to a strategy nobody runs.
+            flags=StrategyFlags(
+                use_opening_range=not args.no_opening_range,
+                min_stop_pct=PRODUCTION_FLAGS.min_stop_pct,
+            ),
         )
         print(f"\n  replaying {len(candles)} bars to collect training data…")
         result = run_backtest(candles, config, get_cost_model(args.costs))
@@ -767,12 +773,17 @@ def cmd_train(args) -> int:
     from pathlib import Path
 
     from .backtest import BacktestConfig, get_cost_model, run_backtest
+    from .core.suggestion import PRODUCTION_FLAGS
     from .ml.model import (
         build_dataset, load_dataset, save_dataset, save_model, threshold_for, train,
     )
 
     out = Path(args.out or Path(__file__).parent / "var" / "filter.txt")
-    cache = Path(__file__).parent / "var" / f"mlset_{args.symbol}_{args.interval}.json"
+    # Keyed to the flags it was collected under. Sharing one cache with the v1
+    # geometry would train the filter on a signal set the live runner does not
+    # produce, and nothing downstream would notice.
+    cache = (Path(__file__).parent / "var"
+             / f"mlset_{args.symbol}_{args.interval}_prod.json")
 
     if args.cached and cache.exists():
         samples, _ = load_dataset(cache)
@@ -785,7 +796,8 @@ def cmd_train(args) -> int:
         result = run_backtest(
             candles,
             BacktestConfig(symbol=args.symbol, interval=args.interval,
-                           instrument=args.symbol, collect_features=True),
+                           instrument=args.symbol, collect_features=True,
+                           flags=PRODUCTION_FLAGS),
             # Labels come from whether the trade reached target or stop, so the
             # cost model does not touch them; it only prices the summary this
             # command discards. Index points is the only unit a replay over
@@ -1141,7 +1153,7 @@ def main(argv: list[str] | None = None) -> int:
     tr.add_argument("--symbol", default="NIFTY")
     tr.add_argument("--segment", default="INDEX")
     tr.add_argument("--interval", default="5m")
-    tr.add_argument("--keep-frac", type=float, default=0.4,
+    tr.add_argument("--keep-frac", type=float, default=0.2,
                     help="fraction of signals to take; sets the score threshold")
     tr.add_argument("--seed", type=int, default=7)
     tr.add_argument("--gate", type=float, default=16.0, help="shown in the next-step hint")

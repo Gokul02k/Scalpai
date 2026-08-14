@@ -126,7 +126,19 @@ def save_dataset(samples: Sequence[Sample], path: Path, cost_pts: float) -> None
 
 def load_dataset(path: Path) -> tuple[list[Sample], float]:
     blob = json.loads(path.read_text())
-    return [Sample(**row) for row in blob["samples"]], blob["cost_pts"]
+    cost = blob["cost_pts"]
+    # A NIFTY round trip is a handful of index points. A dataset cached while a
+    # rupee-denominated cost model was in play stored 2,147 here, which then
+    # made every keep fraction report a loss of the same 2,147 and looked like
+    # a strategy result rather than a unit error.
+    if not 0 <= cost < 200:
+        raise ValueError(
+            f"{path.name} records {cost:.2f} index points per round trip, "
+            "which is not a plausible index cost. It was almost certainly "
+            "cached from a rupee-denominated cost model. Rebuild it without "
+            "--cached."
+        )
+    return [Sample(**row) for row in blob["samples"]], cost
 
 
 def _iso_ms(value: str | None) -> int:

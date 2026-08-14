@@ -657,12 +657,53 @@ starting. The pieces are also available separately:
 .venv/bin/python -m engine.cli paper --gate 16         # 9:15 to square-off
 ```
 
+### Why the engine now trades geometry v1 never allowed
+
+A 108-point NIFTY day produced 22 directional votes and zero trades. Neither
+the VIX gate nor the filter was responsible — every call died on v1's
+risk:reward viability check, driven by one constant:
+
+```346:349:engine/core/suggestion.py
+    min_rr = settings.get("minRR", 1.2 if mode == "longterm" else 1.5)
+    min_stop_pct = (
+        flags.min_stop_pct if flags.min_stop_pct is not None
+        else 0.01 if mode == "longterm" else 0.005 if mode == "swing" else 0.002
+```
+
+0.2% of price is a 48.7-point stop on NIFTY at 24,350, against a 5-minute ATR
+of 22. Since a setup is only viable when reward clears `floor × minRR`, it
+silently demands 73 points of room. Available room that day: 0.7 to 49.5.
+
+Removing it and taking everything is much worse — 1,491 trades become 4,994
+while gross falls from +6.41 to +3.58 and net from +0.41 to −2.42. Gross
+declining monotonically is the tell: the extra setups are genuinely poorer.
+
+Removing it and letting the **filter** choose from the wider pool is better
+than either:
+
+| | v1 floor | ATR floor |
+|---|---|---|
+| training samples | 1,354 | 4,743 |
+| out-of-sample AUC | 0.548 | **0.612** |
+| per-fold AUC | 0.488 – 0.588 | 0.600 – 0.614 |
+| samples surviving the gate | 384 | 2,368 |
+
+Under the gate at the top 20%, the recent fold runs **+13.33 per trade over 86
+trades, positive under all six seeds**. The whole-period average is thin
+(+2.97) because the two earliest folds are negative, so this is a bet that the
+recent regime persists — stated plainly rather than buried.
+
+The decisive argument is not the average. It is that v1's floor leaves 384
+samples once the gate is applied, which is too few to validate honestly: the
+configuration that ran before this could not be checked at all.
+
+Expect roughly 50 trades a year rather than 26.
+
 ### The configuration, and why
 
-**VIX gate at 16, learned filter at the top 40%, both directions, v1's
-percentage levels, 24-hour maximum hold.** Out of sample that combination ran
-+11.43 index points per trade over 159 trades, and +39.52 over the 15 trades it
-took in 2026.
+**VIX gate at 16, learned filter at the top 20%, both directions,
+volatility-scaled stop floor, 24-hour maximum hold.** See above for why the
+floor changed and what it is worth.
 
 Long-only tested better over the full nine years (+19.43 stacked, against
 +11.43) and is implemented behind `StrategyFlags(long_only=True)`, but it is

@@ -39,7 +39,7 @@ class PaperConfig:
     instrument: str = "NIFTY"
     mode: str = "scalp"
     settings: dict = field(default_factory=lambda: dict(DEFAULT_SETTINGS))
-    flags: sug.StrategyFlags = sug.V1_FLAGS
+    flags: sug.StrategyFlags = sug.PRODUCTION_FLAGS
 
     #: Bars of context handed to the analysis. Matches the backtest window so
     #: the indicators see the same amount of history they were validated on.
