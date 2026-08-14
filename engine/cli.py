@@ -580,6 +580,17 @@ def cmd_ml(args) -> int:
         if args.cost_pts is not None:
             cost = args.cost_pts
 
+    if not args.no_vix:
+        from .backtest.regime import load_vix
+        from .ml.model import enrich_with_vix
+
+        vix = load_vix()
+        if len(vix):
+            matched = enrich_with_vix(samples, vix)
+            print(f"  joined VIX regime to {matched}/{len(samples)} samples")
+        else:
+            print("  no VIX history archived — regime columns will be zero")
+
     expired = [s for s in samples if s.status == "expired"]
     samples = [s for s in samples if s.status in ("target", "stop")]
     if expired:
@@ -683,6 +694,270 @@ def cmd_research(args) -> int:
             print(f"    {f.name}: {f.mean:+.4f}% per occurrence, n={f.n}")
             if f.note:
                 print(f"      {f.note}")
+    print()
+    return 0
+
+
+def cmd_sweep(args) -> int:
+    """Test the Tier-1 strategy changes against v1 over the whole archive."""
+    from .backtest import BacktestConfig, get_cost_model
+    from .backtest.sweep import (
+        DEFAULT_WINDOWS, VariantSpec, format_rows, longs_only, regrade,
+        rows_to_dicts, run_sweep,
+    )
+    from .core.suggestion import StrategyFlags
+
+    candles = _load_candles(args.symbol, args.segment, args.interval)
+    if candles is None:
+        return 1
+
+    base = BacktestConfig(
+        symbol=args.symbol, interval=args.interval, instrument=args.symbol,
+        min_confidence=args.min_confidence, step=args.step, count_expired=True,
+    )
+    cost = args.costs
+
+    specs = [VariantSpec("v1 baseline", StrategyFlags())]
+    for tgt in args.atr_target:
+        specs.append(VariantSpec(
+            f"atr target {tgt:.1f}x",
+            StrategyFlags(atr_target_mult=tgt, atr_stop_mult=tgt / 2),
+        ))
+
+    print(f"\n  {len(candles)} bars, {len(specs)} replays across {args.jobs} cores")
+    print("  (long-only and the time exits are derived, not replayed)\n")
+
+    results = run_sweep(candles, specs, base, cost, args.jobs)
+    rows = rows_to_dicts(candles)
+
+    print("  Levels and direction, at the inherited 24-hour window")
+    print("  every trade counted, including those that expired flat\n")
+    table = [(r.name, r.stats) for r in results]
+    table += [(f"{r.name} + long only",
+               regrade(longs_only(r.logs), rows, 24 * 60 * 60 * 1000,
+                       get_cost_model(cost)))
+              for r in results]
+    for line in format_rows(table, baseline="v1 baseline"):
+        print(line)
+
+    print("\n\n  Time-based exit: close at market after N hours if neither")
+    print("  level was reached. Same signals throughout.\n")
+    baseline = next(r for r in results if r.name == "v1 baseline")
+    arms = [("all signals", baseline.logs), ("long only", longs_only(baseline.logs))]
+    for label, logs in arms:
+        table = [
+            (f"{label} @ {name}", regrade(logs, rows, ms, get_cost_model(cost)))
+            for name, ms in DEFAULT_WINDOWS
+        ]
+        for line in format_rows(table):
+            print(line)
+        print()
+
+    return 0
+
+
+def cmd_train(args) -> int:
+    """Fit the filter on all history and save it for the live runner.
+
+    Deliberately separate from `ml`, which validates. This one trains on
+    everything including the most recent period, so the saved model has no
+    out-of-sample score of its own — `ml` is where that question is answered,
+    and it should be answered before this file is trusted.
+    """
+    from pathlib import Path
+
+    from .backtest import BacktestConfig, get_cost_model, run_backtest
+    from .ml.model import (
+        build_dataset, load_dataset, save_dataset, save_model, threshold_for, train,
+    )
+
+    out = Path(args.out or Path(__file__).parent / "var" / "filter.txt")
+    cache = Path(__file__).parent / "var" / f"mlset_{args.symbol}_{args.interval}.json"
+
+    if args.cached and cache.exists():
+        samples, _ = load_dataset(cache)
+        print(f"\n  loaded {len(samples)} cached samples")
+    else:
+        candles = _load_candles(args.symbol, args.segment, args.interval)
+        if candles is None:
+            return 1
+        print(f"\n  replaying {len(candles)} bars…")
+        result = run_backtest(
+            candles,
+            BacktestConfig(symbol=args.symbol, interval=args.interval,
+                           instrument=args.symbol, collect_features=True),
+            get_cost_model("option_buy"),
+        )
+        samples = build_dataset(result.logs, include_expired=True)
+        save_dataset(samples, cache, result.stats.get("costPerTradePts") or 6.0)
+        print(f"  {len(samples)} signals collected")
+
+    if not args.no_vix:
+        from .backtest.regime import load_vix
+        from .ml.model import enrich_with_vix
+
+        vix = load_vix()
+        if len(vix):
+            matched = enrich_with_vix(samples, vix)
+            print(f"  joined VIX regime to {matched}/{len(samples)} samples")
+        else:
+            print("  no VIX history archived — regime columns will be zero")
+
+    trainable = [s for s in samples if s.status in ("target", "stop")]
+    if len(trainable) < 200:
+        print(f"  only {len(trainable)} resolved trades — too few to fit. Sync more history.")
+        return 1
+
+    model = train(trainable, {
+        "seed": args.seed,
+        "bagging_seed": args.seed,
+        "feature_fraction_seed": args.seed,
+    })
+    cutoff = threshold_for(model, trainable, args.keep_frac)
+    save_model(model, out, {
+        "trained_on": len(trainable),
+        "keep_frac": args.keep_frac,
+        "threshold": cutoff,
+        "period": f"{trainable[0].date} .. {trainable[-1].date}",
+        "seed": args.seed,
+    })
+
+    print(f"\n  trained on   {len(trainable)} resolved trades")
+    print(f"  period       {trainable[0].date} .. {trainable[-1].date}")
+    print(f"  keep frac    {args.keep_frac:.0%}  ->  score threshold {cutoff:.4f}")
+    print(f"  saved        {out}\n")
+    print("  Validate before trusting it:  python -m engine.cli ml --cached")
+    print(f"  Then run:                     python -m engine.cli paper --gate {args.gate}\n")
+    return 0
+
+
+def cmd_paper(args) -> int:
+    """Trade on paper against the live market: signals, strikes, fills, P&L."""
+    import time as _time
+    from pathlib import Path
+
+    from .live.book import PaperBook
+    from .live.runner import PaperConfig
+
+    var = Path(__file__).parent / "var" / "paper"
+    book = PaperBook.load(Path(args.book) if args.book
+                          else var / f"{now_ist():%Y-%m-%d}.json")
+
+    if args.report:
+        print(f"\n  {book.path}")
+        return _paper_report(book)
+
+    model, threshold = None, args.min_score
+    if not args.no_filter:
+        from .ml.model import load_model
+
+        path = Path(args.model or Path(__file__).parent / "var" / "filter.txt")
+        if not path.exists():
+            print(f"\n  no model at {path}. Train one first:")
+            print("    python -m engine.cli train\n")
+            print("  Or run the strategy unfiltered with --no-filter\n")
+            return 1
+        model, meta = load_model(path)
+        if threshold is None:
+            threshold = meta.get("threshold")
+        print(f"\n  filter    {path.name}  threshold {threshold:.4f} "
+              f"(trained on {meta.get('trained_on', '?')} trades)")
+
+    config = PaperConfig(
+        symbol=args.symbol, interval=args.interval, instrument=args.symbol,
+        gate=args.gate, min_score=threshold, lots=args.lots,
+        max_open=args.max_open, min_confidence=args.min_confidence,
+        shadow=not args.no_shadow,
+    )
+
+    try:
+        source = get_source(args.source)
+    except Exception as e:
+        print(f"\n  cannot reach {args.source}: {e}\n")
+        return 1
+
+    print(f"  gate      stand aside above VIX {config.gate:.1f}")
+    print(f"  size      {config.lots} lot ({config.lots * config.lot_size} qty), "
+          f"max {config.max_open} open")
+    if config.shadow:
+        print("  shadow    declined signals followed separately, not counted")
+    print(f"  book      {book.path}")
+    print(f"  source    {args.source}\n")
+
+    if args.once:
+        _paper_tick(source, book, config, model)
+        return _paper_report(book)
+
+    try:
+        status = market_status()
+    except HolidayCalendarMissing:
+        status = {"open": True, "label": "unknown", "reason": "no holiday calendar"}
+    if not status["open"] and not args.force:
+        print(f"  market is {status['label']} ({status['reason']}).")
+        print("  Use --force to run anyway against the last available bars.\n")
+        return 0
+
+    print(f"  ticking every {args.every}s until square-off. Ctrl-C to stop.\n")
+    try:
+        while True:
+            _paper_tick(source, book, config, model)
+            if now_ist().time() >= config.squareoff_at and not book.open_positions:
+                print("\n  square-off passed and the book is flat.\n")
+                break
+            _time.sleep(args.every)
+    except KeyboardInterrupt:
+        print("\n  stopped.\n")
+    return _paper_report(book)
+
+
+def _paper_tick(source, book, config, model) -> None:
+    """One tick, with network failures survivable and bugs still visible.
+
+    A dropped connection at 11:04 must not end the session, but swallowing
+    every exception into a one-line message hides real defects for a whole
+    trading day, so anything that is not a data-source failure prints its
+    traceback.
+    """
+    import traceback
+
+    from .data.base import DataSourceError
+    from .live.runner import evaluate
+
+    try:
+        result = evaluate(source, book, config, model)
+    except DataSourceError as e:
+        book.note("error", str(e))
+        book.save()
+        print(f"{now_ist():%H:%M:%S}  data source: {e}")
+        return
+    except Exception as e:
+        book.note("bug", f"{type(e).__name__}: {e}")
+        book.save()
+        print(f"{now_ist():%H:%M:%S}  unexpected {type(e).__name__}: {e}")
+        traceback.print_exc()
+        return
+
+    print(result.line())
+    for trade in result.closed:
+        print(f"          closed {trade.position['symbol']} {trade.exit_reason} "
+              f"@ {trade.exit_premium:.2f}  ->  Rs {trade.net_rupees:+,.0f}")
+    book.save()
+
+
+def _paper_report(book) -> int:
+    print("\n  paper results")
+    for line in book.summary_lines():
+        print(line)
+    for pos in book.open_positions:
+        print(f"  open: {pos.action} {pos.symbol} @ {pos.entry_premium:.2f} "
+              f"(target {pos.target_index:,.0f} / stop {pos.stop_index:,.0f})")
+
+    if book.shadow_closed or book.shadow_open:
+        print("\n  declined signals, followed but not counted")
+        for line in book.summary_lines(shadow=True):
+            print(line)
+    for line in book.verdict_lines():
+        print(line)
     print()
     return 0
 
@@ -793,6 +1068,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="rerun under N seeds to separate edge from luck (1 to skip)")
     ml.add_argument("--cost-pts", type=float,
                     help="override the round-trip cost, e.g. from `engine.cli costs`")
+    ml.add_argument("--no-vix", action="store_true",
+                    help="omit the volatility-regime features, to measure what they add")
 
     ct = sub.add_parser("costs", help="measure real round-trip cost from a live option chain")
     ct.add_argument("--symbol", default="NIFTY")
@@ -842,6 +1119,58 @@ def main(argv: list[str] | None = None) -> int:
     rs = sub.add_parser("research", help="test for conditional structure worth trading")
     rs.add_argument("--symbol", default="NIFTY")
     rs.set_defaults(fn=cmd_research)
+
+    sw = sub.add_parser("sweep", help="test direction, levels and exit timing against v1")
+    sw.add_argument("--symbol", default="NIFTY")
+    sw.add_argument("--segment", default="INDEX")
+    sw.add_argument("--interval", default="5m")
+    sw.add_argument("--min-confidence", type=int, default=80)
+    sw.add_argument("--step", type=int, default=1)
+    sw.add_argument("--costs", default="index_points",
+                    help="cost model for the comparison")
+    sw.add_argument("--atr-target", type=float, nargs="*", default=[2.0, 3.0, 4.0],
+                    help="ATR multiples to try for the target (stop gets half)")
+    sw.add_argument("--jobs", type=int, default=8, help="parallel replays")
+    sw.set_defaults(fn=cmd_sweep)
+
+    tr = sub.add_parser("train", help="fit the filter on all history and save it for live use")
+    tr.add_argument("--symbol", default="NIFTY")
+    tr.add_argument("--segment", default="INDEX")
+    tr.add_argument("--interval", default="5m")
+    tr.add_argument("--keep-frac", type=float, default=0.4,
+                    help="fraction of signals to take; sets the score threshold")
+    tr.add_argument("--seed", type=int, default=7)
+    tr.add_argument("--gate", type=float, default=16.0, help="shown in the next-step hint")
+    tr.add_argument("--cached", action="store_true", help="reuse the last collected dataset")
+    tr.add_argument("--no-vix", action="store_true",
+                    help="omit the volatility-regime features")
+    tr.add_argument("--out", help="where to write the model (default engine/var/filter.txt)")
+    tr.set_defaults(fn=cmd_train)
+
+    pp = sub.add_parser("paper", help="paper trade live: signals, strikes, simulated fills")
+    pp.add_argument("--symbol", default="NIFTY")
+    pp.add_argument("--interval", default="5m")
+    pp.add_argument("--source", default="fyers",
+                    help="fyers gives the option chain; others cannot price strikes")
+    pp.add_argument("--gate", type=float, default=16.0,
+                    help="stand aside when India VIX is above this")
+    pp.add_argument("--min-confidence", type=int, default=80)
+    pp.add_argument("--min-score", type=float,
+                    help="override the filter threshold saved with the model")
+    pp.add_argument("--no-filter", action="store_true",
+                    help="run the raw v1 strategy with no learned filter")
+    pp.add_argument("--model", help="path to a trained filter")
+    pp.add_argument("--lots", type=int, default=1)
+    pp.add_argument("--max-open", type=int, default=2)
+    pp.add_argument("--no-shadow", action="store_true",
+                    help="stop following the signals the filter declined")
+    pp.add_argument("--every", type=int, default=120, help="seconds between ticks")
+    pp.add_argument("--once", action="store_true", help="evaluate a single tick and exit")
+    pp.add_argument("--report", action="store_true",
+                    help="print a saved book without trading (use with --book)")
+    pp.add_argument("--force", action="store_true", help="run even when the market is shut")
+    pp.add_argument("--book", help="journal file (default engine/var/paper/<date>.json)")
+    pp.set_defaults(fn=cmd_paper)
 
     fa = sub.add_parser("fyers-auth", help="daily Fyers login (tokens expire each day)")
     fa.add_argument("--auth-code", help="the code from the redirect URL")

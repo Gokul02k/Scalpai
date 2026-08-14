@@ -84,12 +84,14 @@ engine/
 ├── backtest/      replay, cost models, variant comparison, option re-pricing
 ├── research/      hypothesis tests with multiple-testing correction
 ├── ml/            signal features and the walk-forward-validated filter
-├── tests/         153 tests, most of them parity against the live JavaScript
+├── live/          paper trading: live ticks, strike selection, the book
+├── tests/         214 tests, most of them parity against the live JavaScript
 └── cli.py
 ```
 
-Commands: `status`, `probe`, `sync`, `inventory`, `backtest`, `ab`, `ml`,
-`costs`, `option-pnl`, `regime`, `research`, `fyers-auth`.
+Commands: `status`, `probe`, `sync`, `inventory`, `backtest`, `ab`, `sweep`,
+`ml`, `costs`, `option-pnl`, `regime`, `research`, `train`, `paper`,
+`fyers-auth`.
 
 ### On the port
 
@@ -513,6 +515,251 @@ tells you very little.
 
 ---
 
+## Changing the strategy
+
+```bash
+.venv/bin/python -m engine.cli sweep --jobs 6 --atr-target 2.0 2.5 3.0 4.0
+```
+
+Everything up to here left v1's decision logic alone and filtered its output.
+This section changes the logic itself. Three candidates, chosen because each
+attacks something the earlier measurements pointed at rather than because it
+sounded plausible.
+
+### First, an accounting fix
+
+`summarize` used to discard signals that ran their window out without touching
+either level. Those trades paid the spread and got nothing, so dropping them
+flatters the result — and worse, it makes a time-based exit unmeasurable, since
+a shorter window converts resolutions into exactly the expiries being deleted.
+`count_expired` settles them at the prevailing price instead.
+
+It moves the baseline from **−0.35 to +0.32** net points per trade over 1,494
+trades. The expired trades were slightly profitable on average, which is not
+what I expected. The old default is kept so earlier numbers here still mean
+what they said.
+
+### What the sweep found
+
+Full archive, 168,180 bars, every trade counted, 6 index points of cost:
+
+| Variant | Trades | Win% | Net/trade | Total | PF | Max DD |
+|---|---|---|---|---|---|---|
+| v1 baseline | 1,494 | 42 | +0.32 | +482 | 1.25 | 3,383 |
+| ATR target 2.0x | 948 | 41 | +1.62 | +1,540 | 1.39 | 2,171 |
+| ATR target 3.0x | 1,373 | 40 | +0.59 | +811 | 1.29 | 3,452 |
+| **v1 + long only** | **600** | **45** | **+5.17** | **+3,105** | **1.46** | **858** |
+| ATR 4.0x + long only | 600 | 42 | +3.53 | +2,120 | 1.40 | 1,171 |
+
+**Dropping short signals is worth more than anything else tried here**, and the
+drawdown result is the more interesting half: 3,383 points down to 858, a
+four-fold reduction, while total profit rises six-fold. That is a different risk
+profile, not just a bigger number.
+
+The mechanism is plausible. RSI and Bollinger are mean-reversion factors, so
+they call "overbought, sell" continuously in an uptrend and get run over.
+
+ATR-scaled levels help the full strategy (+1.30 at 2.0x) but **stop helping once
+shorts are gone** — every ATR variant combined with long-only is worse than
+plain v1 levels combined with long-only. Reading the trade counts explains it:
+ATR scaling improves the baseline mostly by refusing trades (1,494 down to 948),
+and long-only refuses a better-chosen subset. They are two solutions to the same
+problem, and the cruder one wins.
+
+### Time exits: a clean negative
+
+Closing at market after N hours if neither level is reached:
+
+| Window | 30m | 1h | 2h | 4h | 8h | 24h |
+|---|---|---|---|---|---|---|
+| all signals | −0.91 | −1.59 | −1.87 | −0.31 | −0.50 | **+0.32** |
+| long only | +0.12 | +0.41 | +0.36 | +1.09 | +2.03 | **+5.17** |
+
+Monotonic and unambiguous: longer is better, and the inherited 24-hour window
+is the best of the six. The hypothesis was that a scalp sitting for hours is
+dead money; the data says those positions are where the profit is.
+
+**This conclusion is measured in index points and does not transfer to options
+unchanged.** A flat six-point cost does not care how long a position is held; a
+bought option does, and median hold is 0.92 hours against a mean of 4.27. The
+long tail that pays in index terms is the same tail that bleeds theta. Re-run
+this against `option_buy` before believing it either way.
+
+### VIX as features rather than a gate
+
+The gate stands aside above a threshold, which throws away the information that
+14 after a stressed month is not 14 after a quiet one. Three columns instead —
+the level, its ratio to the trailing month, and its position within the trailing
+year — all built from closes strictly before the trade's own day.
+
+| | AUC | keep 40% | recent fold | seeds positive |
+|---|---|---|---|---|
+| without VIX | 0.528 | +5.86 | +8.08 | 10/10 |
+| **with VIX** | **0.534–0.554** | **+10.04** | **+9.01** | **10/10** |
+
+The three VIX columns land at 3rd, 6th and 8th by importance, about 14% of the
+total between them — the largest thematic block in the model. Fold 0 still
+fails, consistent with the filter needing roughly 600 graded trades before it
+helps.
+
+### Stacking everything, out of sample
+
+| | Trades | Win% | Net/trade |
+|---|---|---|---|
+| baseline | 956 | 41.0 | −1.79 |
+| long only | 357 | 44.3 | +3.55 |
+| gate ≤ 16 | 257 | 42.0 | +0.27 |
+| filter top 50% | 503 | 43.7 | +3.26 |
+| gate + filter | 159 | 48.4 | +11.43 |
+| **long + gate + filter** | **72** | **54.2** | **+19.43** |
+
+### Why long-only is a candidate and not a conclusion
+
+Three reasons to hold it at arm's length, in increasing order of seriousness.
+
+It was **discovered in the data it is measured on**. Unlike the learned filter,
+nothing here is walk-forward — the split was found by looking, and then scored
+on the same nine years.
+
+**NIFTY roughly tripled over the sample.** A long bias in a bull market is
+expected to look good, and this test cannot separate the strategy's skill from
+the market's drift.
+
+**It fails in the current year.** Long-only is positive in 7 of 10 years, but
+2026 runs at −10.30 per trade while shorts run at +12.28 — the split inverts,
+and 2017 inverts too. Stacked with the gate and filter it leaves 4 trades in
+2026 against 15 for gate-plus-filter alone, which returned +39.52 each.
+
+So: ship the VIX features, which are validated walk-forward and improve every
+fold. Treat long-only as the most promising lead on the list and the one most
+likely to be an artifact, and do not switch it on because of a table.
+
+---
+
+## Paper trading
+
+Everything above is measurement on archived bars. This is the part that runs
+against the live market, and it exists to find the gap between the backtest and
+reality before any money is involved.
+
+```bash
+./engine/paper_day.sh              # run once, a few minutes before the open
+```
+
+That checks the four things that silently ruin a session — an expired Fyers
+token, stale candles, a missing model, market status — fixes what it can, and
+stops with an instruction for what it cannot. `--dry-run` checks without
+starting. The pieces are also available separately:
+
+```bash
+.venv/bin/python -m engine.cli fyers-auth              # tokens die overnight
+.venv/bin/python -m engine.cli train --cached          # fit and save the filter
+.venv/bin/python -m engine.cli paper --gate 16         # 9:15 to square-off
+```
+
+### The configuration, and why
+
+**VIX gate at 16, learned filter at the top 40%, both directions, v1's
+percentage levels, 24-hour maximum hold.** Out of sample that combination ran
++11.43 index points per trade over 159 trades, and +39.52 over the 15 trades it
+took in 2026.
+
+Long-only tested better over the full nine years (+19.43 stacked, against
++11.43) and is implemented behind `StrategyFlags(long_only=True)`, but it is
+**off**. It was found by looking at the same data it scores on, NIFTY tripled
+across the sample, and it loses money in 2026 — the year that matters most for
+a run starting now. Switching it on would also cut this year's trade count from
+15 to 4, which is the wrong direction when the whole problem is too few trades
+to learn from.
+
+`paper` ticks every two minutes. Each tick reads live 5-minute bars, India VIX
+and the option chain, runs the same decision path as the backtest, and — when a
+signal survives both gates — picks a real strike and records what it would have
+paid. No order reaches a broker.
+
+```
+10:42:05  nifty 24,410.2  vix 12.80  BUY  c= 86 s=0.512  ENTER  bought CE 24400 @ 118.35 (target 24530 / stop 24340)
+11:58:05  nifty 24,533.9  vix 12.74  HOLD c= 41 s=  -      .    no directional call
+          closed NSE:NIFTY2682124400CE target @ 171.20  ->  Rs +3,908
+```
+
+The book is written to `engine/var/paper/<date>.json` after every tick, so the
+process can be killed and restarted mid-session without losing state. Review a
+finished day with `paper --report --book engine/var/paper/2026-08-14.json`.
+
+### Following the trades it refused
+
+At roughly twenty trades a year through the gate, a paper run that records only
+what the filter *took* is close to useless — weeks pass with an empty book, and
+the evidence about whether the filter is right lives entirely in the signals it
+turned down.
+
+So declined signals are followed too, as a **shadow book**: same strike, same
+quoted fills, same grading, kept in separate lists and never counted as
+results. At the end of a session you get both, and a scorecard comparing them:
+
+```
+  paper results
+  closed trades     1   (0 still open)
+  net               Rs +3,908
+
+  declined signals, followed but not counted
+  closed trades     4   (1 still open)
+  net               Rs -2,140
+
+  filter scorecard
+    took       1 trades  Rs +3,908
+    declined   4 trades  Rs -2,140
+    the trades it took ran Rs 4,443 better each than the ones it refused
+    (far too few trades to mean anything yet)
+```
+
+That last line stays until there are thirty trades between the two books,
+because a scorecard on three trades invites exactly the wrong conclusion.
+`--no-shadow` turns it off.
+
+### What makes the paper number honest
+
+The temptation in a paper runner is to make it agree with the backtest. These
+choices all push the other way:
+
+* **Entry fills at the ask, exit at the bid.** Never the mid. Filling at the mid
+  would beat live trading by roughly half a spread per leg, invisibly.
+* **Exits are graded by `evaluate_signal_outcome`** — the same function the
+  backtest and the live dashboard use. The stop wins on a bar that contains both
+  levels, because intrabar ordering is unknowable.
+* **Statutory charges are applied** on top of the spread, and the round trip is
+  reported in index points so a paper day sits directly alongside the backtest's
+  per-trade figures.
+* **A strike that falls out of the fetched chain is marked to Black-76**, less
+  half the entry spread, rather than being frozen at its last known price.
+* **Declined ticks are logged too.** The skips are the evidence for whether the
+  gate is set right; a log of only the entries cannot answer that.
+
+### Where it deliberately differs from the backtest
+
+The gate reads the **current** VIX print, while the backtest used the previous
+day's close — daily VIX history was all that was available offline. Live, the
+number is on the screen, so using it is both more accurate and what a real
+system would do. The gate is a coarse threshold, so the two rarely disagree.
+
+Strike choice is also new. The backtest assumed a fixed offset from the money;
+here the strike is chosen from the live chain by delta (0.35–0.70) with volume
+required, and among those the cheapest round trip in index-point terms wins.
+
+### What a paper run can and cannot tell you
+
+It can tell you whether signals fire at the rate the backtest implies, whether
+the strikes are liquid when you need them, and what the spread actually costs at
+the moment of entry rather than at a calm close.
+
+It cannot tell you whether the edge is real. At roughly 27 trades a year through
+the gate, a month of paper trading is a handful of trades — far too few to
+confirm or refute anything. Treat it as a test of the plumbing and the cost
+assumptions, not of the strategy.
+
+---
+
 ## Edge research
 
 ```bash
@@ -588,7 +835,8 @@ margin.
 
 Done: data layer, local archive, Fyers adapter, verified strategy port,
 backtest with costs, edge research across 19 years, a strategy-variant harness,
-and a walk-forward-validated signal filter.
+a walk-forward-validated signal filter, and a paper trader that runs the same
+decision path against live quotes without sending orders.
 
 The picture changed with the full 5-minute archive. The raw strategy is not
 edgeless — it is gross-positive at a profit factor of 1.21 and loses to costs.
@@ -624,8 +872,9 @@ Next steps, in rough order of expected value:
 3. **Re-measure the chain intraday, and in a stressed tape.** Both the 0.85 IV
    ratio and the 0.60 spread come from one calm closing snapshot, and both are
    applied to regimes where neither holds.
-4. **Forward-test on paper.** Log what the gate plus filter would take, against
-   live quotes, and compare fills to the model. No orders.
+4. **Accumulate paper sessions.** The runner exists; what it does not have yet
+   is a sample. At ~27 trades a year through the gate, this is a slow measure of
+   the strategy but a fast one for the cost assumptions, which is the point.
 5. **Test momentum after a large up day** (+0.238%, n=698). Largest untested
    effect in the research table, and cheap to check.
 6. **Options positioning.** Open-interest shifts, put/call skew, max-pain drift
