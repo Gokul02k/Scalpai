@@ -139,5 +139,23 @@ def js_max(values: Iterable[float]) -> float:
     return max(vals) if vals else -math.inf
 
 
+def js_sum(values: Iterable[float]) -> float:
+    """`xs.reduce((a, b) => a + b, 0)` — plain left-to-right accumulation.
+
+    Not a pointless wrapper around `sum`. CPython 3.12 gave the builtin
+    Neumaier compensated summation for floats, which makes it *more* accurate
+    than JavaScript's reduce. More accurate is the wrong answer here: the two
+    disagree in the last bits, and on a value that lands on a rounding
+    boundary that difference survives `toFixed` and shows up as a whole paisa.
+
+    Found when a Bollinger mid came out 24576.685 in Python against
+    24576.684999999997672 in V8, which rounded to 24576.69 and 24576.68.
+    """
+    total = 0.0
+    for v in values:
+        total += v
+    return total
+
+
 def mean(values: Sequence[float]) -> float:
-    return sum(values) / len(values) if values else 0.0
+    return js_sum(values) / len(values) if values else 0.0

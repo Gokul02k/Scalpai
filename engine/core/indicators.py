@@ -25,7 +25,7 @@ from typing import Any, Sequence
 
 from ..data.base import Candle
 from ..data.timeutil import IST, from_epoch_ms
-from .jsnum import fixed_str, js_max, js_min, to_fixed
+from .jsnum import fixed_str, js_max, js_min, js_sum, to_fixed
 
 CandleDict = dict[str, Any]
 
@@ -114,8 +114,8 @@ def bollinger(closes: Sequence[float], period: int = 20) -> dict:
     if len(closes) < period:
         return {"upper": 0, "mid": 0, "lower": 0}
     window = closes[-period:]
-    mid = sum(window) / period
-    std = math.sqrt(sum((v - mid) ** 2 for v in window) / period)
+    mid = js_sum(window) / period
+    std = math.sqrt(js_sum((v - mid) ** 2 for v in window) / period)
     return {
         "upper": to_fixed(mid + 2 * std, 2),
         "mid": to_fixed(mid, 2),
@@ -131,7 +131,7 @@ def atr(candles: Sequence[CandleDict], period: int = 14) -> float:
         c, prev = candles[i], candles[i - 1]
         trs.append(max(c["h"] - c["l"], abs(c["h"] - prev["c"]), abs(c["l"] - prev["c"])))
     window = trs[-period:]
-    return to_fixed(sum(window) / len(window), 2)
+    return to_fixed(js_sum(window) / len(window), 2)
 
 
 def stochastic(candles: Sequence[CandleDict], period: int = 14) -> float:
@@ -160,9 +160,9 @@ def liquidity(candles: Sequence[CandleDict]) -> dict:
     vols = [c.get("vol", 0) for c in candles if (c.get("vol") or 0) > 0]
     if len(vols) < 5:
         return {"ratio": 1, "label": "Unknown", "high": False, "low": False}
-    avg = sum(vols) / len(vols)
+    avg = js_sum(vols) / len(vols)
     recent = vols[-5:]
-    recent_avg = sum(recent) / len(recent)
+    recent_avg = js_sum(recent) / len(recent)
     ratio = to_fixed(recent_avg / avg, 2)
     return {
         "ratio": ratio,
@@ -202,7 +202,7 @@ def intraday_session(
     vwap = (
         to_fixed(pv / vol, 2)
         if vol > 0
-        else to_fixed(sum(c["c"] for c in session) / len(session), 2)
+        else to_fixed(js_sum(c["c"] for c in session) / len(session), 2)
     )
 
     or_bars = max(1, round(open_minutes / bar_minutes))
