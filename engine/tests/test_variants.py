@@ -54,6 +54,23 @@ def test_every_cost_model_the_cli_names_actually_exists():
     assert named <= set(MODELS), f"unknown cost models: {sorted(named - set(MODELS))}"
 
 
+def test_a_rupee_cost_model_cannot_be_charged_against_index_points():
+    """Feeding index levels to the option model returns a per-trade cost near
+    2,150 -- rupees, subtracted from a gross measured in index points. The
+    result is plausible enough to reason about and completely meaningless, so
+    it has to raise rather than return.
+    """
+    import pytest
+
+    from engine.backtest import get_cost_model
+    from engine.backtest.replay import summarize
+
+    with pytest.raises(ValueError, match="index points"):
+        summarize([], get_cost_model("option_buy"))
+
+    summarize([], get_cost_model("index_points"))  # the valid pairing
+
+
 def test_defaults_are_v1():
     f = sug.StrategyFlags()
     assert f.use_opening_range is True

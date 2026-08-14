@@ -231,6 +231,15 @@ def summarize(
     exit against the baseline, since a shorter window converts resolutions into
     expiries and would otherwise delete the trades it was meant to measure.
     """
+    if getattr(cost_model, "unit", "index_points") != "index_points":
+        raise ValueError(
+            f"cost model {cost_model.name!r} is denominated in "
+            f"{cost_model.unit}, but this replay measures gross in index "
+            "points. Subtracting one from the other produces a number that "
+            "looks plausible and means nothing. Use 'index_points' here, and "
+            "price the option leg separately."
+        )
+
     base = slog.summarize_outcomes(logs)
     settled = ("target", "stop", "expired") if count_expired else ("target", "stop")
 

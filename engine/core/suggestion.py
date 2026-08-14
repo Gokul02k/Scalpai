@@ -55,12 +55,22 @@ class StrategyFlags:
     gross while barely moving win rate, which reads as it finding the setups
     where the fixed geometry happens to fit — a mis-specified parameter the
     model is being paid to work around. None keeps v1's percentages.
+
+    `min_stop_pct`: the floor under the stop, as a fraction of price. v1
+    hardcodes 0.2% for scalp mode, which on NIFTY at 24,350 is a 48.7-point
+    stop against a 5-minute ATR of about 22 — a stop more than twice the bar's
+    own volatility. Because a setup is only viable when reward clears
+    `floor * minRR`, that constant silently demands 73 points of room before
+    any trade is allowed, and on a range-bound day there is never that much.
+    It is the single most restrictive number in the strategy and it was never
+    chosen deliberately. None keeps v1's constant.
     """
 
     use_opening_range: bool = True
     long_only: bool = False
     atr_target_mult: float | None = None
     atr_stop_mult: float | None = None
+    min_stop_pct: float | None = None
 
 
 #: v1 behaviour. Anything comparing against the live dashboard uses this.
@@ -334,7 +344,10 @@ def trade_levels(
     tgt_pct = 0.10 if mode == "longterm" else (profit_pct * 2.5) / 100 if mode == "swing" else profit_pct / 100
     base_sl_pct = 0.06 if mode == "longterm" else (sl_pct * 2) / 100 if mode == "swing" else sl_pct / 100
     min_rr = settings.get("minRR", 1.2 if mode == "longterm" else 1.5)
-    min_stop_pct = 0.01 if mode == "longterm" else 0.005 if mode == "swing" else 0.002
+    min_stop_pct = (
+        flags.min_stop_pct if flags.min_stop_pct is not None
+        else 0.01 if mode == "longterm" else 0.005 if mode == "swing" else 0.002
+    )
 
     # Volatility-scaled distance when asked for, falling back to the fixed
     # percentage whenever ATR is unavailable — an ATR of zero would otherwise

@@ -52,6 +52,11 @@ class CostModel(ABC):
     """Cost of one complete round trip (entry plus exit)."""
 
     name = "base"
+    #: Unit the returned cost is expressed in, and by implication what
+    #: `entry_value` means. Index replays subtract the cost from a gross
+    #: measured in index points, so pairing them with a rupee-denominated
+    #: model produces a number that looks plausible and means nothing.
+    unit = "index_points"
 
     @abstractmethod
     def round_trip(self, entry_value: float, exit_value: float, qty: int = 1) -> CostBreakdown:
@@ -84,6 +89,7 @@ class OptionBuyCost(CostModel):
     """
 
     name = "option_buy"
+    unit = "rupees"
 
     BROKERAGE_PER_ORDER = 20.0
     STT_ON_SELL = 0.001         # 0.1% of premium, sell side only
@@ -116,6 +122,7 @@ class EquityIntradayCost(CostModel):
     """Equity MIS. Fully automatable — unlike delivery, which needs TPIN."""
 
     name = "equity_intraday"
+    unit = "rupees"
 
     BROKERAGE_RATE = 0.0003     # 0.03% or ₹20, whichever is lower
     BROKERAGE_CAP = 20.0
@@ -147,6 +154,7 @@ class EquityDeliveryCost(CostModel):
     verification, so a delivery strategy is only half-automatable."""
 
     name = "equity_delivery"
+    unit = "rupees"
 
     BROKERAGE_PER_ORDER = 0.0   # most discount brokers charge nothing here
     STT_RATE = 0.001            # 0.1% both sides

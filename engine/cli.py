@@ -786,7 +786,11 @@ def cmd_train(args) -> int:
             candles,
             BacktestConfig(symbol=args.symbol, interval=args.interval,
                            instrument=args.symbol, collect_features=True),
-            get_cost_model("option_buy"),
+            # Labels come from whether the trade reached target or stop, so the
+            # cost model does not touch them; it only prices the summary this
+            # command discards. Index points is the only unit a replay over
+            # index candles can express.
+            get_cost_model("index_points"),
         )
         samples = build_dataset(result.logs, include_expired=True)
         save_dataset(samples, cache, result.stats.get("costPerTradePts") or 6.0)
