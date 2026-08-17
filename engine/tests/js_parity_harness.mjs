@@ -9,7 +9,7 @@
  * them to .mjs in a temp dir is the least invasive fix — it avoids changing
  * v1 source purely to make it testable.
  */
-import { readFileSync, mkdtempSync, copyFileSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -17,14 +17,19 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LIB = resolve(HERE, '..', '..', 'app', 'lib');
 
-const MODULES = ['indicators', 'signals', 'suggestion', 'signalLog'];
+const MODULES = ['indicators', 'signals', 'suggestion', 'signalLog', 'trend'];
 
 async function loadModules() {
   const dir = mkdtempSync(join(tmpdir(), 'scalpai-parity-'));
   const loaded = {};
   for (const name of MODULES) {
     const dest = join(dir, `${name}.mjs`);
-    copyFileSync(join(LIB, `${name}.js`), dest);
+    // Next.js resolves extensionless relative imports; bare ESM does not, so a
+    // module importing "./indicators" fails once copied. Rewrite the specifier
+    // rather than adding extensions to v1 source purely to make it testable.
+    const src = readFileSync(join(LIB, `${name}.js`), 'utf8')
+      .replace(/(from\s+["']\.\/[\w-]+)(["'])/g, '$1.mjs$2');
+    writeFileSync(dest, src);
   }
   for (const name of MODULES) {
     loaded[name] = await import(pathToFileURL(join(dir, `${name}.mjs`)).href);

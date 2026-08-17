@@ -872,6 +872,72 @@ margin.
 
 ---
 
+## The trend panel, and why it is not a signal
+
+`engine/core/trend.py` and its mirror `app/lib/trend.js` answer a question the
+dashboard could not previously answer: *what is the bias today?* Two calls, from
+different information.
+
+**Pre-open** runs on yesterday's daily bars and yesterday's VIX close — the
+daily trend against a 20-day EMA, three-day momentum, the large-up-day lead from
+the research table, where price closed inside yesterday's range, and the
+volatility regime. Nothing about today is knowable, so it is a forecast.
+
+**Post-open** adds today's session: the gap, whether the gap held, price against
+VWAP, and the opening range. It is a reading of the tape rather than a guess.
+
+### It was measured before it shipped
+
+The obvious use is the one to rule out first — take a directional scalp off the
+call in the first fifteen minutes. Run `python -m engine.tools.trend_backtest`:
+
+| Call | Horizon | Days | Per day | Hit rate |
+|---|---|---:|---:|---:|
+| Pre-open | open → close | 2,500 | **−0.032%** | 47.6% |
+| Post-open at 9:30 | 9:30 → close | 1,718 | **−0.050%** | 49.7% |
+| Post-open at 9:30 | next 30 min | 1,718 | **−0.005%** | 51.6% |
+
+Every row is negative *before* costs, and a round trip costs about 0.025%. The
+pre-open UP call is the worst of them: −0.077% a day against −0.061% for simply
+holding long, so it is slightly worse than no call at all.
+
+Its own confidence does not sort outcomes either, which is the tell that there
+is no signal underneath:
+
+| Agreement | Days | Per day | Hit rate |
+|---|---:|---:|---:|
+| 50–59 | 34 | +0.020% | 52.9% |
+| 60–69 | 583 | +0.009% | 52.3% |
+| 70+ | 1,101 | −0.012% | **51.1%** |
+
+The most confident bucket is the least accurate. That number is therefore
+labelled *agreement between factors* in the UI, never *confidence*, because it
+carries no calibration.
+
+None of this is surprising. Gap continuation and opening-range breakout both
+failed the corrected significance bar in the 19-year run above, and the intraday
+session has negative drift (−0.049%, p=0.004) while all of NIFTY's return
+happens overnight. A pre-open directional scalp is the one trade the research
+already said not to take.
+
+So the module is descriptive. It is not imported by `suggestion.py`,
+`signals.py`, `runner.py`, `replay.py` or the feature builder, and
+`test_trend.py::test_the_trend_module_is_not_wired_into_signal_generation`
+fails if that changes — the intent being that anyone wiring it into the decision
+path has to redo the backtest first.
+
+### The open interest question
+
+The original ask was to build this from option-chain OI. That is not possible to
+validate: the `oi` column is NULL across all 187,942 archived rows and no chain
+snapshots are stored, so an OI-based call can be computed live but never
+backtested. Given that price-based pre-open bias measures negative, adding an
+untestable input to it would produce a number nobody could check. If OI is
+wanted later, the honest order is to archive chain snapshots daily first, wait
+for a year of them, and only then test.
+
+---
+
 ## Status
 
 Done: data layer, local archive, Fyers adapter, verified strategy port,

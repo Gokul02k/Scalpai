@@ -16,6 +16,7 @@ import {
 import { analyzeFromCandles, calcEMA } from "./lib/indicators";
 import { generateIndexSignals, generatePortfolioSignals, parsePortfolioCSV } from "./lib/signals";
 import { buildUnifiedSuggestion, explainAssetMove, getPortfolioSuggestion } from "./lib/suggestion";
+import { preOpenTrend, postOpenTrend } from "./lib/trend";
 import { loadPersisted, savePersisted } from "./lib/storage";
 import {
   buildNiftySignalLogEntry,
@@ -1075,6 +1076,71 @@ function HorizonCallCard({ title, subtitle, call, priceData, eaKey, symbol, mode
   );
 }
 
+// Directional bias for the day: one call before the open, one after.
+//
+// Deliberately not a HorizonCallCard. That card carries entry, target, stop and
+// "Ask EA", and this has none of those on purpose — measured across 2,676
+// sessions the bias does not predict direction (-0.032% a day acting on the
+// pre-open call, -0.005% over the scalp window against a 0.025% round trip),
+// so anything that invites a trade off it would be misleading. It reads the
+// tape; it does not call it.
+function TrendPanel({ preOpen, postOpen, marketOpen, C }) {
+  const live = marketOpen ? postOpen : null;
+  const call = live || preOpen;
+  if (!call) return null;
+
+  const clr = call.action === "UP" ? C.green : call.action === "DOWN" ? C.red : C.yellow;
+  const arrow = call.action === "UP" ? "▲" : call.action === "DOWN" ? "▼" : "•";
+  const total = (call.up || 0) + (call.down || 0) + (call.flat || 0);
+
+  return (
+    <div style={{ background: C.card, border: `1px solid ${clr}44`, borderRadius: 12, padding: 14, marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10 }}>
+        <div>
+          <div style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>Trend</div>
+          <div style={{ color: C.muted, fontSize: 10 }}>
+            {live ? "Since the open" : "Before the open"} · {call.note}
+          </div>
+        </div>
+        <span style={{ fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 5, background: `${C.muted}22`, color: C.muted }}>
+          {live ? "LIVE" : "PRE-OPEN"}
+        </span>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+        <span style={{ color: clr, fontSize: 22, fontWeight: 900 }}>{arrow}</span>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ color: clr, fontSize: 16, fontWeight: 800 }}>{call.label}</div>
+          {/* "Agreement", not confidence. Measured over nine years this number
+              does not sort outcomes -- the 70+ bucket hits 51.1% -- so calling
+              it confidence would imply a calibration it does not have. */}
+          <div style={{ color: C.muted, fontSize: 10 }}>
+            {call.confidence}% factor agreement · {call.up}↑ {call.down}↓ {call.flat}– of {total}
+          </div>
+        </div>
+      </div>
+
+      {call.factors?.length > 0 && (
+        <div style={{ borderTop: `1px solid ${C.dim}`, paddingTop: 8 }}>
+          {call.factors.slice(0, 6).map((f, i) => (
+            <SignalFactorRow
+              key={i}
+              factor={{ type: f.t === "UP" ? "BUY" : f.t === "DOWN" ? "SELL" : "HOLD", name: f.n, reason: f.v }}
+              C={C}
+            />
+          ))}
+        </div>
+      )}
+
+      <div style={{ color: C.muted, fontSize: 10, lineHeight: 1.5, paddingTop: 8 }}>
+        Context only. Tested over 2,676 sessions this bias does not predict
+        direction well enough to trade on its own — it is here to describe the
+        tape, not to call it.
+      </div>
+    </div>
+  );
+}
+
 function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA, onClose, C, S }) {
   const sym = (stock?.name || "").toUpperCase();
   const dataSym = SYMBOL_MAP[sym] || sym;
@@ -1929,6 +1995,7 @@ export default function App() {
   const [prices, setPrices] = useState(initPrices);
   const [candles, setCandles] = useState({});
   const [candlesDaily, setCandlesDaily] = useState({});
+  const [vixDaily, setVixDaily] = useState([]);
   const [isLive, setIsLive] = useState(false);
   const [dataSource, setDataSource] = useState(null);
   const [liveError, setLiveError] = useState(null);
@@ -2202,6 +2269,18 @@ export default function App() {
     return () => { cancelled = true; };
   }, [portfolioStockSymbols.join(","), refresh]);
 
+  // India VIX daily closes, for the volatility factor in the trend panel.
+  // Fetched by symbol rather than added to SYMBOL_MAP, which is iterated to
+  // build the instrument cards and would sprout a stray VIX tile.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const c = await fetchStockCandles("^INDIAVIX", "1d");
+      if (!cancelled && c?.length) setVixDaily(c.map((b) => b.c).filter(Number.isFinite));
+    })();
+    return () => { cancelled = true; };
+  }, [refresh]);
+
   // Fundamentals per holding — fetched when the holdings set changes (slow-moving, not every refresh).
   // Stores the fundamentals object (P/E, ROE, sector, …) keyed by symbol.
   useEffect(() => {
@@ -2252,6 +2331,27 @@ export default function App() {
     }
     return out;
   }, [candlesDaily]);
+
+  // Directional bias for the day. Two calls from different information: the
+  // pre-open one knows only yesterday, the post-open one adds today's session.
+  // Neither feeds signal generation — see app/lib/trend.js for why.
+  const trendCalls = useMemo(() => {
+    const daily = candlesDaily.NIFTY || [];
+    if (daily.length < 21) return { preOpen: null, postOpen: null };
+
+    // Today's own bar must not reach the pre-open call, or it forecasts a day
+    // it has already seen.
+    const todayStamp = new Date().toDateString();
+    const history = daily.filter((c) => new Date(c.ts ?? c.t).toDateString() !== todayStamp);
+    const base = history.length >= 21 ? history : daily.slice(0, -1);
+
+    const session = candles.NIFTY || [];
+    const vwap = analyses.NIFTY?.session?.vwap;
+    return {
+      preOpen: preOpenTrend(base, vixDaily),
+      postOpen: session.length ? postOpenTrend(base, session, vixDaily, vwap) : null,
+    };
+  }, [candlesDaily, candles, analyses, vixDaily]);
 
   const signalsByInstrument = useMemo(() => {
     const out = {};
@@ -2700,6 +2800,12 @@ Tabs: dashboard|portfolio|news|settings`;
   const Dashboard = () => (
     <div style={{ padding: "0 14px 90px" }}>
       <div style={{ color: C.muted, fontSize: 11, fontWeight: 800, textTransform: "uppercase", margin: "2px 2px 8px" }}>Market outlook</div>
+      <TrendPanel
+        preOpen={trendCalls.preOpen}
+        postOpen={trendCalls.postOpen}
+        marketOpen={marketStatus?.open}
+        C={C}
+      />
       <SwingStatusCard
         name="NIFTY"
         badge="Scalp"
