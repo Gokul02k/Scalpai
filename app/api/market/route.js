@@ -1,6 +1,8 @@
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+import { engineQuote } from '../../lib/engineClient';
+
 // Finnhub symbols → Yahoo Finance symbols (Yahoo has free NSE/BSE index data)
 const YAHOO_SYMBOL = {
   '^NSEI': '^NSEI',
@@ -90,6 +92,13 @@ export async function GET(request) {
   const symbol = searchParams.get('symbol') || '^NSEI';
   const apiKey = process.env.FINNHUB_API_KEY;
   const noStore = { headers: { 'Cache-Control': 'no-store, max-age=0' } };
+
+  // The engine quotes from the broker the algo would actually trade through,
+  // which is the price a signal should be measured against.
+  const fromEngine = await engineQuote(symbol);
+  if (fromEngine) {
+    return Response.json(fromEngine, noStore);
+  }
 
   // Try Finnhub first when key is configured
   if (apiKey) {

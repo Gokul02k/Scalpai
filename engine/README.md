@@ -89,9 +89,9 @@ engine/
 └── cli.py
 ```
 
-Commands: `status`, `probe`, `sync`, `inventory`, `backtest`, `ab`, `sweep`,
-`smc`, `ml`, `costs`, `option-pnl`, `regime`, `research`, `train`, `paper`,
-`fyers-auth`.
+Commands: `status`, `probe`, `sync`, `inventory`, `serve`, `backtest`, `ab`,
+`sweep`, `smc`, `ml`, `costs`, `option-pnl`, `regime`, `research`, `train`,
+`paper`, `fyers-auth`.
 
 ### On the port
 
@@ -935,6 +935,54 @@ backtested. Given that price-based pre-open bias measures negative, adding an
 untestable input to it would produce a number nobody could check. If OI is
 wanted later, the honest order is to archive chain snapshots daily first, wait
 for a year of them, and only then test.
+
+---
+
+## Serving the dashboard from the engine
+
+```bash
+python -m engine.cli serve            # http://127.0.0.1:8787
+```
+
+`engine/api.py` exposes the archive and the decision path as read-only JSON:
+`/status`, `/candles`, `/quote`, `/analysis`, `/inventory`, `/health`. Set
+`ENGINE_URL=http://127.0.0.1:8787` in `.env.local` and the existing
+`/api/candles` and `/api/market` routes prefer it, so the chart renders the same
+Fyers-sourced bars the backtest runs on instead of Yahoo's. Unset — as on Vercel
+— nothing changes.
+
+This is the Phase 4 architecture line, half done: the engine owns the data. The
+dashboard still computes its own indicators, because the parity tests already
+guarantee the two agree and a read-only view that goes blank when a Python
+process dies is a worse view.
+
+### Falling back is the interesting part
+
+Three ways it declines to answer, each on purpose:
+
+- **Not configured or not running** — `ENGINE_URL` unset, or nothing listening.
+  Yahoo, silently. No log line per poll.
+- **Nothing archived for that symbol** — GOLDBEES has no engine series, so it
+  stays on Yahoo. NIFTY and BANKNIFTY do not.
+- **Knowingly behind the tape** — this is the one that matters. Fyers tokens
+  expire overnight, so at 11:00 the engine's newest bar is yesterday's 15:25
+  close. It says `stale: true`, the routes fall back to Yahoo's live bars, and
+  the log says exactly what to run:
+
+```
+WARNING engine.api: refresh NIFTY:INDEX:5m failed: No valid Fyers token for
+today. Run: python -m engine.cli fyers-auth
+```
+
+Staleness is measured from the newest bar against market hours, not from whether
+the provider call succeeded — outside market hours a bar from yesterday is
+correct and the engine serves it. The practical consequence is that **the chart
+is only as live as the last `fyers-auth`**, which is the pre-open re-auth job
+Phase 4 still lists as required.
+
+The service is GET-only and bound to localhost. There is no authentication
+because there is nothing yet to authenticate to; when positions and orders
+arrive they belong behind a separate authenticated service, not a new verb here.
 
 ---
 

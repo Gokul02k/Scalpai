@@ -1,5 +1,7 @@
 export const dynamic = 'force-dynamic';
 
+import { engineCandles } from '../../lib/engineClient';
+
 const YAHOO_INDEX = {
   '^NSEI': '^NSEI',
   '^BSESN': '^BSESN',
@@ -24,6 +26,14 @@ export async function GET(request) {
   const tf = searchParams.get('tf') || '5m';
   const { interval, range } = TF_MAP[tf] || TF_MAP['5m'];
   const yahooSymbol = YAHOO_INDEX[symbol] || symbol;
+
+  // The engine serves the archive the backtest runs on, so the chart and the
+  // measured strategy are looking at the same bars. Null means it is not
+  // configured, not running, or has nothing for this symbol and timeframe.
+  const fromEngine = await engineCandles(symbol, tf);
+  if (fromEngine) {
+    return Response.json(fromEngine, { headers: { 'Cache-Control': 'no-store' } });
+  }
 
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=${interval}&range=${range}`;

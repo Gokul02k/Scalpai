@@ -1,4 +1,7 @@
-const LIVE_SOURCES = new Set(['finnhub', 'yahoo']);
+// What counts as a live price. "engine-archive" is deliberately absent: it is
+// the last stored bar standing in for a provider that did not answer, and the
+// header should say so rather than call a stale number live.
+const LIVE_SOURCES = new Set(['finnhub', 'yahoo', 'fyers', 'engine']);
 
 export const SYMBOL_MAP = {
   'NIFTY': '^NSEI',

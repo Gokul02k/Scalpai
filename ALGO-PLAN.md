@@ -1,7 +1,22 @@
 # ScalpAI → Algo Trading: Phased Plan
 
-Converting ScalpAI from a signal dashboard into an executing algo on the Groww
-Trading API, with open-source ML for signal quality.
+Converting ScalpAI from a signal dashboard into an executing algo on the Fyers
+API, with open-source ML for signal quality.
+
+> **Broker changed from Groww to Fyers (18 Aug 2026).** The plan was written
+> around the Groww Trading API. What actually got built is a Fyers adapter
+> (`engine/data/fyers_source.py`): OAuth app flow, daily token, 5-minute history
+> back to 2017, quotes, and the live option chain that `engine.cli costs` prices
+> a round trip from. Execution on Fyers extends that one adapter instead of
+> onboarding a second broker on separate credentials, and it removes the
+> ₹499/mo Groww subscription from the cost table below.
+>
+> What the change does **not** buy: the static IP whitelisted with the broker is
+> the SEBI algo framework rather than a Groww requirement, so the VPS stays; and
+> Fyers tokens still expire daily, so the pre-open re-auth job is still needed —
+> today's `engine.cli fyers-auth` is interactive and has to become a TOTP flow
+> before anything can start itself. Groww references below stand as written
+> where they describe the shape of the work rather than the vendor.
 
 **Instruments chosen:** NIFTY weekly options (intraday scalp) + cash equity (swing).
 No futures — margin requirement rejected.
@@ -168,15 +183,29 @@ and you already understand its failure modes.
 Vercel cannot host this: serverless has no persistent WebSocket, no long-lived
 process, and no static IP. The dashboard can stay there as a read-only view.
 
+**Done (18 Aug 2026):**
+
+- **Read-only JSON service.** `python -m engine.cli serve` exposes `/status`,
+  `/candles`, `/quote` and `/analysis` over the archive and the decision path;
+  `/api/candles` and `/api/market` prefer it and fall back to Yahoo when it is
+  down, not configured, or knowingly behind the tape. Set `ENGINE_URL` to turn
+  it on — unset, as on Vercel, nothing changes. See `engine/README.md`.
+- **NSE holiday calendar in `marketHours.js`**, mirrored from
+  `engine/data/timeutil.py` and diffed against it by `test_market_hours_parity.py`.
+
 **Required:**
 
-- VPS in an Indian region with a **static IP**, whitelisted with Groww. Mandatory
-  under the SEBI framework in force since 1 April 2026, regardless of order rate.
+- VPS in an Indian region with a **static IP**, whitelisted with the broker.
+  Mandatory under the SEBI framework in force since 1 April 2026, regardless of
+  order rate. Not a Groww-specific requirement — Fyers needs it too.
 - OAuth 2.0 with 2FA. API sessions close at end of day, so a morning re-auth
   routine is required — build it as a pre-open task with a Telegram alert on
   failure, because a silent auth failure means the algo simply does not trade.
-- Groww WebSocket feed replaces `yahooServer.js` for anything the engine acts on.
-  Yahoo can stay for the dashboard.
+  This is live today: `engine.cli serve` logs "Fyers token issued … has expired"
+  and serves the archive, and the dashboard falls back to Yahoo. Correct
+  behaviour, and it means the chart is only as live as the last `fyers-auth`.
+- Fyers WebSocket feed replaces `yahooServer.js` for anything the engine acts on.
+  Yahoo stays as the dashboard's fallback.
 - Redis (your existing Upstash) for positions, open orders, daily P&L, kill-switch
   state, and an idempotency key set.
 - **Idempotency on every order.** Deterministic key per signal. A retry, a restart,
@@ -184,8 +213,6 @@ process, and no static IP. The dashboard can stay there as a read-only view.
 - Reconciliation loop, every 30 seconds: fetch broker positions and orders, diff
   against internal state, halt and alert on mismatch. Never let internal state be
   the source of truth about money.
-- NSE holiday calendar in `marketHours.js`, which currently only knows about
-  weekends.
 - Market orders must carry a **non-zero market protection value** — plain market
   orders are no longer permitted through broker APIs.
 - Order rate stays under 10/sec (a 5-minute loop is nowhere near it), so no
@@ -264,9 +291,15 @@ minimum average traded value.
 
 Once the algo is live and stable.
 
-**Groww MCP** (`https://mcp.groww.in/mcp`) for conversational portfolio queries —
-this replaces the current `/api/chat` route with something that can actually see
-your positions. Human-in-the-loop only; it must never sit in the execution path.
+Conversational portfolio queries — replacing the current `/api/chat` route with
+something that can actually see your positions. Human-in-the-loop only; it must
+never sit in the execution path.
+
+Originally specced as **Groww MCP** (`https://mcp.groww.in/mcp`). With execution
+on Fyers there is no equivalent hosted MCP, so this becomes a thin MCP server
+over `engine.cli serve` — which is the better shape anyway, since the engine
+already holds positions and the P&L and the model would otherwise be reading
+them from a second source.
 
 **Ollama running Llama 3.x or Qwen** locally, to drop the Gemini/Groq dependency.
 Note you are already using open-weight models — Groq's `llama-3.3-70b-versatile`
@@ -305,13 +338,15 @@ monitoring compliance.
 
 | Item | Cost |
 |---|---|
-| Groww Trading API | ₹499/mo + taxes |
+| ~~Groww Trading API~~ — dropped, execution moves to Fyers | ~~₹499/mo~~ ₹0 |
+| Fyers API (data + orders, one app credential) | ₹0 |
 | VPS with static IP (Indian region) | ~₹500–1,500/mo |
 | Upstash Redis | Free tier likely sufficient |
 | Open-source ML stack (LightGBM, VectorBT, Ollama) | ₹0 |
 | Trading capital for Phase 7 | Your call — treat as fully at risk |
 
-Roughly ₹1,000–2,000/month in running costs before capital.
+Roughly ₹500–1,500/month in running costs before capital, now that the broker
+API subscription is gone.
 
 ---
 

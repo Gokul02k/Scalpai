@@ -1116,6 +1116,20 @@ def cmd_fyers_auth(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    """Serve the archive and the decision path as read-only JSON."""
+    from .api import ApiConfig, serve
+
+    serve(ApiConfig(
+        host=args.host,
+        port=args.port,
+        source=args.source,
+        live=not args.no_live,
+        bars=args.bars,
+    ))
+    return 0
+
+
 def cmd_status(args) -> int:
     try:
         st = market_status()
@@ -1150,6 +1164,18 @@ def main(argv: list[str] | None = None) -> int:
 
     st = sub.add_parser("status", help="market open/closed right now")
     st.set_defaults(fn=cmd_status)
+
+    sv = sub.add_parser("serve", help="read-only JSON API for the dashboard to render")
+    sv.add_argument("--host", default="127.0.0.1",
+                    help="localhost by default; there is no authentication yet")
+    sv.add_argument("--port", type=int, default=8787)
+    sv.add_argument("--source", default="fyers",
+                    help="provider used to top the archive up during market hours")
+    sv.add_argument("--no-live", action="store_true",
+                    help="serve the archive as-is, without calling the provider")
+    sv.add_argument("--bars", type=int, default=375,
+                    help="bars per response; 375 is one 5-minute session")
+    sv.set_defaults(fn=cmd_serve)
 
     bt = sub.add_parser("backtest", help="replay the live decision path over archived candles")
     bt.add_argument("--symbol", default="NIFTY")
