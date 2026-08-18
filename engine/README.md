@@ -90,7 +90,7 @@ engine/
 ```
 
 Commands: `status`, `probe`, `sync`, `inventory`, `backtest`, `ab`, `sweep`,
-`ml`, `costs`, `option-pnl`, `regime`, `research`, `train`, `paper`,
+`smc`, `ml`, `costs`, `option-pnl`, `regime`, `research`, `train`, `paper`,
 `fyers-auth`.
 
 ### On the port
@@ -935,6 +935,143 @@ backtested. Given that price-based pre-open bias measures negative, adding an
 untestable input to it would produce a number nobody could check. If OI is
 wanted later, the honest order is to archive chain snapshots daily first, wait
 for a year of them, and only then test.
+
+---
+
+## The smart-money setup, measured
+
+`engine/core/smc.py` finds the objects the SMC/ICT reading of a chart is built
+from, and `engine/backtest/smc_replay.py` trades them. The sequence, as it is
+taught: price takes out an obvious high, closes back below it, breaks the last
+swing low, and the last up candle before that break becomes supply — sell its
+retest, stop above the sweep, target the opposite pool. Mirror image for longs.
+
+```bash
+python -m engine.cli smc --show 20      # replay the setup over the archive
+python -m engine.cli smc --grid         # and over its parameters
+```
+
+Definitions are strict, because the loose versions are what make this strategy
+look good. A sweep must *close back inside* the pool — a close beyond it is a
+break, not a sweep. A break of structure must be a close, not a wick. And a
+swing high is not a level until `span` bars have printed without exceeding it,
+so a level can never be swept before the market had formed it.
+
+### It does not pay
+
+2,228 sessions of NIFTY 5-minute bars, 2017-07-17 to 2026-08-17:
+
+| | |
+|---|---:|
+| sweeps taken | 19,099 |
+| …that broke structure | 4,342 |
+| …that armed an entry | 2,822 |
+| …that filled | **1,663** |
+| win rate | 31.7% |
+| avg win / avg loss | +49.6 / −23.9 pts |
+| expectancy gross | **−0.62 pts/trade** |
+| expectancy net | **−6.62 pts/trade** |
+| profit factor | 0.96 |
+| positive years | **0 of 10** |
+
+The setup is not merely eaten by costs; it is fractionally negative before them,
+at a 25.5-point average risk and a 2R target that hits 31.7% of the time against
+the 33% it needs. Removing its three best trades moves the average from −6.62 to
+−7.02, so this is not one bad year or a few outliers — every year from 2017 to
+2026 loses.
+
+Nor is it the parameters. Thirteen variants, all negative after costs:
+
+| variant | trades | gross | net | positive years |
+|---|---:|---:|---:|---:|
+| baseline | 1,663 | −0.62 | −6.62 | 0/10 |
+| shorts only | 1,312 | **+1.50** | −4.50 | 1/10 |
+| require FVG | 1,189 | +0.67 | −5.33 | 1/10 |
+| target 4R | 1,683 | +0.57 | −5.43 | 0/10 |
+| longs only | 1,343 | −2.81 | −8.81 | 0/10 |
+
+The best cell is gross-positive by 1.5 points against a 6-point round trip, and
+it is the best of thirteen tries. The direction split is the only interesting
+row — shorts beat longs by 4.3 points a trade — and it says the same thing the
+edge research already said: NIFTY's intraday drift is negative and all of its
+return happens overnight. That is a property of the session, not a discovery
+about order blocks.
+
+### Nor does it help the filter
+
+Losing as a strategy does not rule out the weaker claim: that *where price sits
+in the structure* helps rank v1's signals. A signal fired just after a sweep in
+the same direction is a different proposition from the same signal fired into an
+untouched pool, even when every indicator reads identically.
+
+`engine/ml/smc_features.py` hands the filter nine columns saying exactly that —
+whether the last sweep and the last break agree with the signal, how long ago
+they were, whether the break was a CHoCH, whether price is sitting in an order
+block, and how far the previous day's high and low are. Same 4,746 resolved
+signals, same folds, same seeds; the only difference is the columns:
+
+| | v1 columns | + smart money |
+|---|---:|---:|
+| out-of-sample AUC | **0.614** | **0.613** |
+| keep top 40% | +0.60 ± 0.27 | +0.82 ± 0.24 |
+| keep top 20% | +3.95 ± 0.74 | +5.25 ± 0.95 |
+| keep top 10% | +14.21 ± 1.59 | +15.70 ± 1.77 |
+| most recent fold | **+0.86 .. +2.71**, 10/10 seeds | **−0.26 .. +1.37**, 9/10 |
+
+AUC is the honest column and it does not move: the structure adds nothing to the
+model's ability to rank a winner above a loser. The keep-20% and keep-10% rows
+look better with the columns in, but those are 754 and 260 trades over eight
+years, and the fold that decides whether anything gets deployed — the most
+recent one — is *worse* with them. `smc_sweep_depth_pct` reads as the fifth most
+important feature by gain, which is a good demonstration that gain-based
+importance measures how often a booster split on a column, not whether the
+column was worth anything.
+
+So the columns are off by default. `FEATURE_NAMES` stays the v1 layout, the
+saved `var/filter.txt` keeps loading, and `python -m engine.cli ml --with-smc`
+splices them back in for anyone who wants to re-run the comparison:
+
+```bash
+python -m engine.cli ml --cached --seeds 10              # v1 columns
+python -m engine.cli ml --cached --seeds 10 --with-smc   # with the structure
+```
+
+### On the chart, though
+
+`app/lib/smc.js` draws it: resting liquidity (BSL/BSL labels at highs and lows
+nobody has taken yet), sweep markers, BOS and CHoCH lines, and unmitigated order
+blocks. Toggle **Structure** above the chart. Mitigated blocks are dropped
+rather than faded — a block price has already traded back into has done its job,
+and the panel is 260 pixels tall.
+
+It is mirrored by `engine.core.smc.annotate` and diffed against it with zero
+tolerance in `test_smc_parity.py`, so the chart a trader reads and the backtest
+that says the setup does not pay cannot drift into disagreeing about where the
+structure is.
+
+### What this does not establish
+
+The backtest trades one formalisation of the setup. A discretionary trader picks
+*which* pool matters, reads higher-timeframe context, and skips the session when
+it looks wrong; none of that is here, and someone who trades this well would say
+so. What the numbers do establish is narrower and still useful: the mechanical
+core of the setup — sweep, break, block, retest — carries no edge on NIFTY by
+itself, so any live version of it is being carried entirely by the judgment laid
+on top, and that judgment is what would need measuring.
+
+Two places the replay is deliberately generous, which makes the negative result
+stronger rather than weaker: a bar merely touching the order block edge counts
+as a filled limit order, and ambiguity is the only thing resolved against the
+trade (a bar holding both stop and target is booked as a stop, because 5-minute
+data cannot say which came first).
+
+So, like the trend panel, this is analysis and not a signal. Nothing in
+`signals.py`, `suggestion.py`, `indicators.py`, `runner.py` or `replay.py`
+imports it, and
+`test_smc.py::test_the_smc_modules_are_not_wired_into_signal_generation` fails
+if that changes. The feature builder is the one deliberate exception, because a
+column handed to a model gets audited out of sample by the run above, which is
+an audit a hand-written rule never gets.
 
 ---
 

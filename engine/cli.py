@@ -173,6 +173,112 @@ def cmd_backtest(args) -> int:
     return 0
 
 
+def cmd_smc(args) -> int:
+    """Replay the smart-money setup: sweep, break of structure, order block."""
+    from .backtest import SmcParams, get_cost_model, run_smc_backtest
+
+    candles = _load_candles(args.symbol, args.segment, args.interval)
+    if candles is None:
+        return 1
+
+    params = SmcParams(
+        swing_span=args.swing_span,
+        min_sweep_pts=args.min_sweep,
+        stop_buffer_pts=args.stop_buffer,
+        max_risk_pts=args.max_risk,
+        min_rr=args.min_rr,
+        max_trades_per_session=args.max_trades,
+        sides=args.sides,
+        require_fvg=args.require_fvg,
+    )
+
+    if args.grid:
+        return _smc_grid(candles, params, args)
+
+    print(f"\n  replaying {len(candles)} bars of {args.symbol} {args.interval}…")
+    result = run_smc_backtest(candles, params, get_cost_model(args.costs))
+
+    print()
+    for line in result.summary_lines():
+        print("  " + line)
+    if not result.trades:
+        print()
+        return 0
+
+    print("\n  is that real?")
+    for line in result.stress_lines():
+        print("  " + line)
+    print()
+    for line in result.year_lines():
+        print(line)
+
+    if args.show:
+        print(f"\n  {'date':12}{'dir':6}{'pool':21}{'brk':6}{'entry':>9}{'stop':>9}"
+              f"{'target':>9}  {'in':5} {'out':5} {'status':10}{'pts':>8}{'R':>7}")
+        print("  " + "-" * 116)
+        for t in result.trades[-args.show:]:
+            print(
+                f"  {t.date:12}{t.direction:6}{t.pool:21}{t.break_kind:6}"
+                f"{t.entry:9.1f}{t.stop:9.1f}{t.target:9.1f}  "
+                f"{t.entry_time:5} {t.exit_time:5} {t.status:10}"
+                f"{t.gross_pts:+8.1f}{t.r_multiple:+7.2f}"
+            )
+
+    print()
+    net = result.stats["expectancyNetPts"]
+    if net <= 0:
+        print("  Negative expectancy after costs. The setup reads well on a chart")
+        print("  that has already finished printing; forward, it does not pay.")
+    elif result.stats["netWithoutBestThree"] <= 0:
+        print("  Positive only because of its best three trades. That is a sample,")
+        print("  not an edge.")
+    else:
+        print(f"  Positive at {net:+.2f} pts/trade after costs. Before trusting it:")
+        print("    - fills here are a touch of the limit, which is generous")
+        print("    - check it holds year by year above, not just in aggregate")
+        print("    - re-price it as an option, where the real cost lives:")
+        print("      python -m engine.cli option-pnl")
+    print()
+    return 0
+
+
+def _check_smc_columns(samples) -> None:
+    """A cache collected without the columns cannot be scored with them."""
+    from .ml.smc_features import SMC_FEATURE_NAMES
+
+    if samples and SMC_FEATURE_NAMES[0] not in (samples[0].features or {}):
+        print("  this cached dataset was collected without the smart-money columns,")
+        print("  so they would read as zeros. Re-run without --cached.")
+
+
+def _smc_grid(candles, params, args) -> int:
+    """Run the setup's degrees of freedom, to separate it from its parameters."""
+    from .backtest.smc_replay import GridRow, default_grid, run_grid
+    from .core.indicators import candles_to_dicts
+
+    variants = default_grid(params)
+    print(f"\n  {len(candles)} bars, {len(variants)} variants across {args.jobs} cores\n")
+    rows = run_grid(candles_to_dicts(candles), variants, args.costs, args.jobs)
+
+    print(GridRow.header())
+    print("  " + "-" * 80)
+    for row in rows:
+        print(row.line())
+
+    winners = [r for r in rows if r.trades and r.stats["expectancyNetPts"] > 0]
+    print()
+    if not winners:
+        print("  No variant is positive after costs. The result belongs to the setup,")
+        print("  not to a parameter choice.")
+    else:
+        print(f"  {len(winners)} of {len(rows)} variants are positive. Thirteen tries at")
+        print("  a coin gets one or two heads in a row, so a cell that clears zero here")
+        print("  has not earned anything — check it holds year by year and out of")
+        print("  sample before treating it as a finding.")
+    print()
+    return 0
+
+
 def _load_candles(symbol: str, segment: str, interval: str):
     store = CandleStore()
     candles = store.read(symbol, segment, interval)
@@ -546,6 +652,12 @@ def cmd_ml(args) -> int:
         train, walk_forward,
     )
 
+    from .ml.features import use_smc_columns
+
+    columns = use_smc_columns(args.with_smc)
+    if args.with_smc:
+        print(f"\n  smart-money columns spliced in — {len(columns)} features")
+
     cache = (Path(__file__).parent / "var"
              / f"mlset_{args.symbol}_{args.interval}_prod.json")
 
@@ -596,6 +708,9 @@ def cmd_ml(args) -> int:
             print(f"  joined VIX regime to {matched}/{len(samples)} samples")
         else:
             print("  no VIX history archived — regime columns will be zero")
+
+    if args.with_smc:
+        _check_smc_columns(samples)
 
     expired = [s for s in samples if s.status == "expired"]
     samples = [s for s in samples if s.status in ("target", "stop")]
@@ -1086,6 +1201,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="override the round-trip cost, e.g. from `engine.cli costs`")
     ml.add_argument("--no-vix", action="store_true",
                     help="omit the volatility-regime features, to measure what they add")
+    ml.add_argument("--with-smc", action="store_true",
+                    help="splice in the smart-money columns; off by default because "
+                         "measured against a run without them they add nothing")
 
     ct = sub.add_parser("costs", help="measure real round-trip cost from a live option chain")
     ct.add_argument("--symbol", default="NIFTY")
@@ -1131,6 +1249,32 @@ def main(argv: list[str] | None = None) -> int:
     ml.add_argument("--costs", default="index_points",
                     choices=["index_points", "option_buy", "equity_intraday", "equity_delivery"])
     ml.set_defaults(fn=cmd_ml)
+
+    sm = sub.add_parser("smc", help="replay the sweep / BOS / order-block setup")
+    sm.add_argument("--symbol", default="NIFTY")
+    sm.add_argument("--segment", default="INDEX")
+    sm.add_argument("--interval", default="5m")
+    sm.add_argument("--swing-span", type=int, default=2,
+                    help="bars each side that confirm a swing; also the stop's swing window")
+    sm.add_argument("--min-sweep", type=float, default=2.0,
+                    help="points a sweep must clear the pool by")
+    sm.add_argument("--stop-buffer", type=float, default=5.0,
+                    help="points beyond the swing extreme for the stop")
+    sm.add_argument("--max-risk", type=float, default=60.0,
+                    help="skip setups whose stop is further than this")
+    sm.add_argument("--min-rr", type=float, default=2.0,
+                    help="reward multiple the target pool must be worth")
+    sm.add_argument("--max-trades", type=int, default=1, help="trades per session")
+    sm.add_argument("--sides", default="both", choices=["both", "long", "short"])
+    sm.add_argument("--require-fvg", action="store_true",
+                    help="only take setups whose displacement left an imbalance")
+    sm.add_argument("--grid", action="store_true",
+                    help="replay the setup's variants, to separate it from its parameters")
+    sm.add_argument("--jobs", type=int, default=8, help="parallel replays for --grid")
+    sm.add_argument("--costs", default="index_points",
+                    choices=["index_points", "option_buy", "equity_intraday", "equity_delivery"])
+    sm.add_argument("--show", type=int, default=0, help="print the N most recent trades")
+    sm.set_defaults(fn=cmd_smc)
 
     rs = sub.add_parser("research", help="test for conditional structure worth trading")
     rs.add_argument("--symbol", default="NIFTY")

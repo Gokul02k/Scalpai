@@ -18,10 +18,11 @@ from datetime import datetime
 from typing import Any, Sequence
 
 from ..data.timeutil import IST
+from .smc_features import SMC_FEATURE_NAMES, smc_context
 
 #: Stable ordering. The model is trained and scored through this list, so a
 #: column can be added at the end but never reordered without retraining.
-FEATURE_NAMES: list[str] = [
+_V1_FEATURE_NAMES: list[str] = [
     "action_buy",
     "confidence",
     "rr",
@@ -68,7 +69,33 @@ FEATURE_NAMES: list[str] = [
     "vix_pctile_1y",
 ]
 
+#: What the model is actually fit and scored through. The smart-money columns
+#: are *not* in it: measured against a run without them they left out-of-sample
+#: AUC unchanged and made the most recent fold worse, so they stay out of the
+#: production layout. `engine.cli ml --with-smc` splices them back in to
+#: reproduce that comparison.
+FEATURE_NAMES: list[str] = list(_V1_FEATURE_NAMES)
+
+_WITH_SMC = False
+
 _OPEN_MINUTES = 9 * 60 + 15
+
+
+def use_smc_columns(enabled: bool) -> list[str]:
+    """Splice the smart-money columns in or out of the model's column layout.
+
+    Global state, deliberately. `FEATURE_NAMES` *is* the layout, and every path
+    from dataset to fitted booster to saved file reads it; threading a second
+    list through all of them to serve one research flag would put a footgun in
+    every signature. A saved model records the list it was fit on and refuses
+    to load against a different one, so getting this wrong fails loudly rather
+    than scoring today's rows through yesterday's columns.
+    """
+    global _WITH_SMC
+
+    _WITH_SMC = enabled
+    FEATURE_NAMES[:] = [*_V1_FEATURE_NAMES, *SMC_FEATURE_NAMES] if enabled else _V1_FEATURE_NAMES
+    return FEATURE_NAMES
 
 
 def _pct(numer: float | None, denom: float | None) -> float:
@@ -161,6 +188,10 @@ def extract_features(
     when = datetime.fromtimestamp(ts / 1000, tz=IST) if ts else None
 
     return {
+        # Computed only when the columns are switched on: it is a scan over the
+        # session's structure, and paying for it on every replay to fill nine
+        # columns nothing reads would slow the common path for nothing.
+        **(smc_context(window, final_call.get("action"), price) if _WITH_SMC else {}),
         "action_buy": 1.0 if final_call.get("action") == "BUY" else 0.0,
         "confidence": _safe(final_call.get("confidence")),
         "rr": _safe(final_call.get("rr")),

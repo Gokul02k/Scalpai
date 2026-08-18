@@ -17,7 +17,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LIB = resolve(HERE, '..', '..', 'app', 'lib');
 
-const MODULES = ['indicators', 'signals', 'suggestion', 'signalLog', 'trend'];
+const MODULES = ['indicators', 'signals', 'suggestion', 'signalLog', 'trend', 'smc', 'marketHours'];
 
 async function loadModules() {
   const dir = mkdtempSync(join(tmpdir(), 'scalpai-parity-'));

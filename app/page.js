@@ -17,6 +17,7 @@ import { analyzeFromCandles, calcEMA } from "./lib/indicators";
 import { generateIndexSignals, generatePortfolioSignals, parsePortfolioCSV } from "./lib/signals";
 import { buildUnifiedSuggestion, explainAssetMove, getPortfolioSuggestion } from "./lib/suggestion";
 import { preOpenTrend, postOpenTrend } from "./lib/trend";
+import { annotateStructure } from "./lib/smc";
 import { loadPersisted, savePersisted } from "./lib/storage";
 import {
   buildNiftySignalLogEntry,
@@ -219,7 +220,7 @@ function niceTicks(min, max, count = 5) {
 function PriceChart({
   candles = [], view = 50, height = 260, C, overlays = null, decimals = 2,
   chartType = "candle", showEMA = true, showBB = false, showVolume = true, sym = "",
-  fvgs = null, showFVG = false,
+  fvgs = null, showFVG = false, smc = null, showSMC = false,
 }) {
   const wrapRef = useRef(null);
   const [W, setW] = useState(360);
@@ -321,6 +322,19 @@ function PriceChart({
       ].filter((l) => Number.isFinite(l.v) && l.v >= lo && l.v <= hi)
     : [];
 
+  // Resting liquidity, thinned out newest first: on a 260px panel two labels
+  // landing in the same few pixels say less than one of them would.
+  const restingPools = [];
+  if (showSMC && smc) {
+    for (const p of smc.pools.filter((z) => z.resting).reverse()) {
+      const py = yP(p.price);
+      if (py < mT || py > priceBottom) continue;
+      if (restingPools.some((q) => Math.abs(yP(q.price) - py) < 9)) continue;
+      restingPools.push(p);
+      if (restingPools.length >= 4) break;
+    }
+  }
+
   const onMove = (e) => {
     if (!activeRef.current && e.pointerType !== "mouse") return;
     const rect = e.currentTarget.getBoundingClientRect();
@@ -400,6 +414,54 @@ function PriceChart({
           );
         })}
 
+        {/* Only blocks price has not already traded back into: a mitigated one
+            has done its job and is chart noise. */}
+        {showSMC && smc && smc.blocks.filter((b) => !b.mitigated).slice(-3).map((b, i) => {
+          const di = b.index - start;
+          const x0 = Math.max(mL, x(Math.max(0, di)) - bw);
+          const yT = yP(b.hi), yB = yP(b.lo);
+          const top = Math.min(yT, yB), boxH = Math.max(1.5, Math.abs(yB - yT));
+          if (top > priceBottom || top + boxH < mT) return null;
+          const clr = b.direction === "short" ? C.red : C.green;
+          return (
+            <g key={`ob-${i}`} pointerEvents="none">
+              <rect
+                x={x0} y={top} width={Math.max(2, mL + plotW - x0)} height={boxH}
+                fill={clr} opacity={0.13} stroke={clr} strokeOpacity={0.45} strokeWidth={0.6}
+              />
+              {boxH > 9 && <text x={x0 + 3} y={top + 9} fill={clr} fontSize={7.5} fontWeight={700}>OB</text>}
+            </g>
+          );
+        })}
+
+        {showSMC && smc && restingPools.map((p, i) => {
+          const py = yP(p.price);
+          const x0 = Math.max(mL, x(Math.max(0, p.index - start)));
+          return (
+            <g key={`pool-${i}`} pointerEvents="none">
+              <line x1={x0} y1={py} x2={mL + plotW} y2={py} stroke={C.yellow} strokeWidth={0.7} strokeDasharray="1 3" opacity={0.55} />
+              <text x={mL + plotW - 2} y={py - 2} fill={C.yellow} fontSize={7} fontWeight={700} textAnchor="end" opacity={0.8}>
+                {p.side === "buyside" ? "BSL" : "SSL"}
+              </text>
+            </g>
+          );
+        })}
+
+        {showSMC && smc && smc.breaks.slice(-3).map((b, i) => {
+          const from = Math.max(0, b.fromIndex - start);
+          const to = b.index - start;
+          if (to < 0) return null;
+          const py = yP(b.level);
+          if (py < mT || py > priceBottom) return null;
+          const clr = b.kind === "CHoCH" ? C.blue : C.muted;
+          return (
+            <g key={`brk-${i}`} pointerEvents="none">
+              <line x1={x(from)} y1={py} x2={x(Math.min(n - 1, to))} y2={py} stroke={clr} strokeWidth={0.9} strokeDasharray="4 2" opacity={0.85} />
+              <text x={x(Math.min(n - 1, to)) - 2} y={py - 3} fill={clr} fontSize={7} fontWeight={800} textAnchor="end">{b.kind}</text>
+            </g>
+          );
+        })}
+
         {chartType === "area" && <path d={areaPath} fill="url(#pcArea)" stroke="none" />}
         {(chartType === "area" || chartType === "line") && (
           <path d={closeLine} fill="none" stroke={lastClr} strokeWidth={1.8} strokeLinejoin="round" strokeLinecap="round" />
@@ -437,6 +499,22 @@ function PriceChart({
             <g key={`fvgm-${i}`} pointerEvents="none">
               <text x={cx} y={my} fill={clr} fontSize={8} fontWeight={800} textAnchor="middle">
                 {buy ? "▲ BUY" : "▼ SELL"}
+              </text>
+            </g>
+          );
+        })}
+
+        {showSMC && smc && smc.sweeps.map((s, i) => {
+          const di = s.index - start;
+          if (di < 0 || di >= n) return null;
+          const buy = s.side === "buyside";
+          const cx = x(di);
+          const sy = buy ? Math.max(mT + 7, yP(s.extreme) - 6) : Math.min(priceBottom - 2, yP(s.extreme) + 11);
+          return (
+            <g key={`sw-${i}`} pointerEvents="none">
+              <circle cx={cx} cy={yP(s.extreme)} r={2} fill={C.yellow} opacity={0.9} />
+              <text x={cx} y={sy} fill={C.yellow} fontSize={7} fontWeight={800} textAnchor="middle">
+                {buy ? "↑sweep" : "↓sweep"}
               </text>
             </g>
           );
@@ -1154,7 +1232,7 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
   const [loading, setLoading] = useState(true);
   const [showSummary, setShowSummary] = useState(false);
   const [chartType, setChartType] = useState("candle");
-  const [chartOv, setChartOv] = useState({ ema: true, bb: false, vol: true, fvg: true });
+  const [chartOv, setChartOv] = useState({ ema: true, bb: false, vol: true, fvg: true, smc: false });
 
   const HORIZONS = [
     { tf: "5m", label: "Intraday" },
@@ -1242,6 +1320,12 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
   const verdictClr = verdict ? { green: C.green, blue: C.blue, yellow: C.yellow, red: C.red, muted: C.muted }[verdict.tone] : C.muted;
 
   const chartCandles = candlesByTf[chartTf] || [];
+  // Overlay only. The setup it draws was replayed over nine years and loses
+  // money after costs, so it informs the eye and nothing else.
+  const smcMarks = useMemo(
+    () => (chartOv.smc ? annotateStructure(chartCandles, { minSweepPts: 2 }) : null),
+    [chartOv.smc, chartCandles]
+  );
   const chartAnalysis = analysisByTf[chartTf];
   const overlays = chartAnalysis ? {
     ema20: chartAnalysis.ema20,
@@ -1397,7 +1481,7 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
           </div>
 
           <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-            {[{ k: "ema", l: "EMA 20/50" }, { k: "bb", l: "Bollinger" }, { k: "vol", l: "Volume" }, { k: "fvg", l: "FVG" }].map((o) => (
+            {[{ k: "ema", l: "EMA 20/50" }, { k: "bb", l: "Bollinger" }, { k: "vol", l: "Volume" }, { k: "fvg", l: "FVG" }, { k: "smc", l: "Structure" }].map((o) => (
               <button
                 key={o.k}
                 type="button"
@@ -1429,6 +1513,8 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
                 showVolume={chartOv.vol}
                 showFVG={chartOv.fvg}
                 fvgs={chartAnalysis?.fvg?.zones}
+                showSMC={chartOv.smc}
+                smc={smcMarks}
                 sym={sym}
               />
               <ChartLegend overlays={overlays} decimals={dec} C={C} />
