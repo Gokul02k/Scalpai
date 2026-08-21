@@ -22,6 +22,7 @@
 /** Dashboard symbols the engine keeps an archive for. Everything else is Yahoo. */
 export const ENGINE_SYMBOLS = {
   '^NSEI': { symbol: 'NIFTY', segment: 'INDEX' },
+  '^BSESN': { symbol: 'SENSEX', segment: 'INDEX' },
   '^NSEBANK': { symbol: 'BANKNIFTY', segment: 'INDEX' },
 };
 

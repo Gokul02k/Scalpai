@@ -5,6 +5,7 @@ const LIVE_SOURCES = new Set(['finnhub', 'yahoo', 'fyers', 'engine']);
 
 export const SYMBOL_MAP = {
   'NIFTY': '^NSEI',
+  'SENSEX': '^BSESN',
   'GOLD': 'GOLDBEES.NS',
   'SILVER': 'SILVERBEES.NS',
 };

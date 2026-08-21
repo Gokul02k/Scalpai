@@ -19,13 +19,24 @@ from .data.timeutil import HolidayCalendarMissing
 
 # Symbols archived by a bare `sync`. The 5m series is the scalp signal's input;
 # the daily series is for the equity swing track and for long-horizon context.
-DEFAULT_SYNC: list[tuple[str, str, str]] = [
-    ("NIFTY", "INDEX", "5m"),
-    ("NIFTY", "INDEX", "15m"),
-    ("NIFTY", "INDEX", "1h"),
-    ("NIFTY", "INDEX", "1d"),
-    ("BANKNIFTY", "INDEX", "5m"),
-    ("BANKNIFTY", "INDEX", "1d"),
+#
+# The fourth field caps the backfill. It exists for the 1-minute series, which
+# the chart wants and no research does: a full backfill to the 2017 intraday
+# epoch is roughly 850,000 rows fetched 100 days at a time, to draw a timeframe
+# nobody looks at further back than a few sessions.
+DEFAULT_SYNC: list[tuple[str, str, str, int | None]] = [
+    ("NIFTY", "INDEX", "1m", 10),
+    ("NIFTY", "INDEX", "5m", None),
+    ("NIFTY", "INDEX", "15m", None),
+    ("NIFTY", "INDEX", "1h", None),
+    ("NIFTY", "INDEX", "1d", None),
+    ("SENSEX", "INDEX", "1m", 10),
+    ("SENSEX", "INDEX", "5m", None),
+    ("SENSEX", "INDEX", "15m", None),
+    ("SENSEX", "INDEX", "1h", None),
+    ("SENSEX", "INDEX", "1d", None),
+    ("BANKNIFTY", "INDEX", "5m", None),
+    ("BANKNIFTY", "INDEX", "1d", None),
 ]
 
 
@@ -78,14 +89,16 @@ def cmd_sync(args) -> int:
     store = CandleStore()
 
     if args.symbol:
-        targets = [(args.symbol, args.segment, args.interval)]
+        targets = [(args.symbol, args.segment, args.interval, args.days)]
     else:
-        targets = DEFAULT_SYNC
+        # An explicit --days overrides the per-series cap; otherwise each series
+        # keeps the depth it was listed with.
+        targets = [(s, seg, i, args.days or cap) for s, seg, i, cap in DEFAULT_SYNC]
 
     total_new = 0
-    for symbol, segment, interval in targets:
+    for symbol, segment, interval, days in targets:
         try:
-            res = store.sync(src, symbol, interval, segment, days=args.days)
+            res = store.sync(src, symbol, interval, segment, days=days)
         except Exception as e:
             print(f"FAIL {symbol:10} {interval:4}  {type(e).__name__}: {e}")
             continue

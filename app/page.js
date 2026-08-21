@@ -11,8 +11,9 @@ import {
   Upload, Plus, Trash2, Bell, Sun, Moon, Lightbulb, ScrollText,
 } from "lucide-react";
 import {
-  fetchAllMarketData, fetchCandles, fetchStockCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, fetchStockFundamentals, genFallbackCandles, SYMBOL_MAP,
+  fetchAllMarketData, fetchRealMarketData, fetchCandles, fetchStockCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, fetchStockFundamentals, genFallbackCandles, SYMBOL_MAP,
 } from "./lib/marketData";
+import { vwapSeries, supertrendSeries } from "./lib/chartIndicators";
 import { analyzeFromCandles, calcEMA } from "./lib/indicators";
 import { generateIndexSignals, generatePortfolioSignals, parsePortfolioCSV } from "./lib/signals";
 import { buildUnifiedSuggestion, explainAssetMove, getPortfolioSuggestion } from "./lib/suggestion";
@@ -42,14 +43,21 @@ import { GEMINI_CHAT_MODELS, DEFAULT_GEMINI_MODEL } from "./lib/geminiModels";
 
 const INSTRUMENTS = {
   "NIFTY":  { base: 25000, vol: 0.0012, lot: 50 },
+  "SENSEX": { base: 82000, vol: 0.0011, lot: 10 },
   "GOLD":   { base: 124,   vol: 0.0015, lot: 1 },
   "SILVER": { base: 228,   vol: 0.0020, lot: 1 },
 };
+
+// Smallest projected move worth scalping. NIFTY's 50 points is the number the
+// engine and the signal log already grade against; SENSEX is the same 0.2% of
+// price at its own level, which is what makes the two calls comparable.
+const MIN_SCALP_POINTS = { NIFTY: 50, SENSEX: 165 };
 
 const INSTRUMENT_KEYS = Object.keys(INSTRUMENTS);
 
 const INSTRUMENT_SUB = {
   NIFTY: "Scalping · NSE Index",
+  SENSEX: "Scalping · BSE Index",
   GOLD: "NSE · GOLDBEES ETF",
   SILVER: "NSE · SILVERBEES ETF",
 };
@@ -217,15 +225,27 @@ function niceTicks(min, max, count = 5) {
  * Interactive price chart: candle/line/area, EMA overlays, Bollinger shading,
  * support/resistance, volume sub-panel, price/time axes, and a touch crosshair.
  */
+const MIN_VISIBLE_BARS = 20;
+
+//: IST day number for a timestamp. Cheap enough to call per bar on every
+//: render, unlike Intl, and exact because IST has no daylight saving.
+const IST_DAY = (ts) => Math.floor((ts + 19_800_000) / 86_400_000);
+
 function PriceChart({
-  candles = [], view = 50, height = 260, C, overlays = null, decimals = 2,
-  chartType = "candle", showEMA = true, showBB = false, showVolume = true, sym = "",
+  candles = [], view = 120, height = 300, C, overlays = null, decimals = 2,
+  chartType = "candle", showEMA = true, showBB = false, sym = "",
   fvgs = null, showFVG = false, smc = null, showSMC = false,
+  showVWAP = true, showST = false,
 }) {
   const wrapRef = useRef(null);
+  const svgRef = useRef(null);
   const [W, setW] = useState(360);
   const [hover, setHover] = useState(null);
-  const activeRef = useRef(false);
+  const [zoom, setZoom] = useState(view);
+  // Bars hidden off the right edge. Zero means pinned to the latest bar, which
+  // is where a chart should sit until someone drags it away.
+  const [scroll, setScroll] = useState(0);
+  const dragRef = useRef(null);
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -238,28 +258,54 @@ function PriceChart({
     return () => ro.disconnect();
   }, []);
 
+  // Switching instrument or timeframe should show the latest bars again.
+  useEffect(() => { setZoom(view); setScroll(0); }, [view, sym, candles.length]);
+
+  // Registered by hand because React's onWheel is passive, and a passive
+  // listener cannot stop the page scrolling while you zoom the chart.
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const onWheel = (e) => {
+      e.preventDefault();
+      setZoom((z) => {
+        const next = Math.round(e.deltaY > 0 ? z * 1.15 : z / 1.15);
+        return Math.max(MIN_VISIBLE_BARS, Math.min(candles.length, next));
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [candles.length]);
+
   if (!candles.length) return null;
 
   const H = height;
   const mL = 6, mR = 54, mT = 10, axisB = 18;
-  const volH = showVolume ? Math.round(H * 0.2) : 0;
-  const volGap = showVolume ? 8 : 0;
+  const volH = Math.round(H * 0.18);
+  const volGap = 8;
   const priceH = H - mT - axisB - volH - volGap;
   const plotW = Math.max(40, W - mL - mR);
 
-  const n = Math.min(view, candles.length);
-  const start = candles.length - n;
-  const disp = candles.slice(start);
+  const n = Math.max(MIN_VISIBLE_BARS, Math.min(zoom, candles.length));
+  const maxScroll = Math.max(0, candles.length - n);
+  const offset = Math.min(scroll, maxScroll);
+  const end = candles.length - offset;
+  const start = Math.max(0, end - n);
+  const disp = candles.slice(start, end);
   const closesFull = candles.map((c) => c.c);
 
-  const ema20 = showEMA ? calcEMA(closesFull, 20).slice(start) : [];
-  const ema50 = showEMA ? calcEMA(closesFull, 50).slice(start) : [];
-  const bb = showBB ? bollingerSeries(closesFull, 20).slice(start) : [];
+  const ema9 = showEMA ? calcEMA(closesFull, 9).slice(start, end) : [];
+  const bb = showBB ? bollingerSeries(closesFull, 20).slice(start, end) : [];
+  const vwap = showVWAP ? vwapSeries(candles).slice(start, end) : [];
+  const st = showST ? supertrendSeries(candles).slice(start, end) : [];
 
   let hi = Math.max(...disp.map((c) => c.h));
   let lo = Math.min(...disp.map((c) => c.l));
-  if (showEMA) {
-    for (const v of [...ema20, ...ema50]) { if (Number.isFinite(v)) { hi = Math.max(hi, v); lo = Math.min(lo, v); } }
+  for (const v of [...(showEMA ? ema9 : []), ...(showVWAP ? vwap : [])]) {
+    if (Number.isFinite(v)) { hi = Math.max(hi, v); lo = Math.min(lo, v); }
+  }
+  if (showST) {
+    for (const s of st) { if (s) { hi = Math.max(hi, s.value); lo = Math.min(lo, s.value); } }
   }
   if (showBB) {
     for (const b of bb) { if (b) { hi = Math.max(hi, b.upper); lo = Math.min(lo, b.lower); } }
@@ -302,18 +348,49 @@ function PriceChart({
     if (up.length) bbArea = `M ${up.join(" L ")} L ${low.reverse().join(" L ")} Z`;
   }
 
+  const vwapRuns = [];
+  if (showVWAP) {
+    let run = "";
+    disp.forEach((c, i) => {
+      const v = vwap[i];
+      const newSession = i > 0 && c.ts && disp[i - 1].ts && IST_DAY(c.ts) !== IST_DAY(disp[i - 1].ts);
+      if (newSession && run) { vwapRuns.push(run.trim()); run = ""; }
+      if (v == null || !Number.isFinite(v)) return;
+      run += `${run ? "L" : "M"} ${x(i).toFixed(1)},${yP(v).toFixed(1)} `;
+    });
+    if (run) vwapRuns.push(run.trim());
+  }
+
   const ticks = niceTicks(lo + pad, hi - pad, 5);
   const timeIdx = [];
   const tCount = Math.min(5, n);
   const tDenom = Math.max(1, tCount - 1);
   for (let k = 0; k < tCount; k++) timeIdx.push(Math.round((k / tDenom) * (n - 1)));
 
-  const last = disp[n - 1];
+  // A window spanning several sessions repeats the same clock times, so the
+  // first tick of each new day carries the date instead.
+  const axisLabel = (idx) => {
+    const c = disp[idx];
+    if (!c.ts) return c.t;
+    const prevTick = timeIdx[timeIdx.indexOf(idx) - 1];
+    const dayChanged = prevTick == null
+      ? IST_DAY(c.ts) !== IST_DAY(disp[0].ts)
+      : IST_DAY(c.ts) !== IST_DAY(disp[prevTick].ts);
+    if (!dayChanged) return c.t;
+    return new Date(c.ts).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short" });
+  };
+
+  const last = disp[disp.length - 1];
   const lastUp = last.c >= last.o;
   const lastClr = lastUp ? C.green : C.red;
-  const h = hover != null ? disp[hover] : null;
-  const hChg = h ? +(h.c - h.o).toFixed(decimals) : 0;
-  const hPct = h && h.o ? +(((h.c - h.o) / h.o) * 100).toFixed(2) : 0;
+  const h = hover ? disp[hover.idx] : null;
+  // The corner readout describes the hovered bar, or the latest one when the
+  // pointer is away — a legend that empties when you look elsewhere is worse
+  // than one that tells you where the market closed.
+  const readout = h || last;
+  const rChg = +(readout.c - readout.o).toFixed(decimals);
+  const rPct = readout.o ? +(((readout.c - readout.o) / readout.o) * 100).toFixed(2) : 0;
+  const crossPrice = hover ? hi - ((hover.py - mT) / priceH) * range : null;
 
   const srLines = overlays
     ? [
@@ -335,29 +412,52 @@ function PriceChart({
     }
   }
 
-  const onMove = (e) => {
-    if (!activeRef.current && e.pointerType !== "mouse") return;
+  const localPoint = (e) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const px = ((e.clientX - rect.left) / rect.width) * W;
-    let idx = Math.round((px - mL) / step - 0.5);
-    idx = Math.max(0, Math.min(n - 1, idx));
-    setHover(idx);
+    return {
+      px: ((e.clientX - rect.left) / rect.width) * W,
+      py: ((e.clientY - rect.top) / rect.height) * H,
+    };
   };
-  const onDown = (e) => {
-    activeRef.current = true;
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
-    onMove(e);
-  };
-  const endHover = () => { activeRef.current = false; setHover(null); };
 
-  const hx = h ? x(hover) : 0;
-  const tipLeftPct = hx / W;
+  const onMove = (e) => {
+    const { px, py } = localPoint(e);
+    const drag = dragRef.current;
+
+    if (drag) {
+      // Pan by whole bars, measured from where the drag started rather than
+      // accumulated per event, so a slow drag cannot round its way to a stop.
+      const bars = Math.round((px - drag.px) / step);
+      if (bars !== 0) drag.moved = true;
+      setScroll(Math.max(0, Math.min(maxScroll, drag.scroll + bars)));
+      return;
+    }
+    if (e.pointerType !== "mouse") return;
+    const idx = Math.max(0, Math.min(n - 1, Math.round((px - mL) / step - 0.5)));
+    setHover({ idx, py });
+  };
+
+  const onDown = (e) => {
+    const { px, py } = localPoint(e);
+    dragRef.current = { px, scroll: offset, moved: false };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+    if (e.pointerType !== "mouse") {
+      const idx = Math.max(0, Math.min(n - 1, Math.round((px - mL) / step - 0.5)));
+      setHover({ idx, py });
+    }
+  };
+
+  const onUp = () => { dragRef.current = null; };
+  const onLeave = () => { dragRef.current = null; setHover(null); };
 
   return (
     <div ref={wrapRef} style={{ position: "relative", width: "100%", userSelect: "none" }}>
       <svg
-        width="100%" height={H} viewBox={`0 0 ${W} ${H}`} style={{ display: "block", touchAction: "pan-y" }}
-        onPointerDown={onDown} onPointerMove={onMove} onPointerUp={endHover} onPointerLeave={endHover} onPointerCancel={endHover}
+        ref={svgRef}
+        width="100%" height={H} viewBox={`0 0 ${W} ${H}`}
+        style={{ display: "block", touchAction: "pan-y", cursor: dragRef.current ? "grabbing" : "crosshair" }}
+        onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}
+        onPointerLeave={onLeave} onPointerCancel={onLeave}
       >
         <defs>
           <linearGradient id="pcArea" x1="0" y1="0" x2="0" y2="1">
@@ -479,12 +579,27 @@ function PriceChart({
           );
         })}
 
-        {showEMA && (
-          <>
-            <path d={lineFrom(ema20, x, yP)} fill="none" stroke={C.blue} strokeWidth={1.4} opacity={0.9} />
-            <path d={lineFrom(ema50, x, yP)} fill="none" stroke={C.yellow} strokeWidth={1.4} opacity={0.9} />
-          </>
-        )}
+        {showEMA && <path d={lineFrom(ema9, x, yP)} fill="none" stroke={C.blue} strokeWidth={1.4} opacity={0.9} />}
+
+        {/* Broken at each session, because VWAP restarts at the bell and a
+            stroke joining yesterday's close to today's open is not a level. */}
+        {showVWAP && vwapRuns.map((run, i) => (
+          <path key={`vwap-${i}`} d={run} fill="none" stroke={C.yellow} strokeWidth={1.3}
+                strokeDasharray="5 3" opacity={0.85} />
+        ))}
+
+        {/* Drawn as one path per run of the same trend, so the colour flips at
+            the bar that flipped rather than sloping between the two sides. */}
+        {showST && st.map((s, i) => {
+          const prev = st[i - 1];
+          if (!s || !prev || prev.up !== s.up) return null;
+          return (
+            <line
+              key={`st-${i}`} x1={x(i - 1)} y1={yP(prev.value)} x2={x(i)} y2={yP(s.value)}
+              stroke={s.up ? C.green : C.red} strokeWidth={1.6} opacity={0.9} strokeLinecap="round"
+            />
+          );
+        })}
 
         {showFVG && fvgs && fvgs.filter((z) => !z.filled).map((z, i) => {
           const di = (z.index + 1) - start;
@@ -526,7 +641,7 @@ function PriceChart({
           <text x={W - mR + (mR - 2) / 2} y={yP(last.c) + 3} fill={"#04060c"} fontSize={9} fontWeight={800} textAnchor="middle">{fmt(last.c, decimals)}</text>
         </g>
 
-        {showVolume && disp.map((c, i) => {
+        {disp.map((c, i) => {
           const up = c.c >= c.o;
           const vy = yV(c.vol || 0);
           return <rect key={`v-${i}`} x={x(i) - bw / 2} y={vy} width={bw} height={Math.max(0.5, volTop + volH - vy)} fill={up ? C.green : C.red} opacity={0.4} rx={0.5} />;
@@ -536,38 +651,52 @@ function PriceChart({
           <text
             key={`tx-${idx}`} x={x(idx)} y={priceBottom + 13} fill={C.muted} fontSize={8.5}
             textAnchor={idx === 0 ? "start" : idx === n - 1 ? "end" : "middle"}
-          >{disp[idx].t}</text>
+          >{axisLabel(idx)}</text>
         ))}
 
-        {h && (
-          <g pointerEvents="none">
-            <line x1={hx} y1={mT} x2={hx} y2={priceBottom} stroke={C.muted} strokeWidth={0.8} strokeDasharray="3 3" opacity={0.8} />
-            {showVolume && <line x1={hx} y1={volTop} x2={hx} y2={volTop + volH} stroke={C.muted} strokeWidth={0.8} strokeDasharray="3 3" opacity={0.6} />}
-            <line x1={mL} y1={yP(h.c)} x2={mL + plotW} y2={yP(h.c)} stroke={C.muted} strokeWidth={0.6} strokeDasharray="3 3" opacity={0.6} />
-            <circle cx={hx} cy={yP(h.c)} r={3} fill={h.c >= h.o ? C.green : C.red} stroke={C.card} strokeWidth={1} />
-          </g>
-        )}
-      </svg>
+        {/* Crosshair: the horizontal follows the pointer rather than the
+            hovered close, so it can be used to read a level off the axis. */}
+        {hover && h && (() => {
+          const hx = x(hover.idx);
+          const cy = Math.max(mT, Math.min(priceBottom, hover.py));
+          return (
+            <g pointerEvents="none">
+              <line x1={hx} y1={mT} x2={hx} y2={priceBottom} stroke={C.muted} strokeWidth={0.8} strokeDasharray="3 3" opacity={0.8} />
+              <line x1={hx} y1={volTop} x2={hx} y2={volTop + volH} stroke={C.muted} strokeWidth={0.8} strokeDasharray="3 3" opacity={0.6} />
+              <line x1={mL} y1={cy} x2={mL + plotW} y2={cy} stroke={C.muted} strokeWidth={0.6} strokeDasharray="3 3" opacity={0.7} />
+              <circle cx={hx} cy={yP(h.c)} r={3} fill={h.c >= h.o ? C.green : C.red} stroke={C.card} strokeWidth={1} />
 
-      {h && (
-        <div style={{
-          position: "absolute", top: 4, left: `${(tipLeftPct > 0.5 ? tipLeftPct - 0.02 : tipLeftPct + 0.02) * 100}%`,
-          transform: tipLeftPct > 0.5 ? "translateX(-100%)" : "none",
-          background: C.glassStrong, border: `1px solid ${C.glassBorder}`, borderRadius: 8, padding: "6px 8px",
-          pointerEvents: "none", fontSize: 10, color: C.text, whiteSpace: "nowrap", boxShadow: C.shadow, zIndex: 2,
-        }}>
-          <div style={{ color: C.muted, fontSize: 9, marginBottom: 3 }}>{sym ? `${sym} · ` : ""}{h.t}</div>
-          <div style={{ display: "grid", gridTemplateColumns: "auto auto", gap: "1px 10px" }}>
-            <span style={{ color: C.muted }}>O {fmt(h.o, decimals)}</span>
-            <span style={{ color: C.muted }}>H {fmt(h.h, decimals)}</span>
-            <span style={{ color: C.muted }}>L {fmt(h.l, decimals)}</span>
-            <span style={{ color: C.text, fontWeight: 700 }}>C {fmt(h.c, decimals)}</span>
-          </div>
-          <div style={{ color: hChg >= 0 ? C.green : C.red, fontWeight: 700, marginTop: 3 }}>
-            {hChg >= 0 ? "+" : ""}{fmt(hChg, decimals)} ({hPct >= 0 ? "+" : ""}{hPct}%)
-          </div>
-        </div>
-      )}
+              <rect x={W - mR + 1} y={cy - 8} width={mR - 2} height={16} rx={3} fill={C.muted} />
+              <text x={W - mR + (mR - 2) / 2} y={cy + 3} fill="#04060c" fontSize={9} fontWeight={800} textAnchor="middle">
+                {fmt(crossPrice, decimals)}
+              </text>
+
+              <rect x={hx - 26} y={priceBottom + 2} width={52} height={14} rx={3} fill={C.muted} />
+              <text x={hx} y={priceBottom + 12} fill="#04060c" fontSize={8.5} fontWeight={800} textAnchor="middle">{h.t}</text>
+            </g>
+          );
+        })()}
+
+        {/* Pinned readout. Stays put instead of chasing the pointer, which on
+            a panel this size spent half its life covering the candles. */}
+        <g pointerEvents="none">
+          <text x={mL + 2} y={mT + 1} fontSize={9.5} fontWeight={700}>
+            <tspan fill={C.text}>{sym || ""}</tspan>
+            <tspan fill={C.muted} dx={6}>{readout.t}</tspan>
+            <tspan fill={C.muted} dx={8}>O</tspan>
+            <tspan fill={C.text} dx={3}>{fmt(readout.o, decimals)}</tspan>
+            <tspan fill={C.muted} dx={6}>H</tspan>
+            <tspan fill={C.text} dx={3}>{fmt(readout.h, decimals)}</tspan>
+            <tspan fill={C.muted} dx={6}>L</tspan>
+            <tspan fill={C.text} dx={3}>{fmt(readout.l, decimals)}</tspan>
+            <tspan fill={C.muted} dx={6}>C</tspan>
+            <tspan fill={C.text} dx={3}>{fmt(readout.c, decimals)}</tspan>
+            <tspan fill={rChg >= 0 ? C.green : C.red} dx={7} fontWeight={800}>
+              {rChg >= 0 ? "+" : ""}{fmt(rChg, decimals)} ({rPct >= 0 ? "+" : ""}{rPct}%)
+            </tspan>
+          </text>
+        </g>
+      </svg>
     </div>
   );
 }
@@ -576,8 +705,8 @@ function ChartLegend({ overlays, decimals, C }) {
   if (!overlays) return null;
   const items = [
     { l: "Price", v: overlays.price, c: overlays.priceUp ? C.green : C.red },
-    { l: "EMA20", v: overlays.ema20, c: C.blue },
-    { l: "EMA50", v: overlays.ema50, c: C.yellow },
+    { l: "EMA9", v: overlays.ema9, c: C.blue },
+    { l: "VWAP", v: overlays.vwap, c: C.yellow },
     { l: "Support", v: overlays.support, c: C.green },
     { l: "Resistance", v: overlays.resistance, c: C.red },
   ].filter((x) => x.v != null);
@@ -1219,12 +1348,15 @@ function TrendPanel({ preOpen, postOpen, marketOpen, C }) {
   );
 }
 
-function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA, onClose, C, S }) {
+function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA, onRefreshInstrument, onClose, C, S }) {
   const sym = (stock?.name || "").toUpperCase();
   const dataSym = SYMBOL_MAP[sym] || sym;
-  const isNifty = sym === "NIFTY";
-  const isMacro = sym === "NIFTY" || sym === "GOLD" || sym === "SILVER";
-  const dec = sym === "NIFTY" ? 0 : 2;
+  // The two index scalps share this view: intraday chart, one scalp call, and
+  // no swing or long-term card. GOLD and SILVER are macro but not scalped.
+  const isScalpIndex = sym === "NIFTY" || sym === "SENSEX";
+  const isMacro = isScalpIndex || sym === "GOLD" || sym === "SILVER";
+  const dec = isScalpIndex ? 0 : 2;
+  const minScalpPts = MIN_SCALP_POINTS[sym] ?? NIFTY_MIN_PASS_POINTS;
   const [quote, setQuote] = useState(null);
   const [fund, setFund] = useState(null);
   const [candlesByTf, setCandlesByTf] = useState({});
@@ -1232,12 +1364,18 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
   const [loading, setLoading] = useState(true);
   const [showSummary, setShowSummary] = useState(false);
   const [chartType, setChartType] = useState("candle");
-  const [chartOv, setChartOv] = useState({ ema: true, bb: false, vol: true, fvg: true, smc: false });
+  // VWAP and a fast EMA are what an intraday chart is read against; everything
+  // else is opt-in, because five overlays at once is a chart nobody can read.
+  const [chartOv, setChartOv] = useState({ ema: true, vwap: true, st: false, bb: false, fvg: false, smc: false });
+  const [chartNonce, setChartNonce] = useState(0);
+  const [chartBusy, setChartBusy] = useState(false);
 
-  const HORIZONS = [
-    { tf: "5m", label: "Intraday" },
-    { tf: "1h", label: "Swing" },
-    { tf: "1d", label: "Long term" },
+  const TIMEFRAMES = [
+    { tf: "1m", label: "1m" },
+    { tf: "5m", label: "5m" },
+    { tf: "15m", label: "15m" },
+    { tf: "1h", label: "1h" },
+    { tf: "1d", label: "1D" },
   ];
 
   useEffect(() => {
@@ -1247,7 +1385,7 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
     setFund(null);
     setCandlesByTf({});
     (async () => {
-      const tfA = isNifty ? "5m" : "1h";
+      const tfA = isScalpIndex ? "5m" : "1h";
       const [q, f, cA, d1] = await Promise.all([
         fetchStockQuote(dataSym),
         fetchStockFundamentals(dataSym),
@@ -1261,17 +1399,33 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
       setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [dataSym, isNifty]);
+  }, [dataSym, isScalpIndex]);
 
   useEffect(() => {
-    if (candlesByTf[chartTf]) return;
+    if (candlesByTf[chartTf] && !chartNonce) return;
     let cancelled = false;
     (async () => {
       const c = await fetchStockCandles(dataSym, chartTf);
       if (!cancelled) setCandlesByTf((p) => ({ ...p, [chartTf]: c || [] }));
     })();
     return () => { cancelled = true; };
-  }, [chartTf, dataSym, candlesByTf]);
+  }, [chartTf, dataSym, candlesByTf, chartNonce]);
+
+  // Refreshes this chart and the call beside it, and nothing else in the app.
+  const refreshChart = useCallback(async () => {
+    setChartBusy(true);
+    try {
+      const [c, q] = await Promise.all([
+        fetchStockCandles(dataSym, chartTf),
+        fetchStockQuote(dataSym),
+        isMacro ? onRefreshInstrument?.(sym) : Promise.resolve(),
+      ]);
+      if (c?.length) setCandlesByTf((p) => ({ ...p, [chartTf]: c }));
+      if (q) setQuote(q);
+    } finally {
+      setChartBusy(false);
+    }
+  }, [dataSym, chartTf, isMacro, onRefreshInstrument, sym]);
 
   const analysisByTf = useMemo(() => {
     const out = {};
@@ -1296,27 +1450,27 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
 
   // NIFTY = scalping only. Use the app-computed (gated) scalp call so Home and this
   // view always agree.
-  const scalpCall = isNifty ? (macroCalls?.NIFTY ?? null) : null;
-  const niftySession = isNifty ? (analysisByTf["5m"]?.session ?? null) : null;
+  const scalpCall = isScalpIndex ? (macroCalls?.[sym] ?? null) : null;
+  const sessionStats = isScalpIndex ? (analysisByTf["5m"]?.session ?? null) : null;
 
   const shortCall = useMemo(() => {
-    if (isNifty) return null;
+    if (isScalpIndex) return null;
     // GOLD/SILVER reuse the same swing call shown on Home for consistency.
     if (isMacro) return macroCalls?.[`${sym}_swing`] ?? null;
     const a = analysisByTf["1h"];
     if (!a || !price) return null;
     return getPortfolioSuggestion({ stock, analysis: a, newsItems: stockNews, quote: { current: price, changePercent: chgPct }, fundamentals: fund?.fundamentals, settings: sett, mode: "swing" });
-  }, [isNifty, isMacro, macroCalls, sym, analysisByTf, price, chgPct, stock, stockNews, fund, sett]);
+  }, [isScalpIndex, isMacro, macroCalls, sym, analysisByTf, price, chgPct, stock, stockNews, fund, sett]);
 
   const longCall = useMemo(() => {
-    if (isNifty) return null;
+    if (isScalpIndex) return null;
     if (isMacro) return macroCalls?.[`${sym}_long`] ?? null;
     const a = analysisByTf["1d"];
     if (!a || !price) return null;
     return getPortfolioSuggestion({ stock, analysis: a, newsItems: stockNews, quote: { current: price, changePercent: chgPct }, fundamentals: fund?.fundamentals, settings: sett, mode: "longterm" });
-  }, [isNifty, isMacro, macroCalls, sym, analysisByTf, price, chgPct, stock, stockNews, fund, sett]);
+  }, [isScalpIndex, isMacro, macroCalls, sym, analysisByTf, price, chgPct, stock, stockNews, fund, sett]);
 
-  const verdict = isNifty ? null : horizonVerdict(shortCall, longCall);
+  const verdict = isScalpIndex ? null : horizonVerdict(shortCall, longCall);
   const verdictClr = verdict ? { green: C.green, blue: C.blue, yellow: C.yellow, red: C.red, muted: C.muted }[verdict.tone] : C.muted;
 
   const chartCandles = candlesByTf[chartTf] || [];
@@ -1328,8 +1482,8 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
   );
   const chartAnalysis = analysisByTf[chartTf];
   const overlays = chartAnalysis ? {
-    ema20: chartAnalysis.ema20,
-    ema50: chartAnalysis.ema50,
+    ema9: chartCandles.length ? calcEMA(chartCandles.map((c) => c.c), 9).at(-1) : null,
+    vwap: chartAnalysis.session?.vwap ?? null,
     support: chartAnalysis.sr?.support,
     resistance: chartAnalysis.sr?.resistance,
     price,
@@ -1389,11 +1543,11 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
           </div>
         )}
 
-        {isNifty ? (
+        {isScalpIndex ? (
           <>
             <HorizonCallCard
               title="Scalping"
-              subtitle={`5-min chart · intraday · targets a ≥${NIFTY_MIN_PASS_POINTS}-pt move`}
+              subtitle={`5-min chart · intraday · targets a ≥${minScalpPts}-pt move`}
               call={scalpCall}
               priceData={priceData}
               eaKey={`DETAIL_${sym}_scalp`}
@@ -1409,22 +1563,22 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
                 {scalpCall.gatedReason}
               </div>
             )}
-            {niftySession && (
+            {sessionStats && (
               <div style={{ ...S.card }}>
                 <div style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>Intraday levels</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
                   <div style={{ background: C.dim, borderRadius: 8, padding: "8px 10px" }}>
                     <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase" }}>VWAP</div>
-                    <div style={{ color: price >= niftySession.vwap ? C.green : C.red, fontSize: 13, fontWeight: 800 }}>₹{fmt(niftySession.vwap, dec)}</div>
-                    <div style={{ color: C.muted, fontSize: 9 }}>{price >= niftySession.vwap ? "above · long bias" : "below · short bias"}</div>
+                    <div style={{ color: price >= sessionStats.vwap ? C.green : C.red, fontSize: 13, fontWeight: 800 }}>₹{fmt(sessionStats.vwap, dec)}</div>
+                    <div style={{ color: C.muted, fontSize: 9 }}>{price >= sessionStats.vwap ? "above · long bias" : "below · short bias"}</div>
                   </div>
                   <div style={{ background: C.dim, borderRadius: 8, padding: "8px 10px" }}>
                     <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase" }}>Open high (15m)</div>
-                    <div style={{ color: C.text, fontSize: 13, fontWeight: 800 }}>₹{fmt(niftySession.orHigh, dec)}</div>
+                    <div style={{ color: C.text, fontSize: 13, fontWeight: 800 }}>₹{fmt(sessionStats.orHigh, dec)}</div>
                   </div>
                   <div style={{ background: C.dim, borderRadius: 8, padding: "8px 10px" }}>
                     <div style={{ color: C.muted, fontSize: 9, textTransform: "uppercase" }}>Open low (15m)</div>
-                    <div style={{ color: C.text, fontSize: 13, fontWeight: 800 }}>₹{fmt(niftySession.orLow, dec)}</div>
+                    <div style={{ color: C.text, fontSize: 13, fontWeight: 800 }}>₹{fmt(sessionStats.orLow, dec)}</div>
                   </div>
                 </div>
               </div>
@@ -1465,23 +1619,37 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
         <div style={{ ...S.card }}>
           <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-              {HORIZONS.map((h) => (
+              {TIMEFRAMES.map((h) => (
                 <button key={h.tf} type="button" onClick={() => setChartTf(h.tf)} style={{ padding: "6px 12px", borderRadius: 8, background: chartTf === h.tf ? C.green : C.dim, color: chartTf === h.tf ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 11, cursor: "pointer", fontWeight: 700 }}>
                   {h.label}
                 </button>
               ))}
             </div>
-            <div style={{ display: "flex", gap: 3, background: C.dim, borderRadius: 8, padding: 3 }}>
-              {[{ k: "candle", l: "Candle" }, { k: "line", l: "Line" }, { k: "area", l: "Area" }].map((t) => (
-                <button key={t.k} type="button" onClick={() => setChartType(t.k)} style={{ padding: "5px 9px", borderRadius: 6, background: chartType === t.k ? C.blue : "transparent", color: chartType === t.k ? "#fff" : C.muted, border: "none", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>
-                  {t.l}
-                </button>
-              ))}
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <button
+                type="button" onClick={refreshChart} disabled={chartBusy} aria-label="Refresh chart"
+                title="Refresh this chart and its call"
+                style={{
+                  display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", borderRadius: 8,
+                  background: C.dim, border: `1px solid ${C.border}`, color: chartBusy ? C.muted : C.text,
+                  fontSize: 10, fontWeight: 700, cursor: chartBusy ? "default" : "pointer",
+                }}
+              >
+                <RefreshCw size={11} style={chartBusy ? { animation: "saSpin 1s linear infinite" } : undefined} />
+                {chartBusy ? "Refreshing" : "Refresh"}
+              </button>
+              <div style={{ display: "flex", gap: 3, background: C.dim, borderRadius: 8, padding: 3 }}>
+                {[{ k: "candle", l: "Candle" }, { k: "line", l: "Line" }, { k: "area", l: "Area" }].map((t) => (
+                  <button key={t.k} type="button" onClick={() => setChartType(t.k)} style={{ padding: "5px 9px", borderRadius: 6, background: chartType === t.k ? C.blue : "transparent", color: chartType === t.k ? "#fff" : C.muted, border: "none", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>
+                    {t.l}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
           <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-            {[{ k: "ema", l: "EMA 20/50" }, { k: "bb", l: "Bollinger" }, { k: "vol", l: "Volume" }, { k: "fvg", l: "FVG" }, { k: "smc", l: "Structure" }].map((o) => (
+            {[{ k: "ema", l: "EMA 9" }, { k: "vwap", l: "VWAP" }, { k: "st", l: "Supertrend" }, { k: "bb", l: "Bollinger" }, { k: "fvg", l: "FVG" }, { k: "smc", l: "Structure" }].map((o) => (
               <button
                 key={o.k}
                 type="button"
@@ -1502,34 +1670,26 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
             <>
               <PriceChart
                 candles={chartCandles}
-                view={chartTf === "1d" ? 60 : 50}
-                height={260}
+                view={chartTf === "1d" ? 90 : 120}
+                height={300}
                 C={C}
                 overlays={overlays}
                 decimals={dec}
                 chartType={chartType}
                 showEMA={chartOv.ema}
+                showVWAP={chartOv.vwap}
+                showST={chartOv.st}
                 showBB={chartOv.bb}
-                showVolume={chartOv.vol}
                 showFVG={chartOv.fvg}
                 fvgs={chartAnalysis?.fvg?.zones}
                 showSMC={chartOv.smc}
                 smc={smcMarks}
                 sym={sym}
               />
+              <div style={{ color: C.muted, fontSize: 9.5, marginTop: 6 }}>
+                Scroll to zoom · drag to pan
+              </div>
               <ChartLegend overlays={overlays} decimals={dec} C={C} />
-              {chartOv.fvg && chartAnalysis?.fvg?.signal && (() => {
-                const s = chartAnalysis.fvg.signal;
-                const clr = s.type === "BUY" ? C.green : C.red;
-                return (
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, padding: "8px 10px", borderRadius: 8, background: `${clr}14`, border: `1px solid ${clr}55` }}>
-                    <span style={{ fontSize: 11, fontWeight: 800, color: "#000", background: clr, borderRadius: 6, padding: "2px 8px" }}>
-                      FVG {s.type}
-                    </span>
-                    <span style={{ color: C.text, fontSize: 11, lineHeight: 1.35 }}>{s.reason}</span>
-                  </div>
-                );
-              })()}
             </>
           ) : (
             <div style={{ height: 180, display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontSize: 12 }}>
@@ -1624,7 +1784,7 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
         </div>
 
         <div style={{ ...S.card }}>
-          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Technical indicators · {HORIZONS.find((h) => h.tf === chartTf)?.label}</div>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Technical indicators · {TIMEFRAMES.find((h) => h.tf === chartTf)?.label}</div>
           {chartAnalysis ? (
             <ChartIndicatorPanels analysis={chartAnalysis} instCandles={chartCandles} sett={sett} C={C} S={S} />
           ) : (
@@ -2279,6 +2439,24 @@ export default function App() {
     return () => { cancelled = true; };
   }, [tf]);
 
+  // One instrument's price and candles, for the chart's own refresh button.
+  // Scoped deliberately: refreshing a chart should not restart every poll in
+  // the app, and the detail view's call is only as fresh as these two.
+  const refreshInstrument = useCallback(async (inst) => {
+    if (!INSTRUMENTS[inst]) return;
+    const [quote, data] = await Promise.all([
+      fetchRealMarketData(inst),
+      fetchCandles(inst, tf),
+    ]);
+    if (quote?.ok) {
+      setPrices((prev) => ({
+        ...prev,
+        [inst]: { cur: quote.cur, open: quote.open, high: quote.high, low: quote.low, prev: quote.prev },
+      }));
+    }
+    if (data?.length) setCandles((prev) => ({ ...prev, [inst]: data }));
+  }, [tf]);
+
   // Daily candles for Gold/Silver long-term view
   useEffect(() => {
     let cancelled = false;
@@ -2452,6 +2630,8 @@ export default function App() {
   const finalCalls = useMemo(() => {
     const niftyPct = prices.NIFTY?.prev
       ? +(((prices.NIFTY.cur - prices.NIFTY.prev) / prices.NIFTY.prev) * 100).toFixed(2) : 0;
+    const sensexPct = prices.SENSEX?.prev
+      ? +(((prices.SENSEX.cur - prices.SENSEX.prev) / prices.SENSEX.prev) * 100).toFixed(2) : 0;
     const goldPct = prices.GOLD?.prev
       ? +(((prices.GOLD.cur - prices.GOLD.prev) / prices.GOLD.prev) * 100).toFixed(2) : 0;
     const silverPct = prices.SILVER?.prev
@@ -2475,6 +2655,15 @@ export default function App() {
         settings: sett,
         mode: "swing",
         instrument: "NIFTY",
+      }),
+      SENSEX: buildUnifiedSuggestion({
+        analysis: analyses.SENSEX,
+        price: prices.SENSEX?.cur,
+        chgPct: sensexPct,
+        indexSignals: signalsByInstrument.SENSEX,
+        settings: sett,
+        mode: "scalp",
+        instrument: "SENSEX",
       }),
       GOLD_swing: buildUnifiedSuggestion({
         analysis: analyses.GOLD,
@@ -2511,24 +2700,33 @@ export default function App() {
     };
   }, [analyses, dailyAnalyses, prices, signalsByInstrument, sett]);
 
-  // NIFTY scalp call gated by the minimum-move rule (shared by Home + detail view).
-  const niftyScalpCall = useMemo(() => {
-    const call = finalCalls.NIFTY;
+  // Index scalp calls gated by the minimum-move rule, so Home and the detail
+  // view always agree. A projected move smaller than the gate is not a trade:
+  // it is inside the round trip.
+  const gateScalp = useCallback((call, floor) => {
     if (!call) return call;
     const moveDist = call.target != null ? Math.abs(call.target - call.entry) : 0;
-    if ((call.action === "BUY" || call.action === "SELL") && moveDist < NIFTY_MIN_PASS_POINTS) {
-      return { ...call, action: "HOLD", label: "No scalp trade", target: null, stopLoss: null, rr: null, gatedReason: `Projected move ~${Math.round(moveDist)} pts — under ${NIFTY_MIN_PASS_POINTS} pts, not worth scalping.` };
+    if ((call.action === "BUY" || call.action === "SELL") && moveDist < floor) {
+      return { ...call, action: "HOLD", label: "No scalp trade", target: null, stopLoss: null, rr: null, gatedReason: `Projected move ~${Math.round(moveDist)} pts — under ${floor} pts, not worth scalping.` };
     }
     return call;
-  }, [finalCalls.NIFTY]);
+  }, []);
+
+  const niftyScalpCall = useMemo(
+    () => gateScalp(finalCalls.NIFTY, MIN_SCALP_POINTS.NIFTY), [finalCalls.NIFTY, gateScalp]
+  );
+  const sensexScalpCall = useMemo(
+    () => gateScalp(finalCalls.SENSEX, MIN_SCALP_POINTS.SENSEX), [finalCalls.SENSEX, gateScalp]
+  );
 
   const macroCalls = useMemo(() => ({
     NIFTY: niftyScalpCall,
+    SENSEX: sensexScalpCall,
     GOLD_swing: finalCalls.GOLD_swing,
     GOLD_long: finalCalls.GOLD_long,
     SILVER_swing: finalCalls.SILVER_swing,
     SILVER_long: finalCalls.SILVER_long,
-  }), [niftyScalpCall, finalCalls]);
+  }), [niftyScalpCall, sensexScalpCall, finalCalls]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -2903,6 +3101,16 @@ Tabs: dashboard|portfolio|news|settings`;
         S={S}
       />
       <SwingStatusCard
+        name="SENSEX"
+        badge="Scalp"
+        call={sensexScalpCall}
+        priceData={prices.SENSEX}
+        decimals={0}
+        onOpenDetail={() => setSelectedStock({ name: "SENSEX", type: "index" })}
+        C={C}
+        S={S}
+      />
+      <SwingStatusCard
         name="GOLD"
         call={finalCalls.GOLD_swing}
         priceData={prices.GOLD}
@@ -3208,6 +3416,7 @@ Tabs: dashboard|portfolio|news|settings`;
           macroCalls={macroCalls}
           eaState={eaState}
           onAskEA={askEA}
+          onRefreshInstrument={refreshInstrument}
           onClose={() => setSelectedStock(null)}
           C={C}
           S={S}
@@ -3279,6 +3488,7 @@ Tabs: dashboard|portfolio|news|settings`;
         button { transition: transform .12s ease, background .2s ease, border-color .2s ease, box-shadow .2s ease; }
         button:active { transform: scale(0.97); }
         @keyframes saIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes saSpin { to { transform: rotate(360deg); } }
       `}</style>
     </div>
   );
