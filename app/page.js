@@ -235,6 +235,15 @@ function niceTicks(min, max, count = 5) {
  */
 const MIN_VISIBLE_BARS = 20;
 
+// How long a finger has to stay put before it reads the chart instead of
+// dragging it. Short enough not to feel broken, long enough that a flick to
+// scroll the page never plants a crosshair.
+const HOLD_TO_READ_MS = 320;
+
+// Movement that cancels the hold. A finger is never perfectly still, so a few
+// pixels of tremor must not count as a drag.
+const HOLD_SLOP_PX = 8;
+
 //: IST day number for a timestamp. Cheap enough to call per bar on every
 //: render, unlike Intl, and exact because IST has no daylight saving.
 const IST_DAY = (ts) => Math.floor((ts + 19_800_000) / 86_400_000);
@@ -254,6 +263,16 @@ function PriceChart({
   // is where a chart should sit until someone drags it away.
   const [scroll, setScroll] = useState(0);
   const dragRef = useRef(null);
+  // Every pointer currently down, because a pinch is only recognisable by
+  // watching two of them at once.
+  const pointersRef = useRef(new Map());
+  const pinchRef = useRef(null);
+  const holdRef = useRef(null);
+  // Reading the chart rather than moving it. Touch only: a mouse has hover for
+  // this and never needs the mode.
+  const [reading, setReading] = useState(false);
+
+  useEffect(() => () => clearTimeout(holdRef.current), []);
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -428,11 +447,30 @@ function PriceChart({
     };
   };
 
+  const barAt = (px) => Math.max(0, Math.min(n - 1, Math.round((px - mL) / step - 0.5)));
+  const cancelHold = () => { clearTimeout(holdRef.current); holdRef.current = null; };
+  const spread = () => {
+    const [a, b] = [...pointersRef.current.values()];
+    return Math.hypot(a.px - b.px, a.py - b.py) || 1;
+  };
+
   const onMove = (e) => {
     const { px, py } = localPoint(e);
-    const drag = dragRef.current;
+    const tracked = pointersRef.current.get(e.pointerId);
+    if (tracked) { tracked.px = px; tracked.py = py; }
 
+    // Pinch outranks everything: two fingers on a chart mean zoom, whatever the
+    // first one had started doing.
+    if (pinchRef.current && pointersRef.current.size >= 2) {
+      const { dist, zoom: from } = pinchRef.current;
+      const next = Math.round(from * (dist / spread()));
+      setZoom(Math.max(MIN_VISIBLE_BARS, Math.min(candles.length, next)));
+      return;
+    }
+
+    const drag = dragRef.current;
     if (drag) {
+      if (Math.abs(px - drag.px) > HOLD_SLOP_PX) cancelHold();
       // Pan by whole bars, measured from where the drag started rather than
       // accumulated per event, so a slow drag cannot round its way to a stop.
       const bars = Math.round((px - drag.px) / step);
@@ -440,32 +478,70 @@ function PriceChart({
       setScroll(Math.max(0, Math.min(maxScroll, drag.scroll + bars)));
       return;
     }
-    if (e.pointerType !== "mouse") return;
-    const idx = Math.max(0, Math.min(n - 1, Math.round((px - mL) / step - 0.5)));
-    setHover({ idx, py });
+    if (e.pointerType === "mouse" || reading) setHover({ idx: barAt(px), py });
   };
 
   const onDown = (e) => {
     const { px, py } = localPoint(e);
-    dragRef.current = { px, scroll: offset, moved: false };
+    pointersRef.current.set(e.pointerId, { px, py });
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
-    if (e.pointerType !== "mouse") {
-      const idx = Math.max(0, Math.min(n - 1, Math.round((px - mL) / step - 0.5)));
-      setHover({ idx, py });
+
+    if (pointersRef.current.size === 2) {
+      pinchRef.current = { dist: spread(), zoom };
+      dragRef.current = null;
+      cancelHold();
+      setReading(false);
+      setHover(null);
+      return;
+    }
+
+    if (e.pointerType === "mouse") {
+      dragRef.current = { px, scroll: offset, moved: false };
+      return;
+    }
+
+    // One finger drags by default and reads only after holding still. Showing
+    // the crosshair immediately, as this used to, meant every attempt to pan
+    // left a readout behind and the value under the finger was the one place
+    // it could not be seen.
+    dragRef.current = { px, scroll: offset, moved: false };
+    holdRef.current = setTimeout(() => {
+      dragRef.current = null;
+      setReading(true);
+      setHover({ idx: barAt(px), py });
+    }, HOLD_TO_READ_MS);
+  };
+
+  const release = (e) => {
+    pointersRef.current.delete(e.pointerId);
+    cancelHold();
+    if (pointersRef.current.size < 2) pinchRef.current = null;
+    if (pointersRef.current.size === 0) {
+      dragRef.current = null;
+      if (reading) { setReading(false); setHover(null); }
     }
   };
 
-  const onUp = () => { dragRef.current = null; };
-  const onLeave = () => { dragRef.current = null; setHover(null); };
+  const onLeave = (e) => {
+    release(e);
+    dragRef.current = null;
+    setHover(null);
+  };
 
   return (
     <div ref={wrapRef} style={{ position: "relative", width: "100%", userSelect: "none" }}>
       <svg
         ref={svgRef}
         width="100%" height={H} viewBox={`0 0 ${W} ${H}`}
-        style={{ display: "block", touchAction: "pan-y", cursor: dragRef.current ? "grabbing" : "crosshair" }}
-        onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}
-        onPointerLeave={onLeave} onPointerCancel={onLeave}
+        style={{
+          display: "block",
+          // Vertical page scroll stays available until a finger is actually
+          // reading the chart, at which point it would fight the crosshair.
+          touchAction: reading ? "none" : "pan-y",
+          cursor: dragRef.current ? "grabbing" : "crosshair",
+        }}
+        onPointerDown={onDown} onPointerMove={onMove} onPointerUp={release}
+        onPointerLeave={onLeave} onPointerCancel={release}
       >
         <defs>
           <linearGradient id="pcArea" x1="0" y1="0" x2="0" y2="1">
