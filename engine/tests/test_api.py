@@ -97,6 +97,38 @@ def test_analysis_serves_the_decision_path(api):
     assert set(body["structure"]) == {"pools", "sweeps", "breaks", "blocks"}
 
 
+def test_analysis_carries_the_verdict_the_paper_trader_would_reach(api):
+    """The dashboard used to gate the raw vote by hand and disagree with the
+    runner about the same bars. It now renders this, so the verdict has to
+    arrive already decided rather than as numbers to re-judge."""
+    body = get(api, "/analysis?symbol=NIFTY&interval=5m")
+    verdict = body["verdict"]
+
+    assert verdict["action"] == body["suggestion"]["action"]
+    assert verdict["confidence"] == body["suggestion"]["confidence"]
+    assert isinstance(verdict["taken"], bool)
+    if verdict["taken"]:
+        assert verdict["reason"] == ""
+    else:
+        assert verdict["reason"]
+
+
+def test_analysis_says_which_filters_it_could_actually_apply(api):
+    """An unfiltered call is a weaker claim than a filtered one, and the
+    difference is most of the measured edge. With the provider off there is no
+    VIX print, and the response has to admit that rather than imply a calm
+    tape."""
+    body = get(api, "/analysis?symbol=NIFTY&interval=5m")
+    policy = body["policy"]
+
+    assert policy["vixRead"] is False
+    assert body["verdict"]["vix"] is None
+    assert "above gate" not in body["verdict"]["reason"]
+    assert policy["filter"] in ("loaded", "missing")
+    if policy["filter"] == "missing":
+        assert body["verdict"]["score"] is None
+
+
 def test_the_structure_is_reported_beside_the_call_never_inside_it(api):
     """It loses money as a strategy and adds nothing to the filter. It may be
     drawn; it may not quietly become part of the suggestion."""

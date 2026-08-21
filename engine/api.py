@@ -6,6 +6,11 @@ stops asking Yahoo what NIFTY did and asks the engine, which answers from the
 same archive the backtest ran on — so the chart a trader looks at and the
 number a backtest reports come from one source.
 
+It serves the decision as well as the data. `/analysis` runs the production
+flags, the VIX gate and the learned filter — the paper trader's own stack, from
+the same module — so the dashboard renders the call the runner would have acted
+on instead of gating a raw vote by hand and disagreeing with it.
+
 Three properties are deliberate:
 
   * **Read-only, and GET-only.** Nothing here can move money or mutate state
@@ -42,11 +47,17 @@ from .core import smc
 from .core import suggestion as sug
 from .data import CandleStore, get_source, market_status
 from .data.timeutil import IST, from_epoch_ms
+from .live import decide as dec
 
 log = logging.getLogger(__name__)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
+
+#: How long a VIX print is reused. The dashboard polls every five seconds per
+#: instrument, and the gate does not turn on a number that moves in the third
+#: decimal place.
+VIX_TTL_SECONDS = 30.0
 
 #: Interval to milliseconds, for deciding whether the newest bar is stale.
 INTERVAL_MS: dict[str, int] = {
@@ -85,6 +96,19 @@ class ApiConfig:
     min_refresh_seconds: float = 20.0
     bars: int = 375
 
+    #: The filters the paper trader applies, so a call rendered on the
+    #: dashboard is the call the runner would have acted on rather than the raw
+    #: vote. Defaults track `PaperConfig`; anything else here is a divergence
+    #: with no backtest behind it.
+    gate: float = dec.DEFAULT_VIX_GATE
+    #: Overrides the threshold saved with the model. None uses the saved one.
+    min_score: float | None = None
+    #: The fitted filter. None looks in the place `cli train` writes it.
+    filter_path: str | None = None
+    #: Off for a machine with no fitted model, where the honest answer is that
+    #: the call is unfiltered rather than a silently looser one.
+    use_filter: bool = True
+
 
 class _Cache:
     """Tiny TTL memo. Keyed on the request, cleared by time alone."""
@@ -122,6 +146,8 @@ class Engine:
     cache: _Cache = field(init=False)
     _last_refresh: dict[str, float] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _vix: tuple[float, float | None] | None = None
+    _filter: tuple[Any, float | None] | None = None
 
     def __post_init__(self) -> None:
         self.cache = _Cache(self.config.ttl)
@@ -158,6 +184,72 @@ class Engine:
             # and let the response say it is stale.
             log.warning("refresh %s failed: %s", key, e)
             return "failed"
+
+    # -- the traded policy --------------------------------------------------
+
+    def vix(self) -> float | None:
+        """Current India VIX, or None when it cannot be read.
+
+        None is a real answer and has to stay distinguishable from a calm
+        print: the gate is the finding the whole result rests on, so a response
+        that quietly omitted it would show a trade the runner would refuse.
+        """
+        if not self.config.live:
+            return None
+
+        hit = self._vix
+        if hit and time.monotonic() - hit[0] < VIX_TTL_SECONDS:
+            return hit[1]
+
+        level: float | None = None
+        try:
+            level = float(get_source(self.config.source).quote("INDIAVIX", "INDEX").current)
+        except Exception as e:
+            log.warning("vix quote failed: %s", e)
+        self._vix = (time.monotonic(), level)
+        return level
+
+    def signal_filter(self) -> tuple[Any, float | None]:
+        """The fitted filter and the score it keeps above, loaded once.
+
+        A missing model is not an error here — a research machine has no reason
+        to hold one — but it is reported, because an unfiltered call is a
+        different claim from a filtered one and the difference is most of the
+        measured edge.
+        """
+        if self._filter is not None:
+            return self._filter
+        if not self.config.use_filter:
+            self._filter = (None, None)
+            return self._filter
+
+        from pathlib import Path
+
+        from .ml.model import load_model
+
+        path = Path(self.config.filter_path
+                    or Path(__file__).parent / "var" / "filter.txt")
+        model: Any = None
+        threshold: float | None = None
+        try:
+            model, meta = load_model(path)
+            threshold = meta.get("threshold")
+        except FileNotFoundError:
+            log.warning("no fitted filter at %s — serving unfiltered calls. "
+                        "Train one with: python -m engine.cli train", path)
+        except Exception as e:
+            log.warning("filter at %s did not load (%s) — serving unfiltered "
+                        "calls", path, e)
+
+        self._filter = (model, threshold)
+        return self._filter
+
+    def policy(self, threshold: float | None) -> dec.Policy:
+        return dec.Policy(
+            gate=self.config.gate,
+            min_score=(self.config.min_score if self.config.min_score is not None
+                       else threshold),
+        )
 
     # -- reads --------------------------------------------------------------
 
@@ -254,6 +346,14 @@ class Engine:
             analysis, price, chg_pct, signals, DEFAULT_SETTINGS, "scalp", symbol,
             sug.PRODUCTION_FLAGS,
         )
+
+        vix = self.vix()
+        model, threshold = self.signal_filter()
+        policy = self.policy(threshold)
+        verdict = dec.decide(
+            call, policy, vix=vix,
+            score_fn=lambda: dec.score_signal(model, call, analysis, rows, chg_pct, vix),
+        )
         return {
             "symbol": symbol,
             "interval": interval,
@@ -262,6 +362,20 @@ class Engine:
             "analysis": analysis,
             "signals": signals,
             "suggestion": call,
+            # The same filters the paper trader applies, on the same call, so
+            # the dashboard can show what the runner would have done instead of
+            # the raw vote it used to gate by hand.
+            "verdict": verdict.as_dict(),
+            "policy": {
+                "minConfidence": policy.min_confidence,
+                "gate": policy.gate,
+                "minScore": policy.min_score,
+                # What was actually available to apply. A caller that cannot
+                # tell an unfiltered call from a filtered one would present the
+                # weaker claim as the stronger one.
+                "filter": "loaded" if model is not None else "missing",
+                "vixRead": vix is not None,
+            },
             # Alongside the call, never inside it. The structure loses money as
             # a strategy and adds nothing to the filter; it is here to be drawn.
             "structure": smc.annotate(rows, min_sweep_pts=2),

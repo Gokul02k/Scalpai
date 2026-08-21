@@ -12,6 +12,10 @@ run harsher than the replay:
   instead of a modelled spread applied uniformly
 * the VIX gate reads the current print rather than the previous close, because
   live that number is on the screen
+
+The filters standing between a call and a trade are in `decide`, which the
+read-only API imports too. Everything left here needs the book or the broker:
+position caps, cooldowns, strikes, fills.
 """
 from __future__ import annotations
 
@@ -29,6 +33,7 @@ from ..backtest.costs import OptionBuyCost
 from ..backtest.replay import DEFAULT_SETTINGS
 from ..data.base import DataSource
 from ..data.timeutil import IST
+from . import decide as dec
 from .book import ClosedTrade, PaperBook, Position
 
 
@@ -48,7 +53,7 @@ class PaperConfig:
 
     #: Stand aside when India VIX is above this. Backtested range 13-18 all
     #: worked; 16 sits in the middle of that plateau rather than on its edge.
-    gate: float = 16.0
+    gate: float = dec.DEFAULT_VIX_GATE
     #: Learned-filter cutoff. None runs the strategy unfiltered.
     min_score: float | None = None
 
@@ -152,38 +157,27 @@ def evaluate(
         config.settings, config.mode, config.instrument, config.flags,
     )
 
-    result.action = final_call.get("action", "HOLD")
-    result.confidence = int(final_call.get("confidence", 0) or 0)
+    verdict = dec.decide(
+        final_call,
+        dec.Policy(min_confidence=config.min_confidence, gate=config.gate,
+                   min_score=config.min_score),
+        vix=vix,
+        score_fn=lambda: dec.score_signal(
+            model, final_call, analysis, window, chg_pct, vix
+        ),
+    )
+    result.action = verdict.action
+    result.confidence = verdict.confidence
+    result.score = verdict.score
 
-    if result.action not in ("BUY", "SELL"):
-        result.reason = "no directional call"
+    if verdict.rejected:
+        result.reason = verdict.rejected
         return result
-    if result.confidence < config.min_confidence:
-        result.reason = f"confidence {result.confidence} below {config.min_confidence}"
-        return result
 
-    # Scored before the gate is applied rather than after, so a tick the gate
-    # rejects still gets a score and can be followed as a shadow. The cost is
-    # one model call on a signal that will not be taken.
-    if model is not None:
-        from ..ml.features import extract_features
-        from ..ml.model import score_one
-
-        features = extract_features(final_call, analysis, window, chg_pct)
-        # The model is fitted with volatility-regime columns joined from the
-        # daily series. Scoring without them would leave three of its most
-        # important features at zero.
-        if vix is not None:
-            features.update(_vix_context(vix))
-        result.score = score_one(model, features)
-
-    declined = ""
-    if vix is not None and vix > config.gate:
-        declined = f"vix {vix:.2f} above gate {config.gate:.1f}"
-    elif (config.min_score is not None and result.score is not None
-            and result.score < config.min_score):
-        declined = f"score {result.score:.3f} below {config.min_score:.3f}"
-    elif full:
+    # The book's own limit, applied after the signal-level filters so that a
+    # full book never masks the reason the strategy would have stood aside.
+    declined = verdict.declined
+    if not declined and full:
         declined = f"{len(book.open_positions)} positions already open"
 
     kind = "shadow" if declined else "live"
@@ -447,20 +441,6 @@ def _recent_candles(source: DataSource, config: PaperConfig, now: datetime) -> l
     return source.candles(
         config.symbol, config.interval, now - timedelta(days=days), now, "INDEX"
     )
-
-
-#: Loaded once. The archive is static during a session, and re-reading it every
-#: two minutes would be pointless work.
-_VIX_SERIES: object | None = None
-
-
-def _vix_context(level: float) -> dict[str, float]:
-    global _VIX_SERIES
-    if _VIX_SERIES is None:
-        from ..backtest.regime import load_vix
-
-        _VIX_SERIES = load_vix()
-    return _VIX_SERIES.live_context(level) if len(_VIX_SERIES) else {}
 
 
 def _vix(source: DataSource, chain: dict | None) -> float | None:

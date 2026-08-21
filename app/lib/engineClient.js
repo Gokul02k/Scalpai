@@ -28,6 +28,11 @@ export const ENGINE_SYMBOLS = {
 
 const TIMEOUT_MS = 1500;
 
+// The decision endpoint computes an indicator bundle over 375 bars and scores a
+// model, so it is slower than a quote and worth waiting longer for: falling
+// back here means showing a different call, not a slightly older price.
+const DECISION_TIMEOUT_MS = 4000;
+
 export function engineUrl() {
   return process.env.ENGINE_URL || null;
 }
@@ -36,7 +41,7 @@ export function engineSymbol(dashboardSymbol) {
   return ENGINE_SYMBOLS[dashboardSymbol] || null;
 }
 
-async function engineGet(path, params) {
+async function engineGet(path, params, timeoutMs = TIMEOUT_MS) {
   const base = engineUrl();
   if (!base) return null;
 
@@ -44,7 +49,7 @@ async function engineGet(path, params) {
   for (const [k, v] of Object.entries(params || {})) url.searchParams.set(k, v);
 
   try {
-    const res = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const res = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -72,6 +77,31 @@ export async function engineCandles(dashboardSymbol, tf) {
     tf,
     stale: !!body.stale,
     refresh: body.refresh,
+  };
+}
+
+/**
+ * The engine's call for a symbol, with the verdict the paper trader would
+ * reach on it — production levels, the VIX gate and the learned filter.
+ *
+ * Null when the engine is unreachable or has no archive for the symbol, which
+ * leaves the caller on its own v1 call. That fallback is a genuinely different
+ * decision, not a staler one, so it is worth saying so in the UI.
+ */
+export async function engineDecision(dashboardSymbol, interval = '5m') {
+  const target = engineSymbol(dashboardSymbol);
+  if (!target) return null;
+
+  const body = await engineGet(
+    '/analysis', { ...target, interval }, DECISION_TIMEOUT_MS
+  );
+  if (!body?.suggestion || !body?.verdict) return null;
+  return {
+    symbol: target.symbol,
+    price: body.price,
+    suggestion: body.suggestion,
+    verdict: body.verdict,
+    policy: body.policy,
   };
 }
 

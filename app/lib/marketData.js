@@ -62,6 +62,23 @@ export async function fetchAllMarketData() {
   return { prices, isLive: liveCount > 0, liveCount, total: instruments.length, source, error: liveCount === 0 ? lastError : null };
 }
 
+/**
+ * The engine's verdict on an instrument: the same call, gate and filter the
+ * paper trader runs. `{ available: false }` when the engine is not reachable,
+ * which leaves the caller on its own v1 call.
+ */
+export async function fetchEngineDecision(instrument) {
+  const symbol = SYMBOL_MAP[instrument];
+  if (!symbol) return { available: false };
+  try {
+    const res = await fetch(`/api/decision?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
+    if (!res.ok) return { available: false };
+    return await res.json();
+  } catch {
+    return { available: false };
+  }
+}
+
 export async function fetchCandles(instrument, tf = '5m') {
   const symbol = SYMBOL_MAP[instrument] || '^NSEI';
   try {

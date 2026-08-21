@@ -956,6 +956,26 @@ dashboard still computes its own indicators, because the parity tests already
 guarantee the two agree and a read-only view that goes blank when a Python
 process dies is a worse view.
 
+### One decision, two renderings
+
+`/analysis` serves the verdict as well as the call. The dashboard used to gate
+the raw vote itself — v1's 0.2% stop floor plus a 50-point minimum move — while
+the paper trader applied production levels, the VIX gate and the fitted filter.
+Same bars, two verdicts, and the dashboard's was the one with no backtest behind
+it. It would show a trade on a range day the runner had already refused, and
+call it the strategy's signal.
+
+Both now import `engine/live/decide.py`, so the card shows what the runner would
+have done, including when that is nothing. What stays in the runner is what needs
+a book or a broker: position caps, cooldowns, strike choice, fills.
+
+The response says which filters it could actually apply (`policy.filter`,
+`policy.vixRead`). An unfiltered call is a weaker claim than a filtered one and
+most of the measured edge is in the difference, so a caller that could not tell
+them apart would present the weaker one as the stronger. With the engine
+unreachable the dashboard falls back to its own v1 call and labels it — that
+fallback is a different decision, not a staler one.
+
 ### Falling back is the interesting part
 
 Three ways it declines to answer, each on purpose:

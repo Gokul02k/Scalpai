@@ -11,7 +11,7 @@ import {
   Upload, Plus, Trash2, Bell, Sun, Moon, Lightbulb, ScrollText,
 } from "lucide-react";
 import {
-  fetchAllMarketData, fetchRealMarketData, fetchCandles, fetchStockCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, fetchStockFundamentals, genFallbackCandles, SYMBOL_MAP,
+  fetchAllMarketData, fetchRealMarketData, fetchEngineDecision, fetchCandles, fetchStockCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, fetchStockFundamentals, genFallbackCandles, SYMBOL_MAP,
 } from "./lib/marketData";
 import { vwapSeries, supertrendSeries } from "./lib/chartIndicators";
 import { analyzeFromCandles, calcEMA } from "./lib/indicators";
@@ -51,9 +51,17 @@ const INSTRUMENTS = {
 // Smallest projected move worth scalping. NIFTY's 50 points is the number the
 // engine and the signal log already grade against; SENSEX is the same 0.2% of
 // price at its own level, which is what makes the two calls comparable.
+//
+// Only reached when the engine is unreachable. With it up, the verdict below
+// decides, and this hand-rolled floor is not part of it.
 const MIN_SCALP_POINTS = { NIFTY: 50, SENSEX: 165 };
 
 const INSTRUMENT_KEYS = Object.keys(INSTRUMENTS);
+
+// Indices the engine archives, and therefore the ones it can be asked for a
+// verdict on. Gold and silver are Yahoo-sourced swing tracks with no paper
+// equivalent, so they keep their own call.
+const ENGINE_SCALP_KEYS = ["NIFTY", "SENSEX"];
 
 const INSTRUMENT_SUB = {
   NIFTY: "Scalping · NSE Index",
@@ -1547,7 +1555,9 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
           <>
             <HorizonCallCard
               title="Scalping"
-              subtitle={`5-min chart · intraday · targets a ≥${minScalpPts}-pt move`}
+              subtitle={scalpCall?.source === "engine"
+                ? "5-min chart · intraday · the paper trader's own call"
+                : `5-min chart · intraday · engine offline, v1 call · targets a ≥${minScalpPts}-pt move`}
               call={scalpCall}
               priceData={priceData}
               eaKey={`DETAIL_${sym}_scalp`}
@@ -2245,6 +2255,9 @@ export default function App() {
   const [isLive, setIsLive] = useState(false);
   const [dataSource, setDataSource] = useState(null);
   const [liveError, setLiveError] = useState(null);
+  // Per-instrument verdicts from the engine, keyed by instrument. Empty until
+  // the first poll answers, and empty for good when no engine is configured.
+  const [engineCalls, setEngineCalls] = useState({});
   const [signals, setSignals] = useState([]);
   const prevIndexSigs = useRef([]);
 
@@ -2401,6 +2414,23 @@ export default function App() {
     };
     refreshLive();
     const id = setInterval(refreshLive, refresh * 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [refresh]);
+
+  // The engine's verdict on the index scalps: the same call, gate and filter
+  // the paper trader runs. Polled beside the prices rather than derived from
+  // them, because it is a decision made on the engine's own archive.
+  useEffect(() => {
+    let cancelled = false;
+    const refreshVerdicts = async () => {
+      const results = await Promise.all(
+        ENGINE_SCALP_KEYS.map(async (inst) => [inst, await fetchEngineDecision(inst)])
+      );
+      if (cancelled) return;
+      setEngineCalls(Object.fromEntries(results));
+    };
+    refreshVerdicts();
+    const id = setInterval(refreshVerdicts, refresh * 1000);
     return () => { cancelled = true; clearInterval(id); };
   }, [refresh]);
 
@@ -2700,9 +2730,11 @@ export default function App() {
     };
   }, [analyses, dailyAnalyses, prices, signalsByInstrument, sett]);
 
-  // Index scalp calls gated by the minimum-move rule, so Home and the detail
-  // view always agree. A projected move smaller than the gate is not a trade:
-  // it is inside the round trip.
+  // Fallback gate, for when the engine cannot be reached. A projected move
+  // smaller than the floor is not a trade: it is inside the round trip. This
+  // pairs with v1's stop floor, which is the geometry this call was computed
+  // with — the engine's wider pool would need the filter to be worth taking,
+  // and the filter is not something the browser can run.
   const gateScalp = useCallback((call, floor) => {
     if (!call) return call;
     const moveDist = call.target != null ? Math.abs(call.target - call.entry) : 0;
@@ -2712,11 +2744,46 @@ export default function App() {
     return call;
   }, []);
 
+  // The engine's verdict, in the shape the cards already read.
+  //
+  // Whatever the paper trader would do is what gets shown, including when it
+  // would stand aside: a dashboard advertising a trade the runner refuses is
+  // the disagreement this replaces. The two only part company when the engine
+  // is unreachable, and the card says so rather than passing the fallback off
+  // as the same call.
+  const withEngineVerdict = useCallback((decision, fallback) => {
+    if (!decision?.available || !decision.suggestion) return fallback;
+    const { suggestion, verdict, policy } = decision;
+
+    // What the engine could not apply. An unfiltered call is a weaker claim
+    // than a filtered one, and most of the measured edge is in the difference.
+    const missing = [];
+    if (policy?.filter !== "loaded") missing.push("no fitted filter");
+    if (!policy?.vixRead) missing.push("no VIX print");
+    const caveat = missing.length ? ` Paper stack incomplete: ${missing.join(", ")}.` : "";
+
+    if (verdict?.taken) {
+      return { ...suggestion, source: "engine", gatedReason: caveat.trim() || null };
+    }
+    return {
+      ...suggestion,
+      action: "HOLD",
+      label: "No scalp trade",
+      target: null,
+      stopLoss: null,
+      rr: null,
+      source: "engine",
+      gatedReason: `Paper trader would stand aside — ${verdict?.reason || "no signal"}.${caveat}`,
+    };
+  }, []);
+
   const niftyScalpCall = useMemo(
-    () => gateScalp(finalCalls.NIFTY, MIN_SCALP_POINTS.NIFTY), [finalCalls.NIFTY, gateScalp]
+    () => withEngineVerdict(engineCalls.NIFTY, gateScalp(finalCalls.NIFTY, MIN_SCALP_POINTS.NIFTY)),
+    [engineCalls.NIFTY, finalCalls.NIFTY, gateScalp, withEngineVerdict]
   );
   const sensexScalpCall = useMemo(
-    () => gateScalp(finalCalls.SENSEX, MIN_SCALP_POINTS.SENSEX), [finalCalls.SENSEX, gateScalp]
+    () => withEngineVerdict(engineCalls.SENSEX, gateScalp(finalCalls.SENSEX, MIN_SCALP_POINTS.SENSEX)),
+    [engineCalls.SENSEX, finalCalls.SENSEX, gateScalp, withEngineVerdict]
   );
 
   const macroCalls = useMemo(() => ({
