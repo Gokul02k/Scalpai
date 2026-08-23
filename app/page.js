@@ -8,7 +8,7 @@ import {
 import {
   Settings, ChevronRight, MessageCircle, X, Send, Newspaper,
   Briefcase, Home, ArrowUp, ArrowDown, Zap, RefreshCw,
-  Upload, Plus, Trash2, Bell, Sun, Moon, ScrollText,
+  Upload, Plus, Trash2, Bell, Sun, Moon, ScrollText, Info,
 } from "lucide-react";
 import {
   fetchAllMarketData, fetchRealMarketData, fetchEngineDecision, fetchCandles, fetchStockCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, fetchStockFundamentals, genFallbackCandles, SYMBOL_MAP,
@@ -18,7 +18,7 @@ import { ETFS, isETF, etfMeta } from "./lib/etf";
 import { analyzeFromCandles, calcEMA } from "./lib/indicators";
 import { generateIndexSignals, generatePortfolioSignals, parsePortfolioCSV } from "./lib/signals";
 import { buildUnifiedSuggestion, explainAssetMove, getPortfolioSuggestion } from "./lib/suggestion";
-import { runStrategies } from "./lib/strategies";
+import { runStrategies, STRATEGIES } from "./lib/strategies";
 import { preOpenTrend, postOpenTrend } from "./lib/trend";
 import { annotateStructure } from "./lib/smc";
 import { loadPersisted, savePersisted } from "./lib/storage";
@@ -1479,18 +1479,14 @@ function TrendPanel({ preOpen, postOpen, marketOpen, C }) {
   );
 }
 
-// The blended call, broken into the strategies it is made of.
-//
-// The point of showing four numbers instead of one is disagreement. A blended
-// HOLD at 50% can mean nothing is happening, or it can mean two strategies are
-// buying while two are selling — which is a live conflict, and the reader can
-// only see it here.
-//
-// The percentage is factor agreement, not a probability, and it climbs as a
-// subset shrinks: two factors that agree score the same 85% eight need. Hence
-// the factor count on every row, and the note at the bottom.
+// Shown only inside the index detail view (not Home). The scalp card above is
+// the one tradeable call; this breaks the same vote into four families so you
+// can see which kind of edge is talking when they disagree.
 function StrategyPanel({ result, blended, source, C }) {
   const rows = result?.strategies || [];
+  const [showWorkflow, setShowWorkflow] = useState(false);
+  const [openKey, setOpenKey] = useState(null);
+
   if (!rows.length) return null;
 
   const live = rows.filter((r) => r.available);
@@ -1498,59 +1494,128 @@ function StrategyPanel({ result, blended, source, C }) {
   const sell = live.filter((r) => r.action === "SELL").length;
   const conflict = buy > 0 && sell > 0;
 
+  const metaByKey = Object.fromEntries(STRATEGIES.map((m) => [m.key, m]));
+
   return (
     <div style={{ background: C.card, border: `1px solid ${C.dim}`, borderRadius: 12, padding: 12, marginBottom: 10 }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
-        <div style={{ color: C.text, fontWeight: 800, fontSize: 13 }}>Strategies</div>
-        <div style={{ color: conflict ? C.yellow : C.muted, fontSize: 10, fontWeight: 700 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+          <div style={{ color: C.text, fontWeight: 800, fontSize: 13 }}>Strategy breakdown</div>
+          <button
+            type="button"
+            onClick={() => setShowWorkflow((v) => !v)}
+            aria-label="How the strategy breakdown works"
+            aria-expanded={showWorkflow}
+            style={{ background: "none", border: "none", padding: 2, cursor: "pointer", color: C.muted, display: "flex", flexShrink: 0 }}
+          >
+            <Info size={14} />
+          </button>
+        </div>
+        <div style={{ color: conflict ? C.yellow : C.muted, fontSize: 10, fontWeight: 700, textAlign: "right" }}>
           {conflict
             ? `split — ${buy} buy, ${sell} sell`
             : `${buy || sell || live.length} of ${live.length} ${buy ? "buying" : sell ? "selling" : "neutral"}`}
         </div>
       </div>
 
+      {showWorkflow && (
+        <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.55, background: C.dim, borderRadius: 8, padding: 10, marginBottom: 10 }}>
+          <div style={{ color: C.text, fontWeight: 700, marginBottom: 6 }}>How this works</div>
+          <p style={{ margin: "0 0 8px" }}>
+            The scalp call above blends every indicator into one BUY/SELL/HOLD. Here the same math runs four times — once per family — on its own subset only.
+          </p>
+          <p style={{ margin: "0 0 8px" }}>
+            Tap <Info size={11} style={{ display: "inline", verticalAlign: "middle" }} /> on a row to see which indicators it uses and what is voting right now.
+          </p>
+          <p style={{ margin: 0 }}>
+            The % is <strong style={{ color: C.text }}>factor agreement</strong>, not win probability — it reads higher when a strategy has fewer factors. Only the blended call above uses the VIX gate and learned filter.
+          </p>
+        </div>
+      )}
+
       {rows.map((r) => {
         const clr = r.action === "BUY" ? C.green : r.action === "SELL" ? C.red : C.muted;
+        const meta = metaByKey[r.key];
+        const expanded = openKey === r.key;
+
         return (
-          <div
-            key={r.key}
-            title={r.blurb}
-            style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderTop: `1px solid ${C.dim}` }}
-          >
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ color: C.text, fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {r.name}
+          <div key={r.key} style={{ borderTop: `1px solid ${C.dim}`, paddingTop: 6, marginTop: 2 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0" }}>
+              <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 4 }}>
+                <div style={{ color: C.text, fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {r.name}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setOpenKey(expanded ? null : r.key)}
+                  aria-label={`About ${r.name}`}
+                  aria-expanded={expanded}
+                  style={{
+                    background: expanded ? `${C.blue}22` : "none",
+                    border: "none",
+                    padding: 3,
+                    borderRadius: 4,
+                    cursor: "pointer",
+                    color: expanded ? C.blue : C.muted,
+                    display: "flex",
+                    flexShrink: 0,
+                  }}
+                >
+                  <Info size={13} />
+                </button>
               </div>
+              {r.available ? (
+                <>
+                  <span style={{ background: `${clr}22`, color: clr, fontSize: 9, fontWeight: 800, padding: "2px 7px", borderRadius: 4, minWidth: 38, textAlign: "center" }}>
+                    {r.action}
+                  </span>
+                  <span style={{ color: clr, fontSize: 13, fontWeight: 900, minWidth: 38, textAlign: "right" }}>
+                    {r.confidence}%
+                  </span>
+                </>
+              ) : (
+                <span style={{ color: C.muted, fontSize: 10, fontWeight: 700 }}>no signal yet</span>
+              )}
             </div>
-            {r.available ? (
-              <>
-                <span style={{ background: `${clr}22`, color: clr, fontSize: 9, fontWeight: 800, padding: "2px 7px", borderRadius: 4, minWidth: 38, textAlign: "center" }}>
-                  {r.action}
-                </span>
-                <span style={{ color: clr, fontSize: 13, fontWeight: 900, minWidth: 38, textAlign: "right" }}>
-                  {r.confidence}%
-                </span>
-                <span style={{ color: C.muted, fontSize: 10, minWidth: 30, textAlign: "right" }}>
-                  {r.factors.length}f
-                </span>
-              </>
-            ) : (
-              <span style={{ color: C.muted, fontSize: 10, fontWeight: 700 }}>no signal yet</span>
+
+            {expanded && meta && (
+              <div style={{ fontSize: 11, lineHeight: 1.5, padding: "6px 0 8px 2px" }}>
+                <div style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Indicators</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+                  {(meta.indicators || []).map((label) => (
+                    <span key={label} style={{ background: C.dim, color: C.text, fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 4 }}>
+                      {label}
+                    </span>
+                  ))}
+                </div>
+                <div style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Logic</div>
+                <p style={{ color: C.muted, margin: "0 0 8px" }}>{meta.howItWorks}</p>
+                {r.available && r.factors?.length > 0 ? (
+                  <>
+                    <div style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Voting now</div>
+                    {r.factors.map((f, i) => (
+                      <SignalFactorRow key={i} factor={f} C={C} />
+                    ))}
+                  </>
+                ) : r.available ? (
+                  <p style={{ color: C.muted, margin: 0, fontSize: 11 }}>No factors active on this bar.</p>
+                ) : (
+                  <p style={{ color: C.muted, margin: 0, fontSize: 11 }}>
+                    Waiting for session data — e.g. VWAP and opening range need today&apos;s bars.
+                  </p>
+                )}
+              </div>
             )}
           </div>
         );
       })}
 
-      <div style={{ color: C.muted, fontSize: 10, lineHeight: 1.5, borderTop: `1px solid ${C.dim}`, paddingTop: 8, marginTop: 2 }}>
-        Factor agreement over each strategy&apos;s own indicators — not a
-        probability, and higher on the strategies with fewer factors (
-        <strong style={{ color: C.text }}>f</strong> = factors counted). None has
-        been backtested alone; only the{" "}
+      <div style={{ color: C.muted, fontSize: 10, lineHeight: 1.5, borderTop: `1px solid ${C.dim}`, paddingTop: 8, marginTop: 4 }}>
+        For reading the tape only. Tradeable call:{" "}
         <strong style={{ color: C.text }}>
-          {blended?.action || "blended"} {blended?.confidence != null ? `${blended.confidence}%` : ""}
-        </strong>{" "}
-        call above carries the VIX gate and the learned filter.
-        {source === "engine" ? "" : " Computed in the browser — engine unreachable."}
+          {blended?.label || blended?.action || "—"} {blended?.confidence != null ? `${blended.confidence}%` : ""}
+        </strong>
+        {source === "engine" ? "" : " · computed locally (engine offline)"}
       </div>
     </div>
   );
@@ -3123,11 +3188,15 @@ export default function App() {
   // read, so the four numbers shown belong to the same bars as the call above
   // them. The local fallback comes from the parity-tested mirror, so it is the
   // same arithmetic on different bars rather than a different method.
+  // Computed only while a scalp index detail is open — not on Home.
   const strategyCalls = useMemo(() => {
-    const out = {};
-    for (const inst of ENGINE_SCALP_KEYS) {
-      const served = engineCalls[inst]?.strategies;
-      out[inst] = served?.strategies?.length
+    const openSym = (selectedStock?.name || "").toUpperCase();
+    if (openSym !== "NIFTY" && openSym !== "SENSEX") return {};
+
+    const inst = openSym;
+    const served = engineCalls[inst]?.strategies;
+    return {
+      [inst]: served?.strategies?.length
         ? { result: served, source: "engine" }
         : {
             result: runStrategies({
@@ -3141,10 +3210,9 @@ export default function App() {
               instrument: inst,
             }),
             source: "local",
-          };
-    }
-    return out;
-  }, [engineCalls, analyses, prices, signalsByInstrument]);
+          },
+    };
+  }, [selectedStock, engineCalls, analyses, prices, signalsByInstrument]);
 
   const macroCalls = useMemo(() => ({
     NIFTY: niftyScalpCall,
@@ -3552,12 +3620,6 @@ Tabs: dashboard|portfolio|news|settings`;
         C={C}
         S={S}
       />
-      <StrategyPanel
-        result={strategyCalls.NIFTY?.result}
-        source={strategyCalls.NIFTY?.source}
-        blended={niftyScalpCall}
-        C={C}
-      />
       <SwingStatusCard
         name="SENSEX"
         badge="Scalp"
@@ -3567,12 +3629,6 @@ Tabs: dashboard|portfolio|news|settings`;
         onOpenDetail={() => setSelectedStock({ name: "SENSEX", type: "index" })}
         C={C}
         S={S}
-      />
-      <StrategyPanel
-        result={strategyCalls.SENSEX?.result}
-        source={strategyCalls.SENSEX?.source}
-        blended={sensexScalpCall}
-        C={C}
       />
       <SwingStatusCard
         name="GOLD"

@@ -40,26 +40,56 @@ from .suggestion import collect_factors, vote_from_factors
 
 #: Ordered for display: the two directional families first, then the two that
 #: describe where price sits rather than where it is going.
-STRATEGIES: list[dict[str, str]] = [
+STRATEGIES: list[dict[str, str | list[str]]] = [
     {
         "key": "momentum",
         "name": "Momentum",
         "blurb": "Trend continuation — MACD, EMA 20/50 and the day's drift",
+        "indicators": ["MACD histogram", "EMA 20/50 cross", "Today's % change (≥0.5%)"],
+        "howItWorks": (
+            "Asks whether the move is continuing. MACD above zero and price above the "
+            "20-day EMA vote BUY; the opposite votes SELL. If NIFTY is already up or "
+            "down ≥0.5% today, that drift adds one weight in this strategy only. Needs "
+            "a margin of at least 2 between buy and sell weights to call a direction."
+        ),
     },
     {
         "key": "reversion",
         "name": "Mean reversion",
         "blurb": "Range holding — RSI, Bollinger bands and support/resistance",
+        "indicators": ["RSI (14)", "Bollinger Bands", "Support / resistance zones"],
+        "howItWorks": (
+            "Asks whether price is stretched and likely to bounce or reject. RSI "
+            "oversold/overbought, price at the lower or upper Bollinger band, and "
+            "proximity to the session support or resistance zone each vote. "
+            "Support/resistance carries the heaviest weight (up to 4), so this "
+            "strategy often speaks loudest."
+        ),
     },
     {
         "key": "session",
         "name": "Session",
         "blurb": "Today's anchors — VWAP, the 15-min opening range and volume",
+        "indicators": ["VWAP", "15-min opening range", "Volume vs average"],
+        "howItWorks": (
+            "Asks where price sits relative to today's anchors. Above VWAP votes long "
+            "bias; below votes short. A break above or below the first 15 minutes' "
+            "high/low votes with the break; inside the range votes HOLD and damps the "
+            "blended call. High volume adds participation; thin volume flags unreliable "
+            "signals."
+        ),
     },
     {
         "key": "imbalance",
         "name": "Imbalance",
         "blurb": "Unfilled fair-value gaps left by earlier moves",
+        "indicators": ["Fair value gap (FVG)"],
+        "howItWorks": (
+            "Looks for unfilled gaps from earlier bars — zones price may revisit. A "
+            "retest inside a bullish or bearish gap votes with the gap direction; "
+            "weight is higher when price is inside the zone (3) than when merely "
+            "approaching (2). Only fires when a gap is actually detected on the chart."
+        ),
     },
 ]
 
