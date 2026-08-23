@@ -64,6 +64,12 @@ class StrategyFlags:
     any trade is allowed, and on a range-bound day there is never that much.
     It is the single most restrictive number in the strategy and it was never
     chosen deliberately. None keeps v1's constant.
+
+    `strategy`: vote on one strategy's factors instead of all of them, so the
+    four the dashboard shows can be replayed and ranked rather than argued
+    about. `engine/core/strategies.py` defines the split; this is the flag that
+    lets the existing variant harness measure it. None votes on everything,
+    which is v1.
     """
 
     use_opening_range: bool = True
@@ -71,6 +77,7 @@ class StrategyFlags:
     atr_target_mult: float | None = None
     atr_stop_mult: float | None = None
     min_stop_pct: float | None = None
+    strategy: str | None = None
 
 
 #: v1 behaviour. Anything comparing against the live dashboard uses this.
@@ -272,6 +279,17 @@ def collect_factors(
                 "weight": STRENGTH_W.get(sig["str"], 1),
             })
 
+    if flags.strategy:
+        # Imported here rather than at module scope because strategies.py needs
+        # this module: the split is defined in terms of the factors collected
+        # here, so the dependency only runs one way at import time.
+        from .strategies import split_factors
+
+        # KeyError on an unknown name is the intended outcome. A silent fallback
+        # to every factor would report the blended result under a strategy's
+        # name, which is the one failure mode that cannot be spotted downstream.
+        factors = split_factors(factors)[flags.strategy]
+
     return factors
 
 
@@ -424,7 +442,18 @@ def build_unified_suggestion(
 
     nifty_scalp = mode == "scalp" and instrument == "NIFTY"
     factors = collect_factors(analysis, index_signals, nifty_scalp, flags)
-    vote = vote_from_factors(factors, chg_pct, mode)
+
+    # The day's move is momentum's evidence, and only momentum's. Letting it
+    # vote in all four would make them agree on a trending day for a reason
+    # none of them measures, and the replay would then be grading the drift.
+    # Same routing as the panel -- see run_strategies in strategies.py.
+    drift = chg_pct
+    if flags.strategy:
+        from .strategies import DRIFT_STRATEGY
+
+        drift = chg_pct if flags.strategy == DRIFT_STRATEGY else 0
+
+    vote = vote_from_factors(factors, drift, mode)
     action, confidence = vote["action"], vote["confidence"]
 
     # Suppressed before levels are computed, so a short cannot occupy the

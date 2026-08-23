@@ -9,6 +9,8 @@ zero tolerance, like the rest of the decision path.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from engine.core import indicators as ind
@@ -135,6 +137,65 @@ def test_the_day_change_only_votes_in_momentum(analysis, candles):
         if a["key"] == "momentum":
             continue
         assert (a["action"], a["confidence"]) == (b["action"], b["confidence"]), a["key"]
+
+
+def test_the_flag_leaves_the_blended_call_untouched(analysis, candles):
+    """The hook that lets one strategy be replayed must not change what happens
+    when it is not used. Every existing backtest number depends on this."""
+    price = candles[-1]["c"]
+    idx = sig.generate_index_signals(analysis, price, "NIFTY", SETTINGS)
+    assert sug.StrategyFlags().strategy is None
+    assert sug.PRODUCTION_FLAGS.strategy is None
+    _check(
+        call_js("suggestion", "buildUnifiedSuggestion", {
+            "analysis": analysis, "price": price, "chgPct": 0.42,
+            "indexSignals": idx, "settings": SETTINGS,
+            "mode": "scalp", "instrument": "NIFTY",
+        }),
+        sug.build_unified_suggestion(
+            analysis, price, 0.42, idx, SETTINGS, "scalp", "NIFTY", sug.StrategyFlags(),
+        ),
+    )
+
+
+@pytest.mark.parametrize("key", ["momentum", "reversion", "session", "imbalance"])
+def test_replaying_one_strategy_votes_on_exactly_what_the_panel_showed(
+    analysis, candles, key
+):
+    """The point of the flag. If the replay's factor subset differed from the
+    panel's by even one row, the measured result would belong to a strategy
+    nobody was shown -- and both sides would look perfectly reasonable."""
+    price = candles[-1]["c"]
+    flags = replace(sug.PRODUCTION_FLAGS, strategy=key)
+
+    replayed = sug.collect_factors(analysis, (), True, flags)
+    shown = next(
+        s for s in strat.run_strategies(analysis, price, 0.42, (), "scalp", "NIFTY")["strategies"]
+        if s["key"] == key
+    )
+    _check(replayed, shown["factors"])
+
+
+@pytest.mark.parametrize("key", ["reversion", "session", "imbalance"])
+def test_the_replay_routes_the_day_change_like_the_panel_does(analysis, candles, key):
+    """Momentum owns the drift on both paths. A strategy that inherited it in the
+    replay but not in the panel would be graded on evidence it never showed."""
+    price = candles[-1]["c"]
+    flags = replace(sug.PRODUCTION_FLAGS, strategy=key)
+    flat = sug.build_unified_suggestion(analysis, price, 0.0, (), SETTINGS, "scalp", "NIFTY", flags)
+    trend = sug.build_unified_suggestion(analysis, price, 2.0, (), SETTINGS, "scalp", "NIFTY", flags)
+    assert (flat["action"], flat["confidence"]) == (trend["action"], trend["confidence"])
+
+
+def test_an_unknown_strategy_name_is_a_crash_not_a_blended_result(analysis, candles):
+    """Falling back to every factor would report the blend under a strategy's
+    name, which is the one failure here that nothing downstream could catch."""
+    price = candles[-1]["c"]
+    flags = replace(sug.PRODUCTION_FLAGS, strategy="momentumm")
+    with pytest.raises(KeyError):
+        sug.build_unified_suggestion(
+            analysis, price, 0.42, (), SETTINGS, "scalp", "NIFTY", flags,
+        )
 
 
 @pytest.mark.parametrize("instrument", ["NIFTY", "BANKNIFTY"])

@@ -340,6 +340,70 @@ def cmd_ab(args) -> int:
     return 0
 
 
+def cmd_strategies(args) -> int:
+    """Replay each strategy in the split on its own, against the blended vote."""
+    from dataclasses import replace
+
+    from .backtest import BacktestConfig
+    from .backtest.sweep import VariantSpec, format_rows, run_sweep
+    from .core.strategies import STRATEGIES
+    from .core.suggestion import PRODUCTION_FLAGS
+
+    candles = _load_candles(args.symbol, args.segment, args.interval)
+    if candles is None:
+        return 1
+
+    base = BacktestConfig(
+        symbol=args.symbol, interval=args.interval, instrument=args.symbol,
+        mode=args.mode, min_confidence=args.min_confidence,
+        min_pass_points=args.min_pass_points, step=args.step, count_expired=True,
+    )
+
+    # Against production flags rather than v1's, because the stop floor is the
+    # difference between a strategy that fires and one that cannot: v1's 0.2%
+    # admits so little on a quiet day that a four-factor subset would report on
+    # almost no trades and the comparison would be about the floor, not the split.
+    flags = PRODUCTION_FLAGS
+    specs = [VariantSpec("blended (all factors)", flags)]
+    specs += [
+        VariantSpec(meta["name"], replace(flags, strategy=meta["key"]))
+        for meta in STRATEGIES
+    ]
+
+    print(f"\n  {len(candles)} bars, {len(specs)} replays across {args.jobs} cores")
+    print(f"  confidence >= {args.min_confidence}, "
+          f"stop floor {'volatility' if flags.min_stop_pct == 0 else 'v1 0.2%'}\n")
+
+    results = run_sweep(candles, specs, base, args.costs, args.jobs)
+    for line in format_rows([(r.name, r.stats) for r in results],
+                            baseline="blended (all factors)"):
+        print(line)
+
+    thin = [r.name for r in results if r.stats.get("resolved", 0) < args.min_trades]
+    if thin:
+        print(f"\n  Too few trades to read as a result (<{args.min_trades}): "
+              f"{', '.join(thin)}.")
+        print("  A subset that rarely clears the confidence threshold has not been")
+        print("  measured, it has been starved -- its row is noise, not evidence.")
+
+    print("\n  Same bars, grading and cost model throughout; the only difference is")
+    print("  which factors were allowed to vote.")
+    print()
+    print("  The trade counts are not comparable. Confidence is 42 + agreement*35")
+    print("  + |margin|*4 with agreement = |margin|/total, so a two-factor subset")
+    print(f"  clears {args.min_confidence} whenever both factors agree, while the blend needs")
+    print("  eight to line up. A subset firing 5x more often is that arithmetic,")
+    print("  not a wider edge -- compare gross per trade and profit factor, which")
+    print("  are per-trade, and treat total and maxDD as scale-dependent.")
+    print()
+    print("  And a subset losing on its own does not mean the blend is better")
+    print("  without it: the opening-range factor is gross-negative alone and")
+    print("  removing it from the blend still costs 0.49 net points a trade,")
+    print("  because voting HOLD inside the range damps confidence on setups")
+    print("  that have not picked a side. See engine/README.md.\n")
+    return 0
+
+
 def cmd_costs(args) -> int:
     """Measure the real round-trip cost from a live option chain."""
     from .backtest.calibrate import (
@@ -1243,6 +1307,22 @@ def main(argv: list[str] | None = None) -> int:
     ml.add_argument("--with-smc", action="store_true",
                     help="splice in the smart-money columns; off by default because "
                          "measured against a run without them they add nothing")
+
+    st = sub.add_parser("strategies",
+                        help="replay each strategy in the split against the blended vote")
+    st.add_argument("--symbol", default="NIFTY")
+    st.add_argument("--segment", default="INDEX")
+    st.add_argument("--interval", default="5m")
+    st.add_argument("--mode", default="scalp", choices=["scalp", "swing", "longterm"])
+    st.add_argument("--min-confidence", type=int, default=80)
+    st.add_argument("--min-pass-points", type=float, default=50)
+    st.add_argument("--step", type=int, default=1)
+    st.add_argument("--jobs", type=int, default=8)
+    st.add_argument("--min-trades", type=int, default=100,
+                    help="below this a row is reported as unmeasured rather than read")
+    st.add_argument("--costs", default="index_points",
+                    choices=["index_points", "option_buy", "equity_intraday", "equity_delivery"])
+    st.set_defaults(fn=cmd_strategies)
 
     ct = sub.add_parser("costs", help="measure real round-trip cost from a live option chain")
     ct.add_argument("--symbol", default="NIFTY")

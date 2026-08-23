@@ -307,9 +307,61 @@ by the same `vote_from_factors` with no re-tuned weights or thresholds, so:
 
 Re-tuning per strategy would fix (1) and (2) at the cost of four unmeasured
 parameter choices stacked on an unmeasured split, and would stop the numbers
-being comparable to the blended call or to each other. The honest order is to
-measure first: the split is deliberately shaped so each strategy can be replayed
-through the existing harness, which is the next thing to do with it.
+being comparable to the blended call or to each other. So measure first.
+
+### Each strategy replayed on its own
+
+```bash
+.venv/bin/python -m engine.cli strategies              # all five, in parallel
+.venv/bin/python -m engine.cli strategies --step 4     # a quarter of the bars
+```
+
+`StrategyFlags(strategy="momentum")` restricts the vote to one subset, so the
+existing variant harness measures it with no new plumbing — same replay, same
+grading, same cost model, production flags throughout. 168,591 bars at
+`--step 4`, confidence ≥ 80, volatility stop floor:
+
+| | trades | win% | gross | net | PF | net vs blend |
+|---|---:|---:|---:|---:|---:|---:|
+| **blended (all factors)** | 2,174 | 32.0 | +3.25 | **−2.75** | 1.21 | base |
+| Mean reversion | 13,948 | 36.0 | **+4.04** | **−1.96** | 1.19 | **+0.80** |
+| Momentum | 3,154 | 20.0 | +0.31 | −5.69 | 1.02 | −2.93 |
+| Imbalance | 8,462 | 27.0 | +0.96 | −5.04 | 1.06 | −2.28 |
+| Session | 7,434 | 25.0 | **−0.46** | −6.46 | 0.97 | −3.71 |
+
+**Mean reversion is the only subset that beats the blend**, on gross and net
+both, and it is the only one whose win rate exceeds it. Everything the blend
+adds to it — momentum, session, imbalance — is dilution by this measure.
+
+**Session is gross-negative.** It loses 0.46 points a trade *before* the 6-point
+round trip, at a profit factor of 0.97, and it carries weight 4 in the blend
+(VWAP 2, opening range 2). That is the largest single thing this table found.
+
+**Momentum barely exists.** +0.31 gross at PF 1.02 over 3,154 trades is
+indistinguishable from a coin, which is consistent with the edge research
+finding no tradeable intraday drift.
+
+Three things this table does **not** say.
+
+*The trade counts are not comparable, and the reason is caveat (2) above.*
+Confidence is `42 + agreement * 35 + |margin| * 4`, so a two-factor subset
+clears 80 whenever both factors agree while the blend needs eight to line up.
+Reversion firing 6.4× more often than the blend is that arithmetic, not a wider
+edge. Read gross per trade, win rate and profit factor, which are per-trade;
+`total` and `maxDD` scale with count and are not cross-comparable at all.
+
+*A subset losing alone does not mean the blend is better without it.* The
+opening-range factor is the case already documented above: no directional edge
+univariately, gross-negative inside session here, and **removing it from the
+blend still costs 0.49 net points a trade**, because voting HOLD inside the
+range damps confidence on setups that have not picked a side. A factor can be
+worthless as a strategy and load-bearing as a brake. Session's -0.46 is a
+reason to test removing it, not a result about removing it.
+
+*Nothing here is tradeable.* Every row is net-negative, the learned filter is
+not applied, and this is five arms on one archive. The next question is whether
+the filter over reversion-only beats the filter over the blend, since the filter
+is where the measured edge actually lives.
 
 ---
 

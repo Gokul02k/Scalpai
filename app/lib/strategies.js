@@ -65,6 +65,13 @@ export const STRATEGIES = [
 
 export const STRATEGY_KEYS = STRATEGIES.map((s) => s.key);
 
+// Which strategy the day's change votes in. The vote adds it as a bare weight
+// rather than a named factor, so the classifier below cannot route it, and
+// counting it in all four would make them agree on a trending day for a reason
+// none of them measures. The engine reads its own copy of this when replaying a
+// single strategy, so a measured result matches the panel that showed it.
+export const DRIFT_STRATEGY = 'momentum';
+
 /** The registry as data. The parity harness can only reach functions. */
 export function registrySnapshot() {
   return STRATEGIES;
@@ -160,7 +167,7 @@ export function runStrategies({
       };
     }
 
-    const drift = meta.key === 'momentum' ? chgPct : 0;
+    const drift = meta.key === DRIFT_STRATEGY ? chgPct : 0;
     const vote = voteFromFactors(factors, drift, mode);
     return {
       key: meta.key,

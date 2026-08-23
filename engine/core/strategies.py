@@ -65,6 +65,13 @@ STRATEGIES: list[dict[str, str]] = [
 
 STRATEGY_KEYS = [s["key"] for s in STRATEGIES]
 
+#: Which strategy the day's change votes in. The vote adds it as a bare weight
+#: rather than a named factor, so it cannot be routed by the classifier below,
+#: and counting it in all four would make them agree on a trending day for a
+#: reason none of them measures. `build_unified_suggestion` reads this too, so a
+#: replay of one strategy sees the same drift the panel showed.
+DRIFT_STRATEGY = "momentum"
+
 #: Matched against the factor name `collect_factors` produces. Ordered, first
 #: match wins, so a specific pattern must precede a looser one.
 #:
@@ -153,7 +160,7 @@ def run_strategies(
             })
             continue
 
-        drift = chg_pct if meta["key"] == "momentum" else 0.0
+        drift = chg_pct if meta["key"] == DRIFT_STRATEGY else 0.0
         vote = vote_from_factors(factors, drift, mode)
         strategies.append({
             "key": meta["key"],
