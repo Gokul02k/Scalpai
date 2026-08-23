@@ -8,7 +8,7 @@ import {
 import {
   Settings, ChevronRight, MessageCircle, X, Send, Newspaper,
   Briefcase, Home, ArrowUp, ArrowDown, Zap, RefreshCw,
-  Upload, Plus, Trash2, Bell, Sun, Moon, Lightbulb, ScrollText,
+  Upload, Plus, Trash2, Bell, Sun, Moon, ScrollText,
 } from "lucide-react";
 import {
   fetchAllMarketData, fetchRealMarketData, fetchEngineDecision, fetchCandles, fetchStockCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, fetchStockFundamentals, genFallbackCandles, SYMBOL_MAP,
@@ -1342,20 +1342,30 @@ function PortfolioSuggestionCard({ item, onSelect, C, S }) {
   );
 }
 
-function horizonVerdict(shortCall, longCall) {
-  const s = shortCall?.action;
-  const l = longCall?.action;
-  if (!s && !l) return null;
-  if (s === "BUY" && l === "BUY") return { text: "Attractive on both horizons — good for a short-term trade and a long-term hold.", tone: "green" };
-  if (l === "BUY" && s !== "BUY") return { text: "Better as a long-term investment; short-term isn't a clean entry yet.", tone: "blue" };
-  if (s === "BUY" && l !== "BUY") return { text: "Short-term trade setup, but long-term conviction is weak — keep a tight stop.", tone: "yellow" };
-  if (l === "SELL" && s === "SELL") return { text: "Weak on both horizons — consider trimming or staying out.", tone: "red" };
-  if (l === "SELL") return { text: "Long-term trend is weak — be cautious about holding for the long run.", tone: "red" };
-  if (s === "SELL") return { text: "Short-term momentum is negative — a dip/pullback may be underway.", tone: "yellow" };
-  return { text: "Mixed signals — no strong edge right now. Wait for confirmation.", tone: "muted" };
+// Plain English for one call, shown inside the suggestion card rather than as a
+// box of its own.
+//
+// This used to reconcile a swing call against a positional one. Two cards on the
+// same stock disagreed about as often as they agreed, neither matched the list
+// row -- which showed the positional call -- and the reader was left to arbitrate
+// between three verdicts the app could not choose between itself.
+function callSummary(call) {
+  if (!call) return null;
+  const strong = (call.confidence || 0) >= 75;
+  if (call.action === "BUY") {
+    return strong
+      ? { text: "Indicators, fundamentals and recent news line up on the buy side.", tone: "green" }
+      : { text: "Leaning buy, but not emphatically — worth sizing accordingly.", tone: "blue" };
+  }
+  if (call.action === "SELL") {
+    return strong
+      ? { text: "Weak on the numbers and on the tape — consider trimming or staying out.", tone: "red" }
+      : { text: "Leaning sell, though the case is not a strong one.", tone: "yellow" };
+  }
+  return { text: "No clear edge either way right now. Waiting costs nothing.", tone: "muted" };
 }
 
-function HorizonCallCard({ title, subtitle, call, priceData, eaKey, symbol, mode, decimals = 2, eaState, onAskEA, C }) {
+function HorizonCallCard({ title, subtitle, call, note, noteColor, priceData, eaKey, symbol, mode, decimals = 2, eaState, onAskEA, C }) {
   if (!call) {
     return (
       <div style={{ background: C.dim, borderRadius: 12, padding: 14, marginBottom: 10, textAlign: "center", color: C.muted, fontSize: 12 }}>
@@ -1378,6 +1388,11 @@ function HorizonCallCard({ title, subtitle, call, priceData, eaKey, symbol, mode
         )}
       </div>
       <FinalCallHeader label={call.label} confidence={call.confidence} action={call.action} C={C} />
+      {note && (
+        <p style={{ color: C.text, fontSize: 12, lineHeight: 1.5, margin: "0 0 10px", paddingLeft: 8, borderLeft: `2px solid ${noteColor || C.muted}` }}>
+          {note}
+        </p>
+      )}
       <TradeLevelsRow entry={call.entry} target={call.target} stopLoss={call.stopLoss} rr={call.rr} action={call.action} decimals={decimals} C={C} />
       {call.factors?.length > 0 && (
         <div style={{ borderTop: `1px solid ${C.dim}`, paddingTop: 8, marginBottom: 4 }}>
@@ -1568,25 +1583,20 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
   const scalpCall = isScalpIndex ? (macroCalls?.[sym] ?? null) : null;
   const sessionStats = isScalpIndex ? (analysisByTf["5m"]?.session ?? null) : null;
 
-  const shortCall = useMemo(() => {
+  // One call per instrument, and deliberately the same one the card you tapped
+  // to get here was showing: the positional call for a stock, which is what the
+  // portfolio row and the Home list both use, and the swing call for GOLD and
+  // SILVER, which is the card Home renders for them.
+  const stockCall = useMemo(() => {
     if (isScalpIndex) return null;
-    // GOLD/SILVER reuse the same swing call shown on Home for consistency.
     if (isMacro) return macroCalls?.[`${sym}_swing`] ?? null;
-    const a = analysisByTf["1h"];
-    if (!a || !price) return null;
-    return getPortfolioSuggestion({ stock, analysis: a, newsItems: stockNews, quote: { current: price, changePercent: chgPct }, fundamentals: fund?.fundamentals, settings: sett, mode: "swing" });
-  }, [isScalpIndex, isMacro, macroCalls, sym, analysisByTf, price, chgPct, stock, stockNews, fund, sett]);
-
-  const longCall = useMemo(() => {
-    if (isScalpIndex) return null;
-    if (isMacro) return macroCalls?.[`${sym}_long`] ?? null;
     const a = analysisByTf["1d"];
     if (!a || !price) return null;
     return getPortfolioSuggestion({ stock, analysis: a, newsItems: stockNews, quote: { current: price, changePercent: chgPct }, fundamentals: fund?.fundamentals, settings: sett, mode: "longterm" });
   }, [isScalpIndex, isMacro, macroCalls, sym, analysisByTf, price, chgPct, stock, stockNews, fund, sett]);
 
-  const verdict = isScalpIndex ? null : horizonVerdict(shortCall, longCall);
-  const verdictClr = verdict ? { green: C.green, blue: C.blue, yellow: C.yellow, red: C.red, muted: C.muted }[verdict.tone] : C.muted;
+  const summary = isScalpIndex ? null : callSummary(stockCall);
+  const summaryClr = summary ? { green: C.green, blue: C.blue, yellow: C.yellow, red: C.red, muted: C.muted }[summary.tone] : C.muted;
 
   const chartCandles = candlesByTf[chartTf] || [];
   // Overlay only. The setup it draws was replayed over nine years and loses
@@ -1647,17 +1657,6 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px max(24px, env(safe-area-inset-bottom))" }}>
-        {verdict && (
-          <div style={{ ...S.card, borderColor: `${verdictClr}55`, marginBottom: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-              <Lightbulb size={14} color={verdictClr} />
-              <span style={{ color: C.text, fontWeight: 800, fontSize: 13 }}>Verdict</span>
-            </div>
-            <p style={{ color: C.text, fontSize: 13, lineHeight: 1.5, margin: 0 }}>{verdict.text}</p>
-            <p style={{ color: C.muted, fontSize: 10, margin: "8px 0 0" }}>Based on live chart indicators + recent news. Not investment advice.</p>
-          </div>
-        )}
-
         {isScalpIndex ? (
           <>
             <HorizonCallCard
@@ -1704,32 +1703,25 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, eaState, onAskEA
         ) : (
           <>
             <HorizonCallCard
-              title="Short-term (swing)"
-              subtitle="Swing · days to a few weeks"
-              call={shortCall}
+              title="Suggestion"
+              subtitle={isMacro
+                ? "Swing · days to a few weeks"
+                : "Weeks to months · fundamentals-weighted · same call as your list"}
+              call={stockCall}
+              note={summary?.text}
+              noteColor={summaryClr}
               priceData={priceData}
-              eaKey={`DETAIL_${sym}_short`}
+              eaKey={`DETAIL_${sym}_call`}
               symbol={sym}
-              mode="swing"
+              mode={isMacro ? "swing" : "longterm"}
               decimals={dec}
               eaState={eaState}
               onAskEA={onAskEA}
               C={C}
             />
-
-            <HorizonCallCard
-              title="Long-term (positional)"
-              subtitle={isMacro ? "Long-term · weeks to months" : "Long-term · weeks to months · fundamentals-weighted"}
-              call={longCall}
-              priceData={priceData}
-              eaKey={`DETAIL_${sym}_long`}
-              symbol={sym}
-              mode="longterm"
-              decimals={dec}
-              eaState={eaState}
-              onAskEA={onAskEA}
-              C={C}
-            />
+            <p style={{ color: C.muted, fontSize: 10, margin: "-4px 2px 12px" }}>
+              Based on live chart indicators, fundamentals and recent news. Not investment advice.
+            </p>
           </>
         )}
 
@@ -3332,7 +3324,9 @@ Tabs: dashboard|portfolio|news|settings`;
       pushSuggestionItem(items, {
         id: `hold-${sym}`,
         name: sym,
-        mode: "Swing + long",
+        // Named for the call actually computed below. It said "Swing + long"
+        // while only ever running the positional one.
+        mode: "Long term",
         call: suggestion,
         priceData,
         newsHeadline: latestNewsHeadline(sym, news),
