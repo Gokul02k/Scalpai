@@ -14,6 +14,7 @@ import {
   fetchAllMarketData, fetchRealMarketData, fetchEngineDecision, fetchCandles, fetchStockCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, fetchStockFundamentals, genFallbackCandles, SYMBOL_MAP,
 } from "./lib/marketData";
 import { vwapSeries, supertrendSeries } from "./lib/chartIndicators";
+import { ETFS, isETF, etfMeta } from "./lib/etf";
 import { analyzeFromCandles, calcEMA } from "./lib/indicators";
 import { generateIndexSignals, generatePortfolioSignals, parsePortfolioCSV } from "./lib/signals";
 import { buildUnifiedSuggestion, explainAssetMove, getPortfolioSuggestion } from "./lib/suggestion";
@@ -70,9 +71,27 @@ const INSTRUMENT_SUB = {
   SILVER: "NSE · SILVERBEES ETF",
 };
 
-const MACRO_SYMBOLS = new Set(["NIFTY", "GOLD", "SILVER", "GOLDBEES", "SILVERBEES", "SENSEX", "BANKNIFTY"]);
+// The dashboard's own macro instruments. These are followed on Home, not held,
+// so they are refused as portfolio rows rather than filtered out after the fact.
+//
+// This used to be one set that also contained GOLDBEES and SILVERBEES, which is
+// the bug that made the tab look broken: those are ordinary NSE funds and were
+// addable, but the same set excluded them from every quote, candle and
+// fundamentals fetch, so a fund sat on "Analyzing…" for as long as you left it
+// there. A symbol that cannot be analysed must not be addable, and a symbol
+// that is addable must be analysed.
+const INDEX_ALIASES = new Set(["NIFTY", "SENSEX", "BANKNIFTY", "GOLD", "SILVER"]);
 
 const DEFAULT_PORTFOLIO = [];
+
+// Holding ids only have to be unique within a session, but `Date.now()` alone
+// is not: two adds inside the same millisecond produced identical ids, which
+// collided as React keys and made "remove" delete both rows.
+let holdingSeq = 0;
+function nextHoldingId() {
+  holdingSeq += 1;
+  return Date.now() * 1000 + (holdingSeq % 1000);
+}
 
 /** Collapse duplicate holdings (same name + type), keeping the most complete row. */
 function dedupePortfolio(list = []) {
@@ -86,7 +105,15 @@ function dedupePortfolio(list = []) {
     const score = (x) => (x.qty > 1 ? 1 : 0) + (x.buy > 0 ? 1 : 0);
     if (score(s) > score(prev)) byKey.set(key, s);
   }
-  return [...byKey.values()];
+  // Repair ids on the way through. Saved lists predate unique ids, so a stored
+  // portfolio can already hold collisions — and a collision means the delete
+  // button removes a row the user did not point at.
+  const seen = new Set();
+  return [...byKey.values()].map((s) => {
+    if (s.id == null || seen.has(s.id)) return { ...s, id: nextHoldingId() };
+    seen.add(s.id);
+    return s;
+  });
 }
 
 const NIFTY50_SAMPLE = [
@@ -104,10 +131,14 @@ const DEFAULT_WATCHLISTS = {
   "NIFTY 50": NIFTY50_SAMPLE,
 };
 
+// Everything the add box will offer. The funds come from the shared registry so
+// the picker cannot suggest one the ETF section does not know about, and the
+// index aliases are deliberately absent: they were offered here while being
+// unanalysable, which is how you could add NIFTY and watch it never resolve.
 const STOCK_UNIVERSE = [...new Set([
   ...NIFTY50_SAMPLE,
   ...Object.values(DEFAULT_WATCHLISTS).flat(),
-  "NIFTY", "BANKNIFTY", "SENSEX",
+  ...Object.keys(ETFS),
 ])].sort();
 
 function filterStockSuggestions(query, exclude = [], limit = 8) {
@@ -2047,6 +2078,8 @@ function PortfolioLogView({ log = [], onClear, C, S }) {
 function PortfolioTab({
   portfolio,
   suggestionItems,
+  analysisSettled = false,
+  analysedSymbols = {},
   portfolioFundamentals,
   portfolioSignalLog,
   onSelectStock,
@@ -2058,11 +2091,12 @@ function PortfolioTab({
   C,
   S,
 }) {
-  const [view, setView] = useState("watchlist");
+  const [view, setView] = useState("stocks");
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState("suggestion");
   const [sectorFilter, setSectorFilter] = useState("all");
   const [suggestOpen, setSuggestOpen] = useState(false);
+  const [addError, setAddError] = useState(null);
   const inputRef = useRef(null);
 
   const heldSymbols = portfolio.map((s) => s.name);
@@ -2083,57 +2117,92 @@ function PortfolioTab({
   const sectorOf = (s) => portfolioFundamentals?.[s.name.toUpperCase()]?.sector
     || (s.sector && s.sector !== "Other" && s.sector !== "Stock" ? s.sector : "Other");
 
+  // Why a row has no recommendation. A suggestion is withheld when there is no
+  // daily analysis behind it, and that happens for good reasons — a thinly
+  // traded fund has barely any daily bars — so the row has to distinguish
+  // waiting from not being analysable at all.
+  const pendingNote = (s) => {
+    if (!analysisSettled) return "Analyzing…";
+    if (!analysedSymbols[s.name.toUpperCase()]) return "No daily history to analyse yet";
+    return "Not enough signal for a call";
+  };
+
   const addMatches = q ? filterStockSuggestions(query, heldSymbols) : [];
   const alreadyHeld = q && heldSymbols.some((h) => h.toUpperCase() === q);
 
+  // Companies, funds and mutual funds are three different things with three
+  // different readouts, so they are split at the source rather than filtered
+  // per-render. A fund has no sector, P/E or earnings growth; showing it beside
+  // stocks under a "Sector" heading was most of why this tab read as noise.
+  const holdings = useMemo(() => dedupePortfolio(portfolio), [portfolio]);
   const stockList = useMemo(
-    () => dedupePortfolio(portfolio).filter((s) => s.type !== "mf"),
-    [portfolio]
+    () => holdings.filter((s) => s.type !== "mf" && !isETF(s.name)),
+    [holdings]
   );
-  const mfEntries = useMemo(
-    () => dedupePortfolio(portfolio).filter((s) => s.type === "mf"),
-    [portfolio]
+  const etfList = useMemo(
+    () => holdings.filter((s) => s.type !== "mf" && isETF(s.name)),
+    [holdings]
   );
+  const mfEntries = useMemo(() => holdings.filter((s) => s.type === "mf"), [holdings]);
 
   const sectors = useMemo(() => {
     const set = new Set(stockList.map(sectorOf));
     return [...set].sort((a, b) => (a === "Other" ? 1 : 0) - (b === "Other" ? 1 : 0) || a.localeCompare(b));
   }, [stockList, portfolioFundamentals]);
 
-  const visible = useMemo(() => {
-    let list = stockList.filter((s) => !q || s.name.toUpperCase().includes(q));
-    if (sectorFilter !== "all") list = list.filter((s) => sectorOf(s) === sectorFilter);
-    if (sortMode === "az") {
-      list = [...list].sort((a, b) => a.name.localeCompare(b.name));
-    } else if (sortMode === "sector") {
-      list = [...list].sort((a, b) => {
-        const sa = sectorOf(a); const sb = sectorOf(b);
-        if (sa !== sb) return sa.localeCompare(sb);
-        return a.name.localeCompare(b.name);
-      });
-    } else {
-      list = [...list].sort((a, b) => {
-        const ai = orderByName[a.name.toUpperCase()] ?? Infinity;
-        const bi = orderByName[b.name.toUpperCase()] ?? Infinity;
-        if (ai !== bi) return ai - bi;
-        return a.name.localeCompare(b.name);
-      });
-    }
-    return list;
-  }, [stockList, q, sortMode, sectorFilter, orderByName, portfolioFundamentals]);
+  // A filter for a sector nothing is in any more strands the list behind an
+  // empty state whose only escape, the chip row, has already unmounted.
+  useEffect(() => {
+    if (sectorFilter !== "all" && !sectors.includes(sectorFilter)) setSectorFilter("all");
+  }, [sectors, sectorFilter]);
 
-  const addTyped = () => {
-    if (!q || alreadyHeld) return;
-    onAddSymbol(q);
-    setQuery("");
-    setSuggestOpen(false);
+  const matchesQuery = (s) => !q || s.name.toUpperCase().includes(q);
+
+  // Strongest conviction first, and stable while the data arrives. Rows still
+  // being analysed sort last instead of interleaving, so the order stops
+  // reshuffling under the reader as each fetch lands.
+  const byConviction = (a, b) => {
+    const ai = orderByName[a.name.toUpperCase()] ?? Infinity;
+    const bi = orderByName[b.name.toUpperCase()] ?? Infinity;
+    if (ai !== bi) return ai - bi;
+    return a.name.localeCompare(b.name);
   };
-  const pick = (sym) => {
-    onAddSymbol(sym);
-    setQuery("");
-    setSuggestOpen(false);
-    inputRef.current?.focus();
+  const bySector = (a, b) => {
+    const ia = sectors.indexOf(sectorOf(a));
+    const ib = sectors.indexOf(sectorOf(b));
+    if (ia !== ib) return ia - ib;
+    return byConviction(a, b);
   };
+
+  const visible = useMemo(() => {
+    let list = stockList.filter(matchesQuery);
+    if (sectorFilter !== "all") list = list.filter((s) => sectorOf(s) === sectorFilter);
+    const cmp = sortMode === "az"
+      ? (a, b) => a.name.localeCompare(b.name)
+      : sortMode === "sector" ? bySector : byConviction;
+    return [...list].sort(cmp);
+  }, [stockList, q, sortMode, sectorFilter, orderByName, sectors, portfolioFundamentals]);
+
+  const visibleEtfs = useMemo(
+    () => [...etfList.filter(matchesQuery)].sort(byConviction),
+    [etfList, q, orderByName]
+  );
+  const visibleMfs = useMemo(() => mfEntries.filter(matchesQuery), [mfEntries, q]);
+
+  const submit = (sym) => {
+    const problem = onAddSymbol(sym);
+    setAddError(problem || null);
+    if (!problem) {
+      setQuery("");
+      setSuggestOpen(false);
+      // Land on the section the new row is actually in, so an add is never
+      // invisible because it went to a tab you were not looking at.
+      setView(isETF(sym) ? "etfs" : "stocks");
+    }
+  };
+
+  const addTyped = () => { if (q && !alreadyHeld) submit(q); };
+  const pick = (sym) => { submit(sym); inputRef.current?.focus(); };
 
   const renderRow = (s) => {
     const it = suggByName[s.name.toUpperCase()];
@@ -2155,7 +2224,7 @@ function PortfolioTab({
                 <span style={{ color: C.muted, fontSize: 11 }}>· {it.reason}</span>
               </div>
             ) : (
-              <div style={{ color: C.muted, fontSize: 11, marginTop: 5 }}>Analyzing… recommendation will appear shortly</div>
+              <div style={{ color: C.muted, fontSize: 11, marginTop: 5 }}>{pendingNote(s)}</div>
             )}
           </div>
           <button type="button" onClick={() => onRemoveStock(s.id)} aria-label={`Remove ${s.name}`} style={{ padding: 6, borderRadius: 6, background: `${C.red}18`, border: "none", cursor: "pointer", flexShrink: 0 }}>
@@ -2166,10 +2235,59 @@ function PortfolioTab({
     );
   };
 
+  const WHY_NO_FAIR_VALUE = {
+    "index-unavailable": "no index feed",
+    "no-spot-feed": "needs a metal price",
+    "underlying-shut": "underlying market closed",
+    "not-applicable": "fixed face value",
+  };
+
+  const renderEtfRow = (s) => {
+    const sym = s.name.toUpperCase();
+    const meta = etfMeta(sym) || {};
+    const it = suggByName[sym];
+    const action = it?.action;
+    const clr = action === "BUY" ? C.green : action === "SELL" ? C.red : C.yellow;
+    // Stated rather than left blank. A fund with no fair value and a fund
+    // trading exactly at fair value look identical in an empty cell, and they
+    // are opposite pieces of information.
+    const fair = meta.tracks
+      ? `vs ${meta.tracks}`
+      : WHY_NO_FAIR_VALUE[meta.why] || "not priced";
+    return (
+      <div key={s.id} style={{ ...S.card, borderColor: it ? `${clr}35` : C.border, padding: 12, marginBottom: 8 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+          <div onClick={() => onSelectStock(s)} style={{ minWidth: 0, cursor: "pointer", flex: 1 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{sym}</span>
+              <span style={{ fontSize: 9, color: C.muted, background: C.dim, borderRadius: 4, padding: "2px 6px" }}>{meta.label || "Fund"}</span>
+              <span style={{ fontSize: 9, color: meta.tracks ? C.blue : C.muted, background: meta.tracks ? `${C.blue}18` : C.dim, borderRadius: 4, padding: "2px 6px" }}>{fair}</span>
+              <ChevronRight size={14} color={C.muted} />
+            </div>
+            {it ? (
+              <div style={{ marginTop: 5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <span style={{ background: clr, color: action === "HOLD" || action === "WAIT" ? C.text : "#000", fontSize: 10, fontWeight: 800, padding: "2px 8px", borderRadius: 4 }}>{it.label}</span>
+                <span style={{ color: clr, fontWeight: 800, fontSize: 12 }}>{it.confidence}%</span>
+                <span style={{ color: C.muted, fontSize: 11 }}>· {it.reason}</span>
+              </div>
+            ) : (
+              <div style={{ color: C.muted, fontSize: 11, marginTop: 5 }}>{pendingNote(s)}</div>
+            )}
+          </div>
+          <button type="button" onClick={() => onRemoveStock(s.id)} aria-label={`Remove ${sym}`} style={{ padding: 6, borderRadius: 6, background: `${C.red}18`, border: "none", cursor: "pointer", flexShrink: 0 }}>
+            <Trash2 size={14} color={C.red} />
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const groupedBySector = () => {
     const groups = {};
     for (const s of visible) { const k = sectorOf(s); (groups[k] = groups[k] || []).push(s); }
-    return Object.keys(groups).sort().map((sec) => (
+    // Same order as the filter chips. Sorting these independently put "Other"
+    // in the middle of the list while the chip row kept it last.
+    return sectors.filter((sec) => groups[sec]).map((sec) => (
       <div key={sec}>
         <div style={{ color: C.muted, fontSize: 10, fontWeight: 800, textTransform: "uppercase", margin: "8px 2px 8px" }}>{sec} · {groups[sec].length}</div>
         {groups[sec].map(renderRow)}
@@ -2180,7 +2298,11 @@ function PortfolioTab({
   return (
     <div style={{ padding: "0 14px 90px", position: "relative" }}>
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-        {[{ id: "watchlist", l: "Watchlist" }, { id: "log", l: "Track record" }].map((o) => (
+        {[
+          { id: "stocks", l: `Stocks${stockList.length ? ` · ${stockList.length}` : ""}` },
+          { id: "etfs", l: `ETFs${etfList.length ? ` · ${etfList.length}` : ""}` },
+          { id: "log", l: "Track record" },
+        ].map((o) => (
           <button key={o.id} type="button" onClick={() => setView(o.id)} style={{ flex: 1, padding: "9px 8px", borderRadius: 8, background: view === o.id ? C.green : C.card, color: view === o.id ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{o.l}</button>
         ))}
       </div>
@@ -2195,11 +2317,11 @@ function PortfolioTab({
             ref={inputRef}
             type="text"
             value={query}
-            onChange={(e) => { setQuery(e.target.value.toUpperCase()); setSuggestOpen(true); }}
+            onChange={(e) => { setQuery(e.target.value.toUpperCase()); setSuggestOpen(true); setAddError(null); }}
             onFocus={() => setSuggestOpen(true)}
             onBlur={() => setTimeout(() => setSuggestOpen(false), 150)}
             onKeyDown={(e) => { if (e.key === "Enter") addTyped(); }}
-            placeholder="Search or add a stock (e.g. RELIANCE)"
+            placeholder={view === "etfs" ? "Search or add a fund (e.g. NIFTYBEES)" : "Search or add a stock (e.g. RELIANCE)"}
             autoComplete="off"
             autoCorrect="off"
             spellCheck={false}
@@ -2213,74 +2335,118 @@ function PortfolioTab({
           <div style={{ position: "absolute", left: 0, right: 0, top: 50, zIndex: 20, background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, maxHeight: 220, overflowY: "auto", boxShadow: `0 8px 24px ${C.bg}88` }}>
             {addMatches.map((sym) => (
               <button key={sym} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => pick(sym)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", textAlign: "left", padding: "10px 12px", background: "transparent", border: "none", borderBottom: `1px solid ${C.dim}`, color: C.text, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
-                {sym} <span style={{ color: C.green, fontSize: 11, fontWeight: 700 }}>+ Add</span>
+                <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  {sym}
+                  {isETF(sym) && (
+                    <span style={{ fontSize: 9, fontWeight: 700, color: C.blue, background: `${C.blue}18`, borderRadius: 4, padding: "2px 6px" }}>
+                      ETF · {etfMeta(sym)?.label}
+                    </span>
+                  )}
+                </span>
+                <span style={{ color: C.green, fontSize: 11, fontWeight: 700 }}>+ Add</span>
               </button>
             ))}
           </div>
         )}
       </div>
 
-      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-        {[{ id: "suggestion", l: "Suggestion" }, { id: "az", l: "A–Z" }, { id: "sector", l: "Sector" }].map((o) => (
-          <button key={o.id} type="button" onClick={() => setSortMode(o.id)} style={{ flex: 1, padding: "8px 6px", borderRadius: 8, background: sortMode === o.id ? C.green : C.card, color: sortMode === o.id ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{o.l}</button>
-        ))}
-      </div>
-
-      {sectors.length > 1 && (
-        <div style={{ display: "flex", gap: 6, marginBottom: 12, overflowX: "auto", paddingBottom: 2 }}>
-          {["all", ...sectors].map((sec) => {
-            const active = sectorFilter === sec;
-            return (
-              <button
-                key={sec}
-                type="button"
-                onClick={() => setSectorFilter(sec)}
-                style={{
-                  flexShrink: 0, padding: "6px 12px", borderRadius: 999, fontSize: 11, fontWeight: 700, cursor: "pointer",
-                  background: active ? `${C.blue}22` : "transparent",
-                  border: `1px solid ${active ? `${C.blue}88` : C.border}`,
-                  color: active ? C.blue : C.muted, whiteSpace: "nowrap",
-                }}
-              >
-                {sec === "all" ? "All sectors" : sec}
-              </button>
-            );
-          })}
+      {addError && (
+        <div style={{ ...S.card, borderColor: `${C.yellow}55`, color: C.text, fontSize: 12, lineHeight: 1.5, padding: 10, marginBottom: 10 }}>
+          {addError}
         </div>
       )}
 
-      {visible.length === 0 ? (
-        <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 20 }}>
-          {stockList.length === 0
-            ? "Your watchlist is empty. Search a stock above and tap Add."
-            : sectorFilter !== "all"
-              ? `No ${sectorFilter} stocks in your watchlist.`
-              : "No stocks match your search."}
-        </div>
-      ) : sortMode === "sector" ? (
-        groupedBySector()
-      ) : (
-        visible.map(renderRow)
-      )}
-
-      {mfEntries.length > 0 && (
+      {view === "stocks" ? (
         <>
-          <div style={{ color: C.muted, fontSize: 10, fontWeight: 800, textTransform: "uppercase", margin: "14px 2px 8px" }}>Mutual funds</div>
-          {mfEntries.map((s) => (
-            <div key={s.id} style={{ ...S.card, borderColor: `${C.blue}33`, padding: 12, marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>{s.name}</span>
-              <button type="button" onClick={() => onRemoveStock(s.id)} aria-label={`Remove ${s.name}`} style={{ padding: 6, borderRadius: 6, background: `${C.red}18`, border: "none", cursor: "pointer" }}>
-                <Trash2 size={14} color={C.red} />
-              </button>
+          <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+            {[{ id: "suggestion", l: "Suggestion" }, { id: "az", l: "A–Z" }, { id: "sector", l: "Sector" }].map((o) => (
+              <button key={o.id} type="button" onClick={() => setSortMode(o.id)} style={{ flex: 1, padding: "8px 6px", borderRadius: 8, background: sortMode === o.id ? C.green : C.card, color: sortMode === o.id ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{o.l}</button>
+            ))}
+          </div>
+
+          {sectors.length > 1 && (
+            <div style={{ display: "flex", gap: 6, marginBottom: 12, overflowX: "auto", paddingBottom: 2 }}>
+              {["all", ...sectors].map((sec) => {
+                const active = sectorFilter === sec;
+                return (
+                  <button
+                    key={sec}
+                    type="button"
+                    onClick={() => setSectorFilter(sec)}
+                    style={{
+                      flexShrink: 0, padding: "6px 12px", borderRadius: 999, fontSize: 11, fontWeight: 700, cursor: "pointer",
+                      background: active ? `${C.blue}22` : "transparent",
+                      border: `1px solid ${active ? `${C.blue}88` : C.border}`,
+                      color: active ? C.blue : C.muted, whiteSpace: "nowrap",
+                    }}
+                  >
+                    {sec === "all" ? "All sectors" : sec}
+                  </button>
+                );
+              })}
             </div>
-          ))}
+          )}
+
+          {visible.length === 0 ? (
+            <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 20 }}>
+              {stockList.length === 0
+                ? "No stocks yet. Search one above and tap Add."
+                : sectorFilter !== "all"
+                  ? `No ${sectorFilter} stocks here.`
+                  : `Nothing matches "${q}". Tap Add to start following it.`}
+            </div>
+          ) : sortMode === "sector" ? (
+            groupedBySector()
+          ) : (
+            visible.map(renderRow)
+          )}
+
+          {visibleMfs.length > 0 && (
+            <>
+              <div style={{ color: C.muted, fontSize: 10, fontWeight: 800, textTransform: "uppercase", margin: "14px 2px 8px" }}>Mutual funds</div>
+              {visibleMfs.map((s) => (
+                <div key={s.id} style={{ ...S.card, borderColor: `${C.blue}33`, padding: 12, marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>{s.name}</span>
+                  <button type="button" onClick={() => onRemoveStock(s.id)} aria-label={`Remove ${s.name}`} style={{ padding: 6, borderRadius: 6, background: `${C.red}18`, border: "none", cursor: "pointer" }}>
+                    <Trash2 size={14} color={C.red} />
+                  </button>
+                </div>
+              ))}
+            </>
+          )}
+
+          <input ref={csvRef} type="file" accept=".csv,.txt" style={{ display: "none" }} onChange={onCsvChange} />
+          <button type="button" onClick={() => csvRef.current?.click()} style={{ width: "100%", marginTop: 10, padding: 10, borderRadius: 10, background: `${C.blue}12`, border: `1px dashed ${C.blue}44`, color: C.blue, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 12 }}>
+            <Upload size={13} /> Import stocks from CSV
+          </button>
+        </>
+      ) : (
+        <>
+          {visibleEtfs.length === 0 ? (
+            <div style={{ ...S.card, color: C.muted, padding: 18, fontSize: 12, lineHeight: 1.6 }}>
+              {etfList.length === 0 ? (
+                <>
+                  No funds yet. Try <strong style={{ color: C.text }}>NIFTYBEES</strong>,{" "}
+                  <strong style={{ color: C.text }}>GOLDBEES</strong> or{" "}
+                  <strong style={{ color: C.text }}>BANKBEES</strong>.
+                </>
+              ) : (
+                <>Nothing matches &quot;{q}&quot;.</>
+              )}
+            </div>
+          ) : (
+            visibleEtfs.map(renderEtfRow)
+          )}
+
+          <div style={{ ...S.card, marginTop: 10, color: C.muted, fontSize: 11, lineHeight: 1.6 }}>
+            A fund tagged with an index can be priced against it, so a premium or
+            discount is measurable. The rest cannot: gold and silver need a metal
+            price, and funds on foreign indices trade while that market is shut,
+            which makes any gap a measure of the time difference rather than of
+            value.
+          </div>
         </>
       )}
-
-      <input ref={csvRef} type="file" accept=".csv,.txt" style={{ display: "none" }} onChange={onCsvChange} />
-      <button type="button" onClick={() => csvRef.current?.click()} style={{ width: "100%", marginTop: 10, padding: 10, borderRadius: 10, background: `${C.blue}12`, border: `1px dashed ${C.blue}44`, color: C.blue, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 12 }}>
-        <Upload size={13} /> Import stocks from CSV
-      </button>
       </>
       )}
     </div>
@@ -2345,6 +2511,9 @@ export default function App() {
   const [newsFilter, setNewsFilter] = useState("All");
 
   const [portfolioAnalyses, setPortfolioAnalyses] = useState({});
+  // The symbol set `portfolioAnalyses` is an answer for, so a missing entry can
+  // be read as "no data" rather than "not yet".
+  const [analysesFor, setAnalysesFor] = useState("");
   const [stockQuotes, setStockQuotes] = useState({});
   const [portfolioFundamentals, setPortfolioFundamentals] = useState({});
 
@@ -2595,7 +2764,7 @@ export default function App() {
   // Daily candles + indicators for each portfolio holding (for chart/indicator suggestions)
   const portfolioSymbolsKey = useMemo(
     () => portfolio
-      .filter((s) => s.type !== "mf" && !MACRO_SYMBOLS.has(s.name.toUpperCase()))
+      .filter((s) => s.type !== "mf" && !INDEX_ALIASES.has(s.name.toUpperCase()))
       .map((s) => s.name.toUpperCase())
       .sort()
       .join(","),
@@ -2604,21 +2773,27 @@ export default function App() {
 
   useEffect(() => {
     const syms = portfolioSymbolsKey ? portfolioSymbolsKey.split(",") : [];
-    if (!syms.length) { setPortfolioAnalyses({}); return; }
+    if (!syms.length) { setPortfolioAnalyses({}); setAnalysesFor(""); return; }
     let cancelled = false;
     (async () => {
       const entries = await Promise.all(syms.map(async (sym) => {
         const c = await fetchStockCandles(sym, "1d");
         return [sym, c?.length ? analyzeFromCandles(c) : null];
       }));
-      if (!cancelled) setPortfolioAnalyses(Object.fromEntries(entries.filter(([, a]) => a)));
+      if (cancelled) return;
+      setPortfolioAnalyses(Object.fromEntries(entries.filter(([, a]) => a)));
+      // Record which set this answer covers. Failures are dropped above, so
+      // without it a symbol whose candles never arrive is indistinguishable
+      // from one still in flight — and the row waits on "Analyzing…" forever
+      // instead of admitting there is no daily history to analyse.
+      setAnalysesFor(portfolioSymbolsKey);
     })();
     return () => { cancelled = true; };
   }, [portfolioSymbolsKey]);
 
   const portfolioStockSymbols = useMemo(
     () => portfolio
-      .filter((s) => s.type !== "mf" && !MACRO_SYMBOLS.has(s.name.toUpperCase()))
+      .filter((s) => s.type !== "mf" && !INDEX_ALIASES.has(s.name.toUpperCase()))
       .map((s) => s.name.toUpperCase()),
     [portfolio]
   );
@@ -2966,17 +3141,27 @@ export default function App() {
 
   const upsertPortfolioStock = useCallback((name, qty, buy, sector = "Other", type = "stock") => {
     const sym = type === "mf" ? String(name).trim() : String(name).toUpperCase().replace(/\.NS$/, "");
-    const q = +qty || 1;
     const price = +buy || 0;
     const sec = type === "mf" ? "Mutual Fund" : sector;
     setPortfolio((p) => {
       const existing = p.find((s) => s.name.toUpperCase() === sym.toUpperCase() && s.type === type);
       if (existing) {
+        // Only overwrite what the caller actually supplied. Defaulting a missing
+        // quantity to 1, as this did, meant re-adding a symbol you already held
+        // silently reset a real position to a single share.
         return p.map((s) => (s.id === existing.id
-          ? { ...s, name: sym, qty: q, buy: price || s.buy, cur: type === "mf" ? price || s.cur : price || s.cur, sector: sec, type }
+          ? {
+            ...s,
+            name: sym,
+            qty: +qty > 0 ? +qty : s.qty,
+            buy: price || s.buy,
+            cur: price || s.cur,
+            sector: sec !== "Other" ? sec : s.sector,
+            type,
+          }
           : s));
       }
-      return [...p, { id: Date.now(), name: sym, qty: q, buy: price, cur: price, sector: sec, type }];
+      return [...p, { id: nextHoldingId(), name: sym, qty: +qty > 0 ? +qty : 1, buy: price, cur: price, sector: sec, type }];
     });
   }, []);
 
@@ -3080,17 +3265,30 @@ Tabs: dashboard|portfolio|news|settings`;
     const reader = new FileReader();
     reader.onload = (ev) => {
       const parsed = parsePortfolioCSV(ev.target.result);
-      if (parsed.length) setPortfolio(dedupePortfolio(parsed));
-      else alert("Could not read CSV. Use columns: symbol/name, qty, price/buy (Groww/Zerodha export).");
+      if (!parsed.length) {
+        alert("Could not read CSV. Use columns: symbol/name, qty, price/buy (Groww/Zerodha export).");
+        return;
+      }
+      // Merged, not replaced. Importing one broker's holdings used to discard
+      // everything already in the list, which is a lot to lose to a file picker.
+      // Imported rows win on conflict, since they carry real qty and cost.
+      setPortfolio((prev) => dedupePortfolio([...prev, ...parsed.map((s) => ({ ...s, id: nextHoldingId() }))]));
     };
     reader.readAsText(file);
     e.target.value = "";
   };
 
+  // Returns null on success or a sentence explaining the refusal. The caller
+  // shows it: silently doing nothing is what made the add box feel broken.
   const addWatchStock = useCallback((symbol) => {
     const sym = String(symbol || "").trim().toUpperCase().replace(/\.NS$/, "");
-    if (!sym) return;
-    upsertPortfolioStock(sym, 1, 0, "Other", "stock");
+    if (!sym) return "Type a symbol first.";
+    if (!/^[A-Z0-9&.-]{2,20}$/.test(sym)) return `"${sym}" is not a symbol.`;
+    if (INDEX_ALIASES.has(sym)) {
+      return `${sym} is an index the dashboard already tracks on Home — it is not something you can hold. For exposure to it, add a fund like NIFTYBEES.`;
+    }
+    upsertPortfolioStock(sym, 0, 0, "Other", "stock");
+    return null;
   }, [upsertPortfolioStock]);
 
   const requestNotifPerm = () => {
@@ -3099,7 +3297,7 @@ Tabs: dashboard|portfolio|news|settings`;
     }
   };
 
-  const portfolioStocks = portfolio.filter((s) => s.type !== "mf" && !MACRO_SYMBOLS.has(s.name.toUpperCase()));
+  const portfolioStocks = portfolio.filter((s) => s.type !== "mf" && !INDEX_ALIASES.has(s.name.toUpperCase()));
 
   const matchesSymbol = (n, sym) => {
     const S = sym.toUpperCase();
@@ -3522,6 +3720,8 @@ Tabs: dashboard|portfolio|news|settings`;
           <PortfolioTab
             portfolio={portfolio}
             suggestionItems={portfolioSuggestionItems}
+            analysisSettled={analysesFor === portfolioSymbolsKey && portfolioSymbolsKey !== ""}
+            analysedSymbols={portfolioAnalyses}
             portfolioFundamentals={portfolioFundamentals}
             portfolioSignalLog={portfolioSignalLog}
             onSelectStock={setSelectedStock}

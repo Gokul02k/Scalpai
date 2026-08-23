@@ -38,24 +38,79 @@ from typing import Sequence
 
 from .jsnum import to_fixed
 
-#: ETF -> the index whose level prices it, by the engine's own symbol name.
+#: Every fund the app recognises, and whether its value can be derived.
 #:
-#: Every pair here was checked against the live quote endpoint; an entry whose
-#: index the archive cannot serve is worse than a missing one, because the
-#: dashboard would show a blank column with no way to tell whether the fund is
-#: fairly priced or simply unmapped.
-TRACKED_INDEX: dict[str, str] = {
-    "NIFTYBEES": "NIFTY",
-    "SETFNIF50": "NIFTY",
-    "NIFTYIETF": "NIFTY",
-    "BANKBEES": "BANKNIFTY",
-    "SETFNIFBK": "BANKNIFTY",
-    "ITBEES": "NIFTYIT",
-    "PSUBNKBEES": "NIFTYPSUBANK",
-    "INFRABEES": "NIFTYINFRA",
-    "ALPHA": "NIFTYALPHA50",
-    "DIVOPPBEES": "NIFTYDIVOPPS50",
+#: `tracks` is the index whose level prices the fund, and None when there is no
+#: series to price it against. `why` then says which kind of gap it is, because
+#: the answers are not interchangeable: an index we have not archived is a job,
+#: while a foreign market shut during NSE hours is a fact about the instrument.
+#:
+#: Every symbol here was checked against the live Fyers quote endpoint, and
+#: every `tracks` against the index quote endpoint. Guessing either would put a
+#: fund in the portfolio that silently never prices.
+ETFS: dict[str, dict] = {
+    # Indian index funds whose underlying the archive can serve.
+    "NIFTYBEES": {"kind": "index", "tracks": "NIFTY", "label": "Nifty 50"},
+    "SETFNIF50": {"kind": "index", "tracks": "NIFTY", "label": "Nifty 50"},
+    "NIFTYIETF": {"kind": "index", "tracks": "NIFTY", "label": "Nifty 50"},
+    "BANKBEES": {"kind": "index", "tracks": "BANKNIFTY", "label": "Bank Nifty"},
+    "SETFNIFBK": {"kind": "index", "tracks": "BANKNIFTY", "label": "Bank Nifty"},
+    "ITBEES": {"kind": "index", "tracks": "NIFTYIT", "label": "Nifty IT"},
+    "PSUBNKBEES": {"kind": "index", "tracks": "NIFTYPSUBANK", "label": "Nifty PSU Bank"},
+    "INFRABEES": {"kind": "index", "tracks": "NIFTYINFRA", "label": "Nifty Infra"},
+    "ALPHA": {"kind": "index", "tracks": "NIFTYALPHA50", "label": "Nifty Alpha 50"},
+    "DIVOPPBEES": {"kind": "index", "tracks": "NIFTYDIVOPPS50", "label": "Nifty Div Opps 50"},
+
+    # Indian index funds whose index Fyers does not expose. Priceable in
+    # principle, blocked on a series rather than on anything conceptual.
+    "JUNIORBEES": {"kind": "index", "tracks": None, "label": "Nifty Next 50",
+                   "why": "index-unavailable"},
+    "CPSEETF": {"kind": "index", "tracks": None, "label": "Nifty CPSE",
+                "why": "index-unavailable"},
+    "ICICIB22": {"kind": "index", "tracks": None, "label": "S&P BSE Bharat 22",
+                 "why": "index-unavailable"},
+    "MOM100": {"kind": "index", "tracks": None, "label": "Nifty Midcap 100",
+               "why": "index-unavailable"},
+    "MOMENTUM50": {"kind": "index", "tracks": None, "label": "Momentum 50",
+                   "why": "index-unavailable"},
+
+    # Commodity funds. There is no index behind these, only a metal price the
+    # app does not archive, so fair value needs a spot feed rather than a series.
+    "GOLDBEES": {"kind": "commodity", "tracks": None, "label": "Domestic gold",
+                 "why": "no-spot-feed"},
+    "SILVERBEES": {"kind": "commodity", "tracks": None, "label": "Domestic silver",
+                   "why": "no-spot-feed"},
+
+    # Funds on foreign indices. These are where premium matters most, and also
+    # where a ratio is least meaningful: the underlying market is closed while
+    # they trade here, so the gap measures the time difference.
+    "MON100": {"kind": "global", "tracks": None, "label": "Nasdaq 100",
+               "why": "underlying-shut"},
+    "MAFANG": {"kind": "global", "tracks": None, "label": "NYSE FANG+",
+               "why": "underlying-shut"},
+    "HNGSNGBEES": {"kind": "global", "tracks": None, "label": "Hang Seng",
+                   "why": "underlying-shut"},
+
+    # A cash park that trades at a fixed face value. Premium is not a concept
+    # that applies, rather than a number we are missing.
+    "LIQUIDBEES": {"kind": "debt", "tracks": None, "label": "Overnight liquid",
+                   "why": "not-applicable"},
 }
+
+#: ETF -> the index whose level prices it. Derived from `ETFS` rather than
+#: written twice, so a fund cannot be priceable in one place and not the other.
+TRACKED_INDEX: dict[str, str] = {
+    sym: meta["tracks"] for sym, meta in ETFS.items() if meta.get("tracks")
+}
+
+
+def is_etf(symbol: str | None) -> bool:
+    """Whether a symbol is a fund rather than a company."""
+    return str(symbol or "").upper() in ETFS
+
+
+def etf_meta(symbol: str | None) -> dict | None:
+    return ETFS.get(str(symbol or "").upper())
 
 #: Daily bars used to estimate the ratio. Long enough to average out a single
 #: bad print, short enough that an expense drag or a dividend does not bend it.

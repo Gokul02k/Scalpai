@@ -47,6 +47,30 @@ def fund_rows(index_rows, wobble=0.0004, gap=None):
     return out
 
 
+def test_the_fund_registry_is_the_same_on_both_sides():
+    """The registry decides which funds ever get a fair value. If the two copies
+    drift, the dashboard prices a fund the research does not, and neither side
+    reports anything wrong — the column simply means something different from
+    the series being graded."""
+    js = call_js("etf", "registrySnapshot")
+    mismatches = diff(js, etf.ETFS, "ETFS")
+    assert not mismatches, "\n".join(mismatches[:20])
+
+
+def test_only_funds_with_a_priceable_index_are_tracked():
+    """`TRACKED_INDEX` is derived rather than written twice, so this pins the
+    derivation: a fund with no index must not appear, whatever its kind."""
+    assert call_js("etf", "trackedIndexSnapshot") == etf.TRACKED_INDEX
+    assert all(etf.ETFS[sym]["tracks"] for sym in etf.TRACKED_INDEX)
+    assert "GOLDBEES" not in etf.TRACKED_INDEX
+    assert "MON100" not in etf.TRACKED_INDEX
+
+
+def test_fund_recognition_agrees():
+    for sym in ("NIFTYBEES", "goldbees", "RELIANCE", "", None):
+        assert call_js("etf", "isETF", sym) == etf.is_etf(sym)
+
+
 def test_median_agrees():
     for values in ([], [1.0], [3.0, 1.0, 2.0], [4.0, 1.0, 3.0, 2.0], [2.5, 2.5, 1.0]):
         assert call_js("etf", "median", values) == etf.median(values)
