@@ -102,6 +102,9 @@ export async function engineDecision(dashboardSymbol, interval = '5m') {
     suggestion: body.suggestion,
     verdict: body.verdict,
     policy: body.policy,
+    // Optional: an older engine build has no split, and the caller computes
+    // its own from the same parity-tested code rather than showing nothing.
+    strategies: body.strategies ?? null,
   };
 }
 

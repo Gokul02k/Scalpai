@@ -44,6 +44,7 @@ from urllib.parse import parse_qs, urlparse
 from .core import indicators as ind
 from .core import signals as sig
 from .core import smc
+from .core import strategies as strat
 from .core import suggestion as sug
 from .data import CandleStore, get_source, market_status
 from .data.timeutil import IST, from_epoch_ms
@@ -376,6 +377,14 @@ class Engine:
                 "filter": "loaded" if model is not None else "missing",
                 "vixRead": vix is not None,
             },
+            # The same vote, split into the strategies it is made of, so a
+            # reader can see which kind of edge is talking. Served beside the
+            # call rather than inside it: none of the four has been measured on
+            # its own, and only `verdict` above has a gate and a filter behind
+            # it. See engine/core/strategies.py.
+            "strategies": strat.run_strategies(
+                analysis, price, chg_pct, signals, "scalp", symbol
+            ),
             # Alongside the call, never inside it. The structure loses money as
             # a strategy and adds nothing to the filter; it is here to be drawn.
             "structure": smc.annotate(rows, min_sweep_pts=2),

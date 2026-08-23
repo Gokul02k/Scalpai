@@ -202,7 +202,7 @@ function analyzeFVGFactor(analysis) {
   };
 }
 
-function collectFactors(analysis, indexSignals = [], { niftyScalp = false } = {}) {
+export function collectFactors(analysis, indexSignals = [], { niftyScalp = false } = {}) {
   const factors = [];
 
   const fvg = analyzeFVGFactor(analysis);
@@ -240,7 +240,7 @@ function collectFactors(analysis, indexSignals = [], { niftyScalp = false } = {}
   return factors;
 }
 
-function voteFromFactors(factors, chgPct, mode) {
+export function voteFromFactors(factors, chgPct, mode) {
   let buyW = 0;
   let sellW = 0;
   let holdPenalty = 0;

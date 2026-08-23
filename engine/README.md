@@ -258,6 +258,61 @@ answers "does this predict direction on its own", which is not the question
 
 ---
 
+## Splitting the vote into strategies
+
+`engine/core/strategies.py`, mirrored by `app/lib/strategies.js` and diffed with
+zero tolerance in `test_strategies_parity.py`. Served by `/analysis` beside the
+call, and shown as a four-row panel under each index scalp on the dashboard.
+
+The blended vote reports one number, which hides which kind of edge is talking.
+A BUY built from "bounced off support, RSI oversold" is a bet that the range
+holds; the same BUY built from "broke the opening range, holds above VWAP" is a
+bet that it breaks. Blended, a disagreement between the two comes out as low
+confidence — indistinguishable from nothing happening. On a recent 5-minute bar:
+
+| | call | agreement | factors |
+|---|---|---:|---:|
+| **blended** | **HOLD** | **50%** | 9 |
+| Momentum — MACD, EMA, drift | SELL | 85% | 2 |
+| Mean reversion — RSI, Bollinger, S/R | BUY | 90% | 3 |
+| Session — VWAP, opening range, volume | SELL | 85% | 3 |
+| Imbalance — fair-value gaps | BUY | 89% | 1 |
+
+The HOLD is not indecision. It is two strategies buying against two selling, and
+that is only visible once the vote is split.
+
+The partition is enforced rather than assumed: every factor lands in exactly one
+bucket, `unassigned` is returned rather than swallowed, and a test pins it at
+zero on the NIFTY scalp path. The day's change votes in momentum only — counted
+four times it would make all four agree for a reason unrelated to what they
+measure.
+
+**Three caveats, and they matter more than the table.** Each strategy is scored
+by the same `vote_from_factors` with no re-tuned weights or thresholds, so:
+
+1. **The subsets are unbalanced, because v1's weights are.** Reversion can reach
+   a margin of 6 — a support zone alone is weight 4 — where momentum tops out at
+   2. So the blended vote is structurally dominated by reversion and session.
+   That is a fact about v1's hand-chosen constants, not a finding about markets,
+   and it is a candidate for the same treatment the stop floor got.
+2. **Agreement rises as a subset shrinks.** Confidence is
+   `42 + agreement * 35 + |margin| * 4` where `agreement = |margin| / total`, so
+   two factors that agree score the same 85% that eight need. The panel prints
+   the factor count next to every percentage for this reason, and calls the
+   number agreement rather than confidence — the same choice the trend panel
+   makes, for the same reason.
+3. **None of the four has been backtested on its own.** Only the blended call has
+   a measured cost model, the VIX gate and the fitted filter behind it. These
+   read the tape; they do not call it, and the UI says so.
+
+Re-tuning per strategy would fix (1) and (2) at the cost of four unmeasured
+parameter choices stacked on an unmeasured split, and would stop the numbers
+being comparable to the blended call or to each other. The honest order is to
+measure first: the split is deliberately shaped so each strategy can be replayed
+through the existing harness, which is the next thing to do with it.
+
+---
+
 ## Learned signal filter
 
 ```bash
