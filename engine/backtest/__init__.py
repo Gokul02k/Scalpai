@@ -3,6 +3,9 @@ from .compare import Variant, format_comparison, run_variants
 from .costs import CostBreakdown, CostModel, get_cost_model
 from .replay import BacktestConfig, BacktestResult, run_backtest, summarize
 from .smc_replay import SmcParams, SmcResult, SmcTrade, run_smc_backtest
+from .vwap_cross import (
+    VwapCrossParams, VwapCrossResult, VwapTrade, run_vwap_cross_backtest, stop_points,
+)
 
 __all__ = [
     "BacktestConfig",
@@ -13,10 +16,15 @@ __all__ = [
     "SmcResult",
     "SmcTrade",
     "Variant",
+    "VwapCrossParams",
+    "VwapCrossResult",
+    "VwapTrade",
     "format_comparison",
     "get_cost_model",
     "run_backtest",
     "run_smc_backtest",
     "run_variants",
+    "run_vwap_cross_backtest",
+    "stop_points",
     "summarize",
 ]

@@ -255,6 +255,137 @@ def cmd_smc(args) -> int:
     return 0
 
 
+def cmd_vwap_cross(args) -> int:
+    """Replay the EMA-9 / VWAP cross that buys a call or a put on the cross."""
+    from .backtest import VwapCrossParams, get_cost_model, run_vwap_cross_backtest
+    from .backtest.vwap_cross import stop_points
+
+    candles = _load_candles(args.symbol, args.segment, args.interval)
+    if candles is None:
+        return 1
+
+    stop = args.stop_pts if args.stop_pts else stop_points(args.rupee_stop, delta=args.delta)
+    params = VwapCrossParams(
+        ema_period=args.ema,
+        stop_pts=stop,
+        sr_lookback=args.sr_lookback,
+        min_rr=args.min_rr,
+        sides=args.sides,
+    )
+
+    if args.grid:
+        return _vwap_cross_grid(candles, params, args)
+
+    if not args.stop_pts:
+        print(f"\n  ₹{args.rupee_stop:.0f} on one lot of 75 at delta {args.delta} "
+              f"= {stop:.1f} index points")
+    print(f"  replaying {len(candles)} bars of {args.symbol} {args.interval}…")
+    result = run_vwap_cross_backtest(candles, params, get_cost_model(args.costs))
+
+    print()
+    for line in result.summary_lines():
+        print("  " + line)
+
+    if result.sessions_without_volume:
+        total = result.sessions + result.sessions_without_volume
+        print(f"\n  {result.sessions_without_volume} of {total} sessions carry no "
+              f"volume on this feed, and VWAP")
+        print("  cannot be computed without it. They are skipped rather than filled")
+        print("  in from the close, which would silently turn this into 'EMA crosses")
+        print(f"  price'. The result below rests on {result.sessions} sessions, not "
+              f"{total}.")
+
+    if not result.trades:
+        print()
+        return 0
+
+    print("\n  is that real?")
+    for line in result.stress_lines():
+        print("  " + line)
+    print()
+    for line in result.year_lines():
+        print(line)
+
+    if args.show:
+        print(f"\n  {'date':12}{'dir':7}{'entry':>9}{'stop':>9}{'target':>9}"
+              f"  {'in':5} {'out':5} {'status':11}{'pts':>8}{'R':>7}")
+        print("  " + "-" * 90)
+        for t in result.trades[-args.show:]:
+            print(
+                f"  {t.date:12}{t.direction:7}{t.entry:9.1f}{t.stop:9.1f}"
+                f"{t.target:9.1f}  {t.entry_time:5} {t.exit_time:5} "
+                f"{t.status:11}{t.gross_pts:+8.1f}{t.r_multiple:+7.2f}"
+            )
+
+    print()
+    refused = result.counts["skipped_rr"]
+    crosses = result.counts["crosses"] or 1
+    if refused:
+        print(f"  The reward:risk gate refused {refused} of {crosses} crosses "
+              f"({refused / crosses * 100:.0f}%). A {params.stop_pts:.1f}-point stop")
+        print("  against a target at the nearest level is often under 1:1; that is a")
+        print("  property of the rules, not of the market.")
+    net = result.stats["expectancyNetPts"]
+    if net <= 0:
+        print(f"\n  Negative expectancy at {net:+.2f} pts/trade after costs. The cross")
+        print("  marks the move it has already made, and the nearest level is too")
+        print("  close to pay for a stop this wide.")
+    elif result.stats["netWithoutBestThree"] <= 0:
+        print("\n  Positive only because of its best three trades. That is a sample,")
+        print("  not an edge.")
+    else:
+        print(f"\n  Positive at {net:+.2f} pts/trade after costs. Before trusting it:")
+        print("    - the stop is a rupee figure read through an assumed delta;")
+        print("      check `--grid` holds across 0.40 and 0.60")
+        print("    - gross ignores theta, which a premium buyer pays:")
+        print("      python -m engine.cli option-pnl")
+    print()
+    return 0
+
+
+def _vwap_cross_grid(candles, params, args) -> int:
+    """Vary the assumption behind the stop, and the gate that does the work."""
+    from .backtest.vwap_cross import GridRow, default_grid, run_grid
+    from .core.indicators import candles_to_dicts
+
+    variants = default_grid(params)
+    print(f"\n  {len(candles)} bars, {len(variants)} variants across {args.jobs} cores\n")
+    rows = run_grid(candles_to_dicts(candles), variants, args.costs, args.jobs)
+
+    print(GridRow.header())
+    print("  " + "-" * 94)
+    for row in rows:
+        print(row.line())
+    print()
+    winners = [r for r in rows if r.trades and r.stats["expectancyNetPts"] > 0]
+    if not winners:
+        print("  No variant pays after costs. The setup is not a parameter away from")
+        print("  working.")
+        print()
+        return 0
+
+    # A variant that is positive in aggregate but negative without its best
+    # three trades has not found an edge, it has found three trades. Saying so
+    # here rather than leaving it in a column is the difference between a
+    # result and a result someone will quote.
+    fragile = [r for r in winners if r.stats["netWithoutBestThree"] <= 0]
+    print(f"  {len(winners)} of {len(rows)} variants positive after costs.")
+    if fragile:
+        print(f"  {len(fragile)} of those turn negative without their best three "
+              f"trades:")
+        for r in fragile:
+            print(f"    {r.name:24}{r.trades:>5} trades"
+                  f"{r.stats['expectancyNetPts']:>+9.2f} net"
+                  f"{r.stats['netWithoutBestThree']:>+9.2f} ex-best-3")
+        print("  On that sample size that is three trades, not an edge.")
+    solid = [r for r in winners if r not in fragile]
+    if solid:
+        print("  Surviving that check:", ", ".join(r.name for r in solid))
+        print("  Check they hold year by year before reading it as an edge.")
+    print()
+    return 0
+
+
 def _check_smc_columns(samples) -> None:
     """A cache collected without the columns cannot be scored with them."""
     from .ml.smc_features import SMC_FEATURE_NAMES
@@ -1394,6 +1525,31 @@ def main(argv: list[str] | None = None) -> int:
                     choices=["index_points", "option_buy", "equity_intraday", "equity_delivery"])
     sm.add_argument("--show", type=int, default=0, help="print the N most recent trades")
     sm.set_defaults(fn=cmd_smc)
+
+    vc = sub.add_parser("vwap-cross",
+                        help="replay the EMA-9 / VWAP cross that buys a call or a put")
+    vc.add_argument("--symbol", default="NIFTY")
+    vc.add_argument("--segment", default="INDEX")
+    vc.add_argument("--interval", default="5m")
+    vc.add_argument("--ema", type=int, default=9, help="EMA period crossing session VWAP")
+    vc.add_argument("--rupee-stop", type=float, default=800.0,
+                    help="the stop as stated, in rupees on one lot")
+    vc.add_argument("--delta", type=float, default=0.52,
+                    help="option delta used to turn the rupee stop into index points")
+    vc.add_argument("--stop-pts", type=float,
+                    help="set the stop in index points directly, ignoring --rupee-stop")
+    vc.add_argument("--sr-lookback", type=int, default=20,
+                    help="bars behind the support/resistance level used as the target")
+    vc.add_argument("--min-rr", type=float, default=1.5,
+                    help="refuse trades below this reward:risk; 0 measures the rule unfiltered")
+    vc.add_argument("--sides", default="both", choices=["both", "long", "short"])
+    vc.add_argument("--grid", action="store_true",
+                    help="vary the delta behind the stop and the gate, across cores")
+    vc.add_argument("--jobs", type=int, default=8, help="parallel replays for --grid")
+    vc.add_argument("--costs", default="index_points",
+                    choices=["index_points", "option_buy", "equity_intraday", "equity_delivery"])
+    vc.add_argument("--show", type=int, default=0, help="print the N most recent trades")
+    vc.set_defaults(fn=cmd_vwap_cross)
 
     rs = sub.add_parser("research", help="test for conditional structure worth trading")
     rs.add_argument("--symbol", default="NIFTY")

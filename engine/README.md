@@ -85,13 +85,13 @@ engine/
 ├── research/      hypothesis tests with multiple-testing correction
 ├── ml/            signal features and the walk-forward-validated filter
 ├── live/          paper trading: live ticks, strike selection, the book
-├── tests/         214 tests, most of them parity against the live JavaScript
+├── tests/         441 tests, most of them parity against the live JavaScript
 └── cli.py
 ```
 
 Commands: `status`, `probe`, `sync`, `inventory`, `serve`, `backtest`, `ab`,
-`sweep`, `smc`, `ml`, `costs`, `option-pnl`, `regime`, `research`, `train`,
-`paper`, `fyers-auth`.
+`sweep`, `smc`, `vwap-cross`, `ml`, `costs`, `option-pnl`, `regime`,
+`research`, `train`, `paper`, `fyers-auth`.
 
 ### On the port
 
@@ -1247,6 +1247,178 @@ imports it, and
 if that changes. The feature builder is the one deliberate exception, because a
 column handed to a model gets audited out of sample by the run above, which is
 an audit a hand-written rule never gets.
+
+---
+
+## The EMA-9 / VWAP cross, measured
+
+The most widely traded intraday options setup on NIFTY, and the one this
+project gets asked about most: on the 5-minute chart, EMA 9 crosses session
+VWAP upward and you buy a call, downward and you buy a put. Target the nearest
+support or resistance, stop at a fixed rupee loss, one lot, one position at a
+time. `engine/backtest/vwap_cross.py` replays it.
+
+```bash
+python -m engine.cli vwap-cross --show 20   # replay it over the archive
+python -m engine.cli vwap-cross --grid      # and over its parameters
+```
+
+Two translations were needed to test it at all, and both are assumptions rather
+than measurements. **The rupee stop becomes an index-point stop**, because the
+archive holds index series and no option bars, so a stop denominated in premium
+cannot be graded against the tape: ₹800 on one lot of 75 is 10.67 premium
+points, and at an at-the-money delta near 0.52 that is **20.5 index points** of
+adverse move. **Gross is measured in index points**, which ignores theta and
+gamma — the first of which a premium buyer pays every minute they hold.
+
+### First, the reason most of the archive cannot answer this
+
+NIFTY is an index, not a traded instrument, so it has no volume of its own —
+and a volume-weighted average price is undefined without volume. Only **269 of
+2,260 archived sessions** carry any volume on this feed at all, all of them
+from 2025-07-01 onward; the 1,991 sessions before that are strictly zero.
+
+This is not a footnote, it is the first result. The obvious way to handle a
+zero-volume bar is to fall back to the close, and that fallback produces a
+"VWAP" line that *is* the close price — which turns the strategy into "EMA 9
+crosses price", makes it cross on almost every bar, and reports a confident
+nine-year number for a strategy nobody described. The first version of this
+replay did exactly that and produced 28,247 crosses over 2,249 sessions, 12.6 a
+day, every one of them printing with close and VWAP identical.
+
+Two separate things were needed to fix it, and conflating them was the second
+mistake. **What VWAP is**: a bar with no volume contributes nothing to either
+side of `Σ(tp·v)/Σv`, so VWAP after it simply equals VWAP before it — it does
+not corrupt the average, and the only genuinely undefined case is a session
+where nothing has traded at all. `core.vwap_cross.session_vwaps` returns `None`
+for exactly that case and carries the line through padded bars otherwise, which
+matters because live feeds pad the tail of a finished session with zero-volume
+bars. **What the replay will measure against**: `fully_volumed` is a stricter,
+separate test requiring every bar of a session to have traded, because volume
+arriving sporadically produces a VWAP that lurches as the weighting appears.
+The replay applies it and the live panel does not. Keeping them apart is what
+lets the panel keep reading at 15:25 while the backtest still refuses to score
+a session it cannot trust.
+
+It also generalises past this project: anyone reading a VWAP line on a NIFTY
+*index* chart is reading a volume proxy their platform chose, and two platforms
+will disagree. That is worth knowing before attributing a backtest's behaviour
+to the strategy.
+
+### It does not pay
+
+246 fully volumed sessions, 2025-07-01 to 2026-07-31 — one year of evidence,
+not nine:
+
+| | |
+|---|---:|
+| crosses seen | 510 |
+| …refused, reward:risk under 1.5 | 335 |
+| …dropped, already in a trade | 27 |
+| …taken | **118** |
+| win rate | 25.4% |
+| avg win / avg loss | +45.6 / −20.5 pts |
+| expectancy gross | **−3.71 pts/trade** |
+| expectancy net | **−9.71 pts/trade** |
+| profit factor | 0.76 |
+| positive years | **0 of 2** |
+
+Removing its three best trades moves the average from −9.71 to −12.81, so this
+is not a few bad outliers — the median trade loses 26.5 points.
+
+Nor is it the parameters. Eleven variants:
+
+| variant | trades | gross | net | ex-best-3 | positive years |
+|---|---:|---:|---:|---:|---:|
+| baseline (delta 0.52) | 118 | −3.71 | −9.71 | −12.81 | 0/2 |
+| stop @ delta 0.40 | 74 | −2.17 | −8.17 | −15.70 | 0/2 |
+| stop @ delta 0.60 | 141 | −2.12 | −8.12 | −10.67 | 0/2 |
+| no reward:risk gate | 432 | +0.31 | −5.69 | −6.49 | 0/2 |
+| shorts only | 74 | +1.64 | −4.36 | −9.16 | 0/2 |
+| longs only | 53 | −10.49 | −16.49 | −19.72 | 0/2 |
+| S/R lookback 40 | 233 | +1.18 | −4.82 | −6.81 | 0/2 |
+| stop 40 pts | 32 | +9.36 | **+3.36** | −16.07 | 1/2 |
+| stop 60 pts | 20 | +21.13 | **+15.13** | −15.94 | 1/2 |
+
+Two cells are net-positive, and both are the trap the `ex-best-3` column exists
+to catch. `stop 60 pts` returns +15.13 points a trade across **20 trades**, and
+−15.94 without its best three: three trades out of twenty carry the entire
+result. `stop 40 pts` is the same story at 32 trades. Widening the stop does
+not improve the strategy, it reduces the sample until noise can look like an
+edge — and a 60-point stop is ₹2,340 a trade at ATM delta, which is no longer
+the rule anyone described.
+
+### Why it fails, mechanically
+
+Two things the replay makes visible that a chart does not.
+
+**The target is structurally too close.** This is the finding. A ₹800 stop is
+~20 index points, and "nearest support or resistance" on a 20-bar window is
+frequently nearer than that, so the reward:risk gate refuses **335 of 510
+crosses — 66%**. Widening the stop cannot fix it, because a wider stop needs a
+proportionally further target; the gate bites *harder* at 60 points than at 20,
+which
+`test_vwap_cross.py::test_widening_the_stop_cannot_reduce_the_share_the_gate_refuses`
+pins. The rule is self-defeating: the cross fires *because* price has already
+moved toward the level it then wants to target.
+
+**Dropping the gate does not rescue it either.** Taking all 432 crosses lifts
+the win rate to 60.2% — the nearest level is easy to reach when it is close —
+and gross expectancy to +0.31 points, which a 6-point round trip erases. A
+strategy that wins three times in five and still loses money is one whose
+winners are smaller than its costs.
+
+### What this does not establish
+
+The replay trades one formalisation. A discretionary trader takes the cross
+only when the day is trending and stands aside in a range — none of that is
+here. The mechanical core carries no edge on NIFTY by itself, so any live
+version is carried entirely by the judgment laid on top, and that judgment is
+what would need measuring.
+
+The sample is also genuinely small: 246 sessions and 118 trades is not the
+2,249-session evidence base the other results here rest on, and it cannot be
+grown until the feed supplies volume for older sessions. What can be said is
+that on the year that *can* be measured, the strategy loses in both halves.
+
+Two places the result is understated rather than overstated. **Theta is not
+charged**: gross is in index points, and a premium buyer holding through a chop
+pays for the privilege, so the real number for the strategy as traded is worse
+than −9.71. **Ambiguity resolves against the trade** — a bar holding both stop
+and target is booked as a stop, because 5-minute data cannot order two touches.
+
+The one variant not tested is the 1-ITM strike some published versions use. A
+deeper strike is a higher delta, and the delta-0.60 row is the closest proxy:
+more trades, still −8.12 points each.
+
+### It is on the screen, with its number attached
+
+The dashboard shows this inside the NIFTY detail view, because it is the setup
+people ask about most and refusing to draw it does not make anyone stop trading
+it. `app/lib/vwapCross.js` computes the live reading and mirrors
+`engine/core/vwap_cross.py` — both import the same `cross_direction`, and
+`test_vwap_cross_parity.py` diffs them at zero tolerance, so the panel cannot
+show a cross the replay never priced.
+
+What the panel deliberately does *not* look like is the scalp card above it. No
+"Ask EA", no confidence percentage, and the reward:risk verdict gets the same
+billing as the direction — because the finding is that those two disagree two
+thirds of the time. A live example, from the session this was written on: EMA 9
+sitting 11.9 points above VWAP, bullish bias, and the gate refusing anyway
+because the nearest resistance was 17 points away against a 21-point stop,
+which is 0.81:1. A panel printing only "BUY CE" there would be showing the
+losing half of the rule.
+
+The footer carries the measurement, and the `Crosses` chart toggle marks where
+each cross printed — hollow circles rather than "BUY"/"SELL" labels, since a
+cross having happened is a fact and its being worth taking is not.
+
+So, like the trend panel and the smart-money setup, this is analysis and not a
+signal. Nothing in `signals.py`, `suggestion.py`, `indicators.py`, `runner.py`
+or `replay.py` imports it, nothing in `app/lib/suggestion.js`, `signals.js` or
+`strategies.js` imports its JavaScript, and two tests —
+`test_the_replay_is_not_wired_into_signal_generation` and
+`test_the_panel_is_not_wired_into_the_tradeable_call` — fail if that changes.
 
 ---
 

@@ -21,6 +21,7 @@ import { buildUnifiedSuggestion, explainAssetMove, getPortfolioSuggestion } from
 import { runStrategies, STRATEGIES } from "./lib/strategies";
 import { preOpenTrend, postOpenTrend } from "./lib/trend";
 import { annotateStructure } from "./lib/smc";
+import { vwapCrossSignal } from "./lib/vwapCross";
 import { loadPersisted, savePersisted } from "./lib/storage";
 import {
   buildNiftySignalLogEntry,
@@ -284,7 +285,7 @@ function PriceChart({
   candles = [], view = 120, height = 300, C, overlays = null, decimals = 2,
   chartType = "candle", showEMA = true, showBB = false, sym = "",
   fvgs = null, showFVG = false, smc = null, showSMC = false,
-  showVWAP = true, showST = false,
+  showVWAP = true, showST = false, crosses = null, showCross = false,
 }) {
   const wrapRef = useRef(null);
   const svgRef = useRef(null);
@@ -703,6 +704,29 @@ function PriceChart({
           <path key={`vwap-${i}`} d={run} fill="none" stroke={C.yellow} strokeWidth={1.3}
                 strokeDasharray="5 3" opacity={0.85} />
         ))}
+
+        {/* Where EMA 9 changed sides against VWAP. Hollow rather than filled,
+            and without a BUY/SELL word, because the replay of this rule loses
+            9.71 points a trade after costs — the marker says a cross printed
+            here, which is a fact, not that it was worth taking. */}
+        {showCross && crosses && crosses.map((k, i) => {
+          const di = k.index - start;
+          if (di < 0 || di > n - 1) return null;
+          const cx = x(di);
+          const up = k.direction === "long";
+          const py = yP(up ? k.price : k.price);
+          if (py < mT || py > priceBottom) return null;
+          const clr = up ? C.green : C.red;
+          const dy = up ? 13 : -13;
+          return (
+            <g key={`xc-${i}`} pointerEvents="none">
+              <circle cx={cx} cy={py} r={3.2} fill="none" stroke={clr} strokeWidth={1.3} opacity={0.95} />
+              <text x={cx} y={py + dy} fill={clr} fontSize={7.5} fontWeight={800} textAnchor="middle" opacity={0.9}>
+                {up ? "▲" : "▼"}
+              </text>
+            </g>
+          );
+        })}
 
         {/* Drawn as one path per run of the same trend, so the colour flips at
             the bar that flipped rather than sloping between the two sides. */}
@@ -1621,6 +1645,135 @@ function StrategyPanel({ result, blended, source, C }) {
   );
 }
 
+// The EMA 9 / VWAP cross, shown inside the index view because it is the setup
+// people ask about most — and shown with its measurement attached, because
+// `engine/backtest/vwap_cross.py` replayed it over every archived session that
+// carries volume and it returns -3.71 index points a trade before costs and
+// -9.71 after, at a 25.4% win rate, with neither year positive.
+//
+// So this is deliberately not a HorizonCallCard: no "Ask EA", no confidence
+// percentage, and the reward:risk verdict is given equal billing to the
+// direction. On the measured sample that test refuses 66% of crosses, and a
+// panel that printed BUY CE without it would be showing the losing half of the
+// rule and calling it a signal.
+function VwapCrossPanel({ signal, C }) {
+  const [showWorkflow, setShowWorkflow] = useState(false);
+  if (!signal) return null;
+
+  // No volume, no VWAP. Index feeds frequently carry none, and the honest
+  // answer is to say the line cannot be computed rather than to average
+  // closes into something VWAP-shaped.
+  if (!signal.available) {
+    return (
+      <div style={{ background: C.card, border: `1px solid ${C.dim}`, borderRadius: 12, padding: 12, marginBottom: 10 }}>
+        <div style={{ color: C.text, fontWeight: 800, fontSize: 13, marginBottom: 4 }}>EMA 9 × VWAP</div>
+        <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.5 }}>
+          {signal.label === "NO VWAP"
+            ? "This feed reports no volume for today, and VWAP is a volume-weighted average — so there is no line to cross. Averaging closes instead would draw a “VWAP” identical to price."
+            : signal.reason || "Waiting for bars."}
+        </div>
+      </div>
+    );
+  }
+
+  const bullish = signal.bias === "long";
+  const biasClr = bullish ? C.green : C.red;
+  const gatePasses = signal.gate?.passes;
+  // The cross colour, but only when one actually fired on the last bar. A
+  // standing bias is not a signal and must not be dressed as one.
+  const clr = signal.fresh ? (signal.action === "BUY" ? C.green : C.red) : C.muted;
+  const lv = signal.levels;
+
+  return (
+    <div style={{ background: C.card, border: `1px solid ${signal.fresh ? `${clr}44` : C.dim}`, borderRadius: 12, padding: 12, marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+          <div style={{ color: C.text, fontWeight: 800, fontSize: 13 }}>EMA 9 × VWAP</div>
+          <button
+            type="button"
+            onClick={() => setShowWorkflow((v) => !v)}
+            aria-label="How the EMA 9 / VWAP cross works"
+            aria-expanded={showWorkflow}
+            style={{ background: "none", border: "none", padding: 2, cursor: "pointer", color: C.muted, display: "flex", flexShrink: 0 }}
+          >
+            <Info size={14} />
+          </button>
+        </div>
+        <span style={{ fontSize: 9, fontWeight: 800, padding: "3px 8px", borderRadius: 5, background: `${C.muted}22`, color: C.muted }}>
+          {signal.crossesToday} {signal.crossesToday === 1 ? "CROSS" : "CROSSES"} TODAY
+        </span>
+      </div>
+
+      {showWorkflow && (
+        <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.55, background: C.dim, borderRadius: 8, padding: 10, marginBottom: 10 }}>
+          <div style={{ color: C.text, fontWeight: 700, marginBottom: 6 }}>How this works</div>
+          <p style={{ margin: "0 0 8px" }}>
+            EMA 9 crossing above session VWAP is read as bullish (buy a call), crossing below as bearish (buy a put). Target the nearest support or resistance; stop at ₹800 on one lot, which is about {lv?.stopPts} index points at an at-the-money delta of 0.52.
+          </p>
+          <p style={{ margin: "0 0 8px" }}>
+            The cross is read on a <strong style={{ color: C.text }}>completed</strong> bar. The last bar here ({signal.lastBarTime}) may still be printing, so a fresh cross can un-fire before the bar closes.
+          </p>
+          <p style={{ margin: 0 }}>
+            Replayed over every archived session with volume this rule loses <strong style={{ color: C.text }}>9.71 points a trade</strong> after costs, and its reward:risk test refuses 66% of crosses because the nearest level sits closer than the stop. That test is the <em>R:R</em> row below.
+          </p>
+        </div>
+      )}
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+        <span style={{ color: clr, fontSize: 22, fontWeight: 900 }}>
+          {signal.fresh ? (signal.action === "BUY" ? "▲" : "▼") : "•"}
+        </span>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ color: clr, fontSize: 16, fontWeight: 800 }}>{signal.label}</div>
+          <div style={{ color: C.muted, fontSize: 10 }}>
+            EMA {signal.ema} {bullish ? "above" : "below"} VWAP {signal.vwap} by {Math.abs(signal.gapPts)} pts
+            {signal.lastCross ? ` · last cross ${signal.lastCross.time}` : " · no cross yet today"}
+          </div>
+        </div>
+      </div>
+
+      {/* Direction and permission, side by side. The whole finding of the
+          backtest is that these disagree most of the time. */}
+      <div style={{ borderTop: `1px solid ${C.dim}`, paddingTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <span style={{ color: C.muted, fontSize: 11 }}>Bias</span>
+          <span style={{ color: biasClr, fontSize: 11, fontWeight: 700 }}>
+            {bullish ? "bullish — EMA above VWAP" : "bearish — EMA below VWAP"}
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <span style={{ color: C.muted, fontSize: 11 }}>R:R</span>
+          <span style={{ color: gatePasses ? C.green : C.yellow, fontSize: 11, fontWeight: 700, textAlign: "right" }}>
+            {gatePasses ? "clears" : "refused"} · {signal.gate?.reason}
+          </span>
+        </div>
+        {lv && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 2 }}>
+            {[
+              { l: "Entry", v: lv.entry },
+              { l: "Target", v: lv.target },
+              { l: "Stop", v: lv.stop },
+              { l: "R:R", v: lv.rr != null ? `${lv.rr}:1` : "—" },
+            ].map((f) => (
+              <div key={f.l} style={{ flex: "1 1 60px", background: C.dim, borderRadius: 6, padding: "5px 7px" }}>
+                <div style={{ color: C.muted, fontSize: 9, fontWeight: 700, textTransform: "uppercase" }}>{f.l}</div>
+                <div style={{ color: C.text, fontSize: 12, fontWeight: 700 }}>{f.v}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ color: C.muted, fontSize: 10, lineHeight: 1.5, borderTop: `1px solid ${C.dim}`, paddingTop: 8, marginTop: 8 }}>
+        Context only, and a measured loser: replayed over 246 sessions this rule
+        returns <strong style={{ color: C.text }}>−9.71 points a trade</strong> after
+        costs at a 25.4% win rate, positive in neither year. It is here so you can
+        see the cross the chart is making, not to trade off it.
+      </div>
+    </div>
+  );
+}
+
 function StockDetailModal({ stock, news = [], sett, macroCalls, strategySplits, eaState, onAskEA, onRefreshInstrument, onClose, C, S }) {
   const sym = (stock?.name || "").toUpperCase();
   const dataSym = SYMBOL_MAP[sym] || sym;
@@ -1639,7 +1792,7 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, strategySplits, 
   const [chartType, setChartType] = useState("candle");
   // VWAP and a fast EMA are what an intraday chart is read against; everything
   // else is opt-in, because five overlays at once is a chart nobody can read.
-  const [chartOv, setChartOv] = useState({ ema: true, vwap: true, st: false, bb: false, fvg: false, smc: false });
+  const [chartOv, setChartOv] = useState({ ema: true, vwap: true, st: false, bb: false, fvg: false, smc: false, cross: false });
   const [chartNonce, setChartNonce] = useState(0);
   const [chartBusy, setChartBusy] = useState(false);
 
@@ -1725,6 +1878,13 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, strategySplits, 
   // view always agree.
   const scalpCall = isScalpIndex ? (macroCalls?.[sym] ?? null) : null;
   const sessionStats = isScalpIndex ? (analysisByTf["5m"]?.session ?? null) : null;
+  // Read off the 5-minute series regardless of which timeframe the chart is
+  // showing, because that is the series the rule was measured on. Reading it
+  // off a 1-hour chart would be a different strategy wearing the same numbers.
+  const crossSignal = useMemo(
+    () => (isScalpIndex && candlesByTf["5m"]?.length ? vwapCrossSignal(candlesByTf["5m"]) : null),
+    [isScalpIndex, candlesByTf]
+  );
   // Handed down rather than recomputed here, so this view and Home cannot show
   // the same instrument a different split.
   const scalpSplit = isScalpIndex ? (strategySplits?.[sym] ?? null) : null;
@@ -1750,6 +1910,15 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, strategySplits, 
   const smcMarks = useMemo(
     () => (chartOv.smc ? annotateStructure(chartCandles, { minSweepPts: 2 }) : null),
     [chartOv.smc, chartCandles]
+  );
+  // Computed against the displayed series, not the 5-minute one the panel
+  // reads, because the marker positions are indices into these candles. On a
+  // daily chart there is no session VWAP and this comes back empty.
+  const chartCrosses = useMemo(
+    () => (chartOv.cross && chartCandles.length
+      ? vwapCrossSignal(chartCandles).crosses
+      : null),
+    [chartOv.cross, chartCandles]
   );
   const chartAnalysis = analysisByTf[chartTf];
   const overlays = chartAnalysis ? {
@@ -1831,6 +2000,7 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, strategySplits, 
               blended={scalpCall}
               C={C}
             />
+            <VwapCrossPanel signal={crossSignal} C={C} />
             {sessionStats && (
               <div style={{ ...S.card }}>
                 <div style={{ color: C.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>Intraday levels</div>
@@ -1910,7 +2080,7 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, strategySplits, 
           </div>
 
           <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-            {[{ k: "ema", l: "EMA 9" }, { k: "vwap", l: "VWAP" }, { k: "st", l: "Supertrend" }, { k: "bb", l: "Bollinger" }, { k: "fvg", l: "FVG" }, { k: "smc", l: "Structure" }].map((o) => (
+            {[{ k: "ema", l: "EMA 9" }, { k: "vwap", l: "VWAP" }, { k: "cross", l: "Crosses" }, { k: "st", l: "Supertrend" }, { k: "bb", l: "Bollinger" }, { k: "fvg", l: "FVG" }, { k: "smc", l: "Structure" }].map((o) => (
               <button
                 key={o.k}
                 type="button"
@@ -1945,6 +2115,8 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, strategySplits, 
                 fvgs={chartAnalysis?.fvg?.zones}
                 showSMC={chartOv.smc}
                 smc={smcMarks}
+                showCross={chartOv.cross}
+                crosses={chartCrosses}
                 sym={sym}
               />
               <div style={{ color: C.muted, fontSize: 9.5, marginTop: 6 }}>
