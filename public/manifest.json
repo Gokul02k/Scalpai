@@ -1,18 +1,40 @@
 {
+  "id": "/",
   "name": "ScalpAI Trading Dashboard",
   "short_name": "ScalpAI",
   "description": "AI-powered scalping dashboard for NIFTY, SENSEX, BANK NIFTY",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
   "background_color": "#040810",
-  "theme_color": "#00e676",
+  "theme_color": "#040810",
   "orientation": "portrait-primary",
+  "categories": ["finance", "business"],
   "icons": [
     {
-      "src": "/icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }
