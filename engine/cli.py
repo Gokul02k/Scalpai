@@ -1283,6 +1283,140 @@ def _paper_tick(source, book, config, model) -> None:
     book.save()
 
 
+def cmd_cross_paper(args) -> int:
+    """Shadow-trade the EMA 9 / VWAP cross: two arms, index points, no orders."""
+    import time as _time
+    from pathlib import Path
+
+    from .live.cross_shadow import ARMS, CrossBook, CrossConfig
+
+    var = Path(__file__).parent / "var" / "cross"
+    book = CrossBook.load(Path(args.book) if args.book
+                          else var / f"{now_ist():%Y-%m-%d}.json")
+
+    config = CrossConfig(
+        symbol=args.symbol, interval=args.interval, ema_period=args.ema,
+        min_rr=args.min_rr, sr_lookback=args.sr_lookback, cost_pts=args.cost_pts,
+    )
+    if args.stop_pts:
+        config.stop_pts = args.stop_pts
+    book.cost_pts = config.cost_pts
+
+    if args.report:
+        print(f"\n  {book.path}")
+        return _cross_report(book)
+
+    try:
+        source = get_source(args.source)
+    except Exception as e:
+        print(f"\n  cannot reach {args.source}: {e}\n")
+        return 1
+
+    print(f"\n  EMA {config.ema_period} x session VWAP on {config.symbol} "
+          f"{config.interval}")
+    print(f"  stop      {config.stop_pts:.1f} index pts  "
+          f"(Rs 800 / 75 at delta 0.52)")
+    print(f"  arms      gated (R:R >= {config.min_rr:g}) and ungated (every cross)")
+    print(f"  costs     {config.cost_pts:.1f} pts round trip deducted from net")
+    print(f"  book      {book.path}")
+    print(f"  source    {args.source}")
+    print("\n  Shadow only. No orders, and nothing here reaches the paper book")
+    print("  or the dashboard's call. Replayed over 246 sessions this rule")
+    print("  returned -9.71 pts/trade after costs, so treat today as one sample.\n")
+
+    if args.once:
+        _cross_tick(source, book, config)
+        return _cross_report(book)
+
+    try:
+        status = market_status()
+    except HolidayCalendarMissing:
+        status = {"open": True, "label": "unknown", "reason": "no holiday calendar"}
+    if not status["open"] and not args.force:
+        print(f"  market is {status['label']} ({status['reason']}).")
+        print("  Use --force to run anyway against the last available bars.\n")
+        return 0
+
+    print(f"  ticking every {args.every}s until square-off. Ctrl-C to stop.\n")
+    try:
+        while True:
+            _cross_tick(source, book, config)
+            flat = all(book.open_trades.get(arm) is None for arm in ARMS)
+            if now_ist().time() >= config.squareoff_at and flat:
+                print("\n  square-off passed and both arms are flat.\n")
+                break
+            _time.sleep(args.every)
+    except KeyboardInterrupt:
+        print("\n  stopped.\n")
+    return _cross_report(book)
+
+
+def _cross_tick(source, book, config) -> None:
+    """One tick. Same policy as the paper trader: data failures are survivable,
+    bugs print their traceback rather than hiding for a whole session."""
+    import traceback
+
+    from .data.base import DataSourceError
+    from .live.cross_shadow import evaluate
+
+    try:
+        tick = evaluate(source, book, config)
+    except DataSourceError as e:
+        book.note("error", str(e))
+        book.save()
+        print(f"{now_ist():%H:%M:%S}  data source: {e}")
+        return
+    except Exception as e:
+        book.note("bug", f"{type(e).__name__}: {e}")
+        book.save()
+        print(f"{now_ist():%H:%M:%S}  unexpected {type(e).__name__}: {e}")
+        traceback.print_exc()
+        return
+
+    print(tick.line())
+    book.save()
+
+
+def _cross_report(book) -> int:
+    from .live.cross_shadow import ARMS, GATED
+
+    print("\n  shadow results (index points, costs deducted)")
+    for line in book.summary_lines():
+        print(line)
+
+    for arm in ARMS:
+        trades = book.closed_for(arm)
+        if not trades:
+            continue
+        s = book.summary(arm)
+        print(f"\n  {arm}: {s['targets']} target, {s['stops']} stop, "
+              f"{s['squareoffs']} squared off")
+        print(f"    {'time':7}{'dir':7}{'entry':>9}{'stop':>9}{'target':>9}"
+              f"{'R:R':>6}  {'status':10}{'pts':>8}")
+        print("    " + "-" * 74)
+        for t in trades:
+            print(f"    {t.signal_bar:7}{t.direction:7}{t.entry:9.1f}{t.stop:9.1f}"
+                  f"{t.target:9.1f}{(t.rr or 0):6.2f}  {t.status:10}"
+                  f"{t.gross_pts:+8.1f}")
+
+    refused = sum(1 for e in book.log
+                  if e.get("kind") == GATED and "refused" in e.get("msg", ""))
+    if refused:
+        print(f"\n  the gate refused {refused} cross"
+              f"{'es' if refused != 1 else ''} the ungated arm took")
+
+    gated, ungated = book.summary("gated"), book.summary("ungated")
+    if gated["trades"] and ungated["trades"]:
+        delta = gated["net_pts"] - ungated["net_pts"]
+        verb = "better" if delta > 0 else "worse"
+        print(f"  gating ran {abs(delta):.2f} pts/trade {verb} today")
+    if gated["trades"] + ungated["trades"] < 20:
+        print("  (far too few trades to mean anything — the replay took 118 "
+              "over a year)")
+    print()
+    return 0
+
+
 def _paper_report(book) -> int:
     print("\n  paper results")
     for line in book.summary_lines():
@@ -1606,6 +1740,28 @@ def main(argv: list[str] | None = None) -> int:
     pp.add_argument("--force", action="store_true", help="run even when the market is shut")
     pp.add_argument("--book", help="journal file (default engine/var/paper/<date>.json)")
     pp.set_defaults(fn=cmd_paper)
+
+    cp = sub.add_parser("cross-paper",
+                        help="shadow-trade the EMA 9 / VWAP cross, gated and ungated")
+    cp.add_argument("--symbol", default="NIFTY")
+    cp.add_argument("--interval", default="5m")
+    cp.add_argument("--source", default="fyers")
+    cp.add_argument("--ema", type=int, default=9, help="EMA period crossing session VWAP")
+    cp.add_argument("--stop-pts", type=float,
+                    help="stop in index points (default Rs 800 at delta 0.52)")
+    cp.add_argument("--min-rr", type=float, default=1.5,
+                    help="the floor the gated arm applies")
+    cp.add_argument("--sr-lookback", type=int, default=20,
+                    help="bars behind the level used as the target")
+    cp.add_argument("--cost-pts", type=float, default=6.0,
+                    help="round-trip cost deducted from net, matching the replay")
+    cp.add_argument("--every", type=int, default=30, help="seconds between ticks")
+    cp.add_argument("--once", action="store_true", help="evaluate a single tick and exit")
+    cp.add_argument("--report", action="store_true",
+                    help="print a saved book without trading (use with --book)")
+    cp.add_argument("--force", action="store_true", help="run even when the market is shut")
+    cp.add_argument("--book", help="journal file (default engine/var/cross/<date>.json)")
+    cp.set_defaults(fn=cmd_cross_paper)
 
     fa = sub.add_parser("fyers-auth", help="daily Fyers login (tokens expire each day)")
     fa.add_argument("--auth-code", help="the code from the redirect URL")
