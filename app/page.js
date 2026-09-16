@@ -2866,6 +2866,73 @@ export default function App() {
   serverLogConfiguredRef.current = serverLogConfigured;
   const stockNamesKey = portfolio.map((p) => p.name).sort().join(",");
 
+  // ── the phone's back gesture ───────────────────────────────────────────────
+  //
+  // Installed as an app there is no address bar and no tab strip, so back is
+  // the only way out of a screen. Every screen here is React state rather than
+  // a route, which means the browser's history has exactly one entry for the
+  // whole dashboard: the first press used to pop straight past it and close the
+  // app from wherever the user happened to be, mid-chat or three levels into a
+  // detail view.
+  //
+  // Rather than move the screens onto real routes - a rewrite of this file, and
+  // it would put query strings in front of a user who never asked for them - a
+  // placeholder history entry is parked on the stack whenever there is somewhere
+  // inward to come back from. A press spends that entry, the handler closes one
+  // layer, and another is parked while any layer remains, so a single entry
+  // covers any depth.
+  //
+  // Home is the root: back from a tab returns there in one step rather than
+  // retracing the tabs visited on the way. Retracing was tried and measured,
+  // and flipping between two tabs left the gesture walking back and forth
+  // between them instead of heading for the exit.
+  //
+  // Whether an entry is parked is read from `history.state` rather than tracked
+  // in a ref. The two can disagree - the price poll re-rendering between a press
+  // and its state flush is enough to park one against state that is about to
+  // change - and reading the stack means the next render repairs it instead of
+  // leaving a stray entry to swallow the press that should have left the app.
+
+  /** Reassigned every render, so the listener never closes over stale state. */
+  const goBackRef = useRef(() => false);
+
+  const canGoBack = Boolean(selNews) || Boolean(selectedStock) || chatOpen || tab !== "dashboard";
+
+  // Innermost layer first: a news article sits on top of the News tab, and the
+  // detail sheet on top of whichever tab opened it, so closing the outer one
+  // first would strand the sheet over the wrong screen.
+  useEffect(() => {
+    goBackRef.current = () => {
+      if (selNews) { setSelNews(null); return true; }
+      if (selectedStock) { setSelectedStock(null); return true; }
+      if (chatOpen) { setChatOpen(false); return true; }
+      if (tab !== "dashboard") { setTab("dashboard"); return true; }
+      return false;
+    };
+  });
+
+  // Deliberately runs after every render rather than keying off `canGoBack`.
+  // A press that moves between two inward screens - closing the chat over the
+  // Portfolio tab, say - spends the entry without changing that flag, so an
+  // effect watching it would not park another and the next press would escape.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const parked = Boolean(window.history.state?.scalpaiBack);
+    if (canGoBack && !parked) {
+      window.history.pushState({ scalpaiBack: true }, "");
+    } else if (!canGoBack && parked) {
+      // Nothing left to close, so hand the entry back and let the next press
+      // leave instead of spending itself on a guard with no work to do.
+      window.history.back();
+    }
+  });
+
+  useEffect(() => {
+    const onPop = () => { goBackRef.current(); };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
   // Hydrate from localStorage
   useEffect(() => {
     const data = loadPersisted();
