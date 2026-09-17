@@ -192,10 +192,15 @@ changes your portfolio and the model decides what the change was. There is no
 confirmation step. Nothing it does reaches a broker — the edits are local state
 in your browser — but they happen without being approved first.
 
-Gemini is asked first when it has a key, Groq only if Gemini has none or failed,
-and one key is enough. [The assistant](docs/assistant.md) covers what each is
-sent, every command it can issue, how the model picker interacts with the
-fallback, and what to ask it rather than trust it for.
+Keys are added at runtime in **Settings → Assistant** and stay in the browser
+that typed them, so a public deployment does not answer everyone's questions on
+the owner's key. Environment keys are ignored unless `SCALPAI_SHARED_KEYS=1`
+opts into exactly that. Gemini is asked first, Groq only if Gemini has no key or
+failed, and one key is enough.
+
+[The assistant](docs/assistant.md) covers what each is sent, every command it
+can issue, where a key is stored and for how long, and why a retired model reads
+as a rejected key.
 
 ## Configuring
 
@@ -204,7 +209,8 @@ dashboard runs with all of it blank.
 
 | | |
 | --- | --- |
-| `GEMINI_API_KEY` · `GROQ_API_KEY` | The assistant, Gemini first and Groq as the fallback. One is enough, and [what each is sent](docs/assistant.md#what-is-sent) is worth reading before you add either |
+| `GEMINI_API_KEY` · `GROQ_API_KEY` | Only read when `SCALPAI_SHARED_KEYS=1`. Normally a key is added in Settings → Assistant instead |
+| `SCALPAI_SHARED_KEYS` | Let this deployment answer with its own key for anyone who has not added one. Off by default, so a public deployment does not bill the owner |
 | `FYERS_CLIENT_ID` · `FYERS_SECRET_KEY` · `FYERS_REDIRECT_URI` | The engine's market data and option chain. Tokens expire daily, so `engine.cli fyers-auth` is a morning ritual |
 | `ENGINE_URL` | Serve charts and quotes from the engine. Unset means Yahoo |
 | `UPSTASH_REDIS_REST_URL` · `_TOKEN` | The signal log, and the background-alerts switch the cron reads |

@@ -13,24 +13,60 @@ changes.
 
 ## Adding a key
 
-Two providers, tried in that order:
+**Settings → Assistant → Add a key.** Paste it, press **Test**, and it becomes
+available. Two providers, tried in this order:
 
 | | Key from | Environment variable |
 |---|---|---|
 | Gemini | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | `GEMINI_API_KEY`, or `GOOGLE_API_KEY` |
-| Groq | [console.groq.com](https://console.groq.com) | `GROQ_API_KEY` |
+| Groq | [console.groq.com/keys](https://console.groq.com/keys) | `GROQ_API_KEY` |
 
 One is enough. Gemini is asked first whenever it has a key; Groq is only
 reached if Gemini has no key or the call failed, so it is a fallback rather than
-a second opinion. Locally the keys go in `.env.local`; on Vercel they go in
-**Settings → Environment Variables**, and a change needs a redeploy.
+a second opinion.
+
+**Test** lists the provider's models rather than generating anything, so it
+costs no tokens, and it names the model it would actually use. That last part
+matters more than it sounds — see [when a provider fails](#when-a-provider-fails).
+
+### Your key, not the deployment's
+
+A key you add stays in the browser you typed it into. It is sent to `/api/chat`
+and `/api/ea` with your own questions and nowhere else, and it is never written
+to the server — there are no accounts here, so there is nowhere to keep a key
+*for* somebody.
+
+Ticking **remember on this device** puts it in `localStorage`, where it survives
+closing the tab. Leaving it unticked uses `sessionStorage`, and it is gone when
+the tab closes. Saving moves the key between the two rather than copying it, so
+un-ticking genuinely stops it surviving a restart instead of leaving a stale
+copy behind. It is deliberately kept out of the `scalpai-v1` blob that holds
+your portfolio and settings, because that blob is read and rewritten as a single
+object and a secret riding inside it would be copied by anything that ever
+copies it.
+
+A remembered key is readable by anyone with the device, and by any script that
+manages to run on the page — the same footing as a password saved in a browser,
+and the reason the session-only option exists.
+
+### The environment is not consulted by default
+
+`GEMINI_API_KEY` and `GROQ_API_KEY` in the environment are ignored unless
+`SCALPAI_SHARED_KEYS=1` is also set. Without that, a public deployment answers
+nobody's questions on the owner's key, which is what it used to do with no
+indication on screen and the bill arriving later.
+
+Set `SCALPAI_SHARED_KEYS=1` for local development, or on a deployment only you
+can reach, and the environment key fills in for anyone who has not added their
+own. A supplied key still wins over it.
+
+Patchvane resolves this the other way round — there, the environment beats
+anything typed into the page, so an operator can pin a key the page cannot
+replace. That is the right answer for something self-hosted one person at a
+time. Here the goal is the opposite.
 
 The placeholder strings from `.env.example` count as unset, so a half-filled
 `.env.local` behaves as no key rather than as a key that mysteriously 400s.
-
-Keys are read in the route handlers and never reach the browser. The page posts
-to `/api/chat` and `/api/ea`; those two routes are the only things in the
-repository that talk to a model.
 
 ## What is sent
 
@@ -87,8 +123,10 @@ repository can.
 
 ## Picking a model
 
-The chat has a picker. Only the ids below are accepted; anything else falls
-back to `GEMINI_MODEL` from the environment, and then to the default.
+The chat has a picker, and it offers the models of whichever provider is going
+to answer — Gemini's when you hold a Gemini key, Groq's when Groq is all you
+have. It used to list Gemini's unconditionally, which meant somebody arriving
+with only a Groq key was offered four models their key could not reach.
 
 | Gemini | |
 |---|---|
@@ -97,15 +135,14 @@ back to `GEMINI_MODEL` from the environment, and then to the default.
 | `gemini-2.5-flash-lite` | fastest, least capable |
 | `gemini-2.5-pro` | most capable, slowest |
 
-The Groq side runs `llama-3.3-70b-versatile` by default, with
-`llama-3.1-8b-instant`, `gemma2-9b-it` and a vision model also permitted, and
-`GROQ_MODEL` overriding the default.
+| Groq | |
+|---|---|
+| `openai/gpt-oss-120b` | the default |
+| `openai/gpt-oss-20b` | faster |
+| `groq/compound`, `groq/compound-mini` | Groq's own |
+| `qwen/qwen3.8-27b` | |
 
-One asymmetry worth knowing: the picker only applies to Gemini. When the call
-falls through to Groq, the requested model is not carried across and Groq's own
-default answers instead — so a reply that arrives after a Gemini failure may not
-be from the model named in the picker. The response says which provider
-answered.
+`GEMINI_MODEL` and `GROQ_MODEL` override the defaults.
 
 ## When a provider fails
 
@@ -114,9 +151,29 @@ kept, Groq is tried, and if that fails too both messages come back joined
 together, so the reason is the provider's own rather than "AI unavailable".
 
 The status code distinguishes the two cases that need different fixes: **503**
-means nothing is configured, and **502** means a provider was configured and
-broke. A connection error that never reached the route shows as a connection
-error in the chat.
+means no key is available, and **502** means a provider was reached and broke.
+
+### A retired model is not a bad key
+
+Groq turns its catalogue over quickly, and every model this project originally
+named has since been withdrawn. What a valid key returns in that situation is:
+
+```
+The model `llama-3.3-70b-versatile` does not exist or you do not have access to it.
+```
+
+Which is almost indistinguishable from a rejected key, and sends the diagnosis
+in entirely the wrong direction — the symptom is "I added my key and the
+assistant still does not work".
+
+So a named model is treated as a preference. When the provider says it is gone,
+the key is asked which models it can actually reach and the best of those
+answers instead, with non-conversational ones — speech, text-to-speech,
+moderation classifiers — filtered out, because they are served from the same
+endpoint and a naive choice would send a trading question to Whisper. This is
+also why **Test** reports the model it would use rather than just "key works".
+
+The lists above will go stale again. The recovery is the part meant to last.
 
 ## What it is not
 
