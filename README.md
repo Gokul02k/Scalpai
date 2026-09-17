@@ -19,6 +19,7 @@
   <a href="engine/README.md#backtesting"><b>Backtesting</b></a> &nbsp;&#183;&nbsp;
   <a href="engine/README.md#paper-trading"><b>Paper trading</b></a> &nbsp;&#183;&nbsp;
   <a href="#what-it-has-measured"><b>What it measured</b></a> &nbsp;&#183;&nbsp;
+  <a href="docs/assistant.md"><b>The assistant</b></a> &nbsp;&#183;&nbsp;
   <a href="ALGO-PLAN.md"><b>The plan</b></a>
 </p>
 
@@ -136,6 +137,7 @@ decision path.
 
 | | |
 | --- | --- |
+| [The assistant](docs/assistant.md) | Adding a model, what it is asked, and what leaves the machine |
 | [The engine](engine/README.md) | Setup, layout, and why the strategy was ported rather than reimplemented |
 | [Market data](engine/README.md#market-data) | The providers compared, the local archive, and the daily Fyers login |
 | [Backtesting](engine/README.md#backtesting) | Replay, variants, and the walk-forward filter |
@@ -151,6 +153,7 @@ decision path.
 app/        the dashboard: Next.js App Router, one page and its API routes
 app/lib/    indicators, signals and the strategy the engine mirrors in Python
 engine/     data adapters, local archive, backtest, research, ml, paper trader
+docs/       the dashboard's own documentation
 public/     the installable-app pieces: manifest, service worker, icons
 scripts/    the morning routine, paper sessions, sync and status checks
 ```
@@ -175,6 +178,25 @@ admitting its age, so offline shows a page with no numbers on it at all.
 The phone's back gesture unwinds the app — article, then detail sheet, then the
 assistant, then the tab — instead of closing it from wherever you happen to be.
 
+## The assistant
+
+Two of them, asked different things. **Ask EA** reviews one signal card: it gets
+the instrument, the price, the app's own call and every factor behind it, and
+says whether it agrees. **The chat** answers questions about your holdings, and
+it gets your holdings — every message carries one line per position with the
+symbol, the size and the price you paid.
+
+It can also edit them. The chat's prompt teaches the model to reply with command
+blocks, which the page strips out and executes, so "add 10 Reliance at 2850"
+changes your portfolio and the model decides what the change was. There is no
+confirmation step. Nothing it does reaches a broker — the edits are local state
+in your browser — but they happen without being approved first.
+
+Gemini is asked first when it has a key, Groq only if Gemini has none or failed,
+and one key is enough. [The assistant](docs/assistant.md) covers what each is
+sent, every command it can issue, how the model picker interacts with the
+fallback, and what to ask it rather than trust it for.
+
 ## Configuring
 
 Copy `.env.example` to `.env.local`. Everything in it is optional; the
@@ -182,8 +204,7 @@ dashboard runs with all of it blank.
 
 | | |
 | --- | --- |
-| `GEMINI_API_KEY` | Ask EA and the chat assistant. Free key from [AI Studio](https://aistudio.google.com/apikey) |
-| `GROQ_API_KEY` | Fallback, used only when Gemini has no key or errors |
+| `GEMINI_API_KEY` · `GROQ_API_KEY` | The assistant, Gemini first and Groq as the fallback. One is enough, and [what each is sent](docs/assistant.md#what-is-sent) is worth reading before you add either |
 | `FYERS_CLIENT_ID` · `FYERS_SECRET_KEY` · `FYERS_REDIRECT_URI` | The engine's market data and option chain. Tokens expire daily, so `engine.cli fyers-auth` is a morning ritual |
 | `ENGINE_URL` | Serve charts and quotes from the engine. Unset means Yahoo |
 | `UPSTASH_REDIS_REST_URL` · `_TOKEN` | The signal log, and the background-alerts switch the cron reads |
