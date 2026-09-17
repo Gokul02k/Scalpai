@@ -31,8 +31,33 @@ export async function GET(request) {
   // presses once; only a scheduler returns inside the cooldown.
   if (new URL(request.url).searchParams.get('test')) {
     const { enabled } = await getAlertsEnabled();
-    const claim = await claimTestPing();
 
+    // Background alerts off means do not message me, and that has to include
+    // the test ping. It did not: `enabled` was read here only to print in the
+    // readout, so turning the switch off in Settings silenced real signals and
+    // left the diagnostic pinging away — the one case where somebody has said
+    // plainly that they want no messages.
+    //
+    // Checked before the cooldown is claimed, so a call that cannot send does
+    // not spend the slot a real verification would need.
+    if (!enabled) {
+      return Response.json({
+        test: true,
+        config: {
+          storage,
+          telegram: isTelegramConfigured(),
+          alertsEnabled: false,
+          market: market.label,
+        },
+        alert: { sent: false, reason: 'alerts_disabled' },
+        warning:
+          'Background alerts are off in Settings, so nothing was sent. Turn ' +
+          'them on to test delivery. If a scheduler keeps calling this URL, ' +
+          'remove "&test=1" from it.',
+      });
+    }
+
+    const claim = await claimTestPing();
     const alert = claim.allowed
       ? await sendTelegramMessage(formatTestAlert({
           storage,
