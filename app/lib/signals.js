@@ -87,23 +87,30 @@ export function generatePortfolioSignals(portfolio, settings) {
   return signals;
 }
 
+/**
+ * Read a broker export, or any list of symbols, into holdings.
+ *
+ * Only a symbol column is required. A quantity column is read past rather than
+ * demanded: the dashboard tracks what to do with a position, not how large it
+ * is, so insisting on a `qty` header rejected exactly the file somebody with a
+ * watchlist would try to import. Groww and Zerodha exports still work — their
+ * quantity column is simply ignored.
+ */
 export function parsePortfolioCSV(text) {
   const lines = text.trim().split(/\r?\n/).filter(Boolean);
   if (lines.length < 2) return [];
   const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/"/g, ''));
   const nameIdx = headers.findIndex(h => /symbol|name|stock|instrument/.test(h));
-  const qtyIdx = headers.findIndex(h => /qty|quantity|shares/.test(h));
   const priceIdx = headers.findIndex(h => /price|buy|avg|cost|entry/.test(h));
   const sectorIdx = headers.findIndex(h => /sector/.test(h));
-  if (nameIdx < 0 || qtyIdx < 0) return [];
+  if (nameIdx < 0) return [];
 
   return lines.slice(1).map((line, i) => {
     const cols = line.split(',').map(c => c.trim().replace(/"/g, ''));
     const name = cols[nameIdx]?.toUpperCase();
-    const qty = +cols[qtyIdx] || 1;
     const buy = priceIdx >= 0 ? (+cols[priceIdx] || 0) : 0;
     const sector = sectorIdx >= 0 ? cols[sectorIdx] : 'Other';
     if (!name) return null;
-    return { id: Date.now() + i, name, qty, buy, cur: buy || 100, sector };
+    return { id: Date.now() + i, name, buy, cur: buy || 100, sector };
   }).filter(Boolean);
 }

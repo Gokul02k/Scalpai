@@ -98,17 +98,25 @@ function nextHoldingId() {
   return Date.now() * 1000 + (holdingSeq % 1000);
 }
 
-/** Collapse duplicate holdings (same name + type), keeping the most complete row. */
+/**
+ * Collapse duplicate holdings (same name + type), keeping the most complete row.
+ *
+ * Also the one chokepoint where a stored `qty` is dropped. Quantity is no
+ * longer tracked, and every saved portfolio predates that, so without stripping
+ * it here the field would survive every load-and-save cycle for ever and keep
+ * turning up in anything that reads a holding.
+ */
 function dedupePortfolio(list = []) {
   const byKey = new Map();
   for (const s of list) {
     if (!s?.name) continue;
     const key = `${s.type || "stock"}:${String(s.name).toUpperCase()}`;
+    const { qty, ...row } = s;
     const prev = byKey.get(key);
-    if (!prev) { byKey.set(key, s); continue; }
-    // Prefer the row that carries real qty/buy data over a bare watchlist entry.
-    const score = (x) => (x.qty > 1 ? 1 : 0) + (x.buy > 0 ? 1 : 0);
-    if (score(s) > score(prev)) byKey.set(key, s);
+    if (!prev) { byKey.set(key, row); continue; }
+    // Prefer the row carrying a real cost over a bare watchlist entry.
+    const score = (x) => (x.buy > 0 ? 1 : 0);
+    if (score(row) > score(prev)) byKey.set(key, row);
   }
   // Repair ids on the way through. Saved lists predate unique ids, so a stored
   // portfolio can already hold collisions — and a collision means the delete
@@ -2608,7 +2616,7 @@ function PortfolioTab({
     // in the middle of the list while the chip row kept it last.
     return sectors.filter((sec) => groups[sec]).map((sec) => (
       <div key={sec}>
-        <div style={{ color: C.muted, fontSize: 10, fontWeight: 800, textTransform: "uppercase", margin: "8px 2px 8px" }}>{sec} · {groups[sec].length}</div>
+        <div style={{ color: C.muted, fontSize: 10, fontWeight: 800, textTransform: "uppercase", margin: "8px 2px 8px" }}>{sec}</div>
         {groups[sec].map(renderRow)}
       </div>
     ));
@@ -2618,8 +2626,8 @@ function PortfolioTab({
     <div style={{ padding: "0 14px 90px", position: "relative" }}>
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
         {[
-          { id: "stocks", l: `Stocks${stockList.length ? ` · ${stockList.length}` : ""}` },
-          { id: "etfs", l: `ETFs${etfList.length ? ` · ${etfList.length}` : ""}` },
+          { id: "stocks", l: "Stocks" },
+          { id: "etfs", l: "ETFs" },
           { id: "log", l: "Track record" },
         ].map((o) => (
           <button key={o.id} type="button" onClick={() => setView(o.id)} style={{ flex: 1, padding: "9px 8px", borderRadius: 8, background: view === o.id ? C.green : C.card, color: view === o.id ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{o.l}</button>
@@ -3022,7 +3030,7 @@ export default function App() {
 
   const [chatOpen, setChatOpen] = useState(false);
   const [msgs, setMsgs] = useState([
-    { role: "assistant", content: "👋 Hi! I'm your EA assistant.\n\nTry: \"Add RELIANCE 10 shares at 2850\", \"Remove TCS from portfolio\", \"Switch to GOLD\", or \"What does RSI say for NIFTY?\"" },
+    { role: "assistant", content: "👋 Hi! I'm your EA assistant.\n\nTry: \"Add RELIANCE at 2850\", \"Remove TCS from portfolio\", \"Switch to GOLD\", or \"What does RSI say for NIFTY?\"" },
   ]);
   const [chatInput, setChatInput] = useState("");
   const [chatModel, setChatModel] = useState(DEFAULT_GEMINI_MODEL);
@@ -3786,21 +3794,19 @@ export default function App() {
   const P = prices[instrument];
   const cp = P?.cur ?? 0;
 
-  const upsertPortfolioStock = useCallback((name, qty, buy, sector = "Other", type = "stock") => {
+  const upsertPortfolioStock = useCallback((name, buy, sector = "Other", type = "stock") => {
     const sym = type === "mf" ? String(name).trim() : String(name).toUpperCase().replace(/\.NS$/, "");
     const price = +buy || 0;
     const sec = type === "mf" ? "Mutual Fund" : sector;
     setPortfolio((p) => {
       const existing = p.find((s) => s.name.toUpperCase() === sym.toUpperCase() && s.type === type);
       if (existing) {
-        // Only overwrite what the caller actually supplied. Defaulting a missing
-        // quantity to 1, as this did, meant re-adding a symbol you already held
-        // silently reset a real position to a single share.
+        // Only overwrite what the caller actually supplied, so re-adding a
+        // symbol you already hold cannot blank the cost you recorded for it.
         return p.map((s) => (s.id === existing.id
           ? {
             ...s,
             name: sym,
-            qty: +qty > 0 ? +qty : s.qty,
             buy: price || s.buy,
             cur: price || s.cur,
             sector: sec !== "Other" ? sec : s.sector,
@@ -3808,7 +3814,7 @@ export default function App() {
           }
           : s));
       }
-      return [...p, { id: nextHoldingId(), name: sym, qty: +qty > 0 ? +qty : 1, buy: price, cur: price, sector: sec, type }];
+      return [...p, { id: nextHoldingId(), name: sym, buy: price, cur: price, sector: sec, type }];
     });
   }, []);
 
@@ -3830,11 +3836,14 @@ export default function App() {
       if (action === "toggleIndicator") setSett((p) => ({ ...p, ind: { ...p.ind, [value]: !p.ind[value] } }));
       if (action === "setRiskLimit") setSett((p) => ({ ...p, riskLimit: +value }));
       if (action === "setTheme") setTheme(value === "light" ? "light" : "dark");
+      // A `qty` in the model's command is read past rather than rejected: the
+      // older prompt taught it to send one, and a stale conversation should
+      // still be able to add a holding.
       if (action === "addStock") {
-        upsertPortfolioStock(value.name, value.qty, value.price ?? value.buy, value.sector);
+        upsertPortfolioStock(value.name, value.price ?? value.buy, value.sector);
       }
       if (action === "updateStock") {
-        upsertPortfolioStock(value.name, value.qty, value.price ?? value.buy, value.sector);
+        upsertPortfolioStock(value.name, value.price ?? value.buy, value.sector);
       }
       if (action === "removeStock") {
         removePortfolioStock(value.name || value.symbol || value);
@@ -3870,7 +3879,7 @@ export default function App() {
     setChatLoading(true);
     try {
       const portSummary = portfolio.length
-        ? portfolio.map((p) => `${p.name} x${p.qty} @ ₹${p.buy}`).join(", ")
+        ? portfolio.map((p) => (p.buy > 0 ? `${p.name} @ ₹${p.buy}` : p.name)).join(", ")
         : "empty";
       const sys = `You are EA, an investing assistant for Indian markets (NSE) inside this app.
 Focus on swing and long-term investing decisions, not intraday scalping.
@@ -3878,9 +3887,12 @@ When asked whether to buy/sell/hold a stock, weigh BOTH fundamentals (P/E, P/B, 
 Context — NIFTY ₹${fmt(cp)} | RSI ${analysis?.rsi ?? "—"} | Theme ${theme}
 User portfolio: ${portSummary}
 
+This app tracks which stocks the user holds and what to do about them, not how
+many shares. Never ask for or mention a quantity.
+
 When the user asks to add, update, or remove holdings, emit a command (no CSV upload in chat):
-<CMD>{"action":"addStock","value":{"name":"RELIANCE","qty":10,"price":2850,"sector":"Energy"}}</CMD>
-<CMD>{"action":"updateStock","value":{"name":"RELIANCE","qty":15,"price":2900}}</CMD>
+<CMD>{"action":"addStock","value":{"name":"RELIANCE","price":2850,"sector":"Energy"}}</CMD>
+<CMD>{"action":"updateStock","value":{"name":"RELIANCE","price":2900}}</CMD>
 <CMD>{"action":"removeStock","value":{"name":"TCS"}}</CMD>
 
 Other commands via <CMD>{"action":"...","value":"..."}</CMD>:
@@ -3913,12 +3925,12 @@ Tabs: dashboard|portfolio|news|settings`;
     reader.onload = (ev) => {
       const parsed = parsePortfolioCSV(ev.target.result);
       if (!parsed.length) {
-        alert("Could not read CSV. Use columns: symbol/name, qty, price/buy (Groww/Zerodha export).");
+        alert("Could not read CSV. It needs a symbol/name column; price is optional (a Groww or Zerodha export works as-is).");
         return;
       }
       // Merged, not replaced. Importing one broker's holdings used to discard
       // everything already in the list, which is a lot to lose to a file picker.
-      // Imported rows win on conflict, since they carry real qty and cost.
+      // Imported rows win on conflict, since they carry a real cost.
       setPortfolio((prev) => dedupePortfolio([...prev, ...parsed.map((s) => ({ ...s, id: nextHoldingId() }))]));
     };
     reader.readAsText(file);
