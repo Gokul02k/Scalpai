@@ -1,5 +1,6 @@
-import { geminiGenerate, hasGemini, GEMINI_SETUP_HINT } from '../../lib/gemini';
-import { groqGenerate, getGroqKey } from '../../lib/groq';
+import { geminiGenerate, hasGemini } from '../../lib/gemini';
+import { groqGenerate, hasGroq } from '../../lib/groq';
+import { keysFromBody, sharedKeysEnabled } from '../../lib/aiShared';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +24,12 @@ function buildPrompt(ctx) {
 
 export async function POST(request) {
   try {
-    const ctx = await request.json();
+    const body = await request.json();
+    // Split the keys off the context before anything reads it, so a key cannot
+    // reach `buildPrompt` however that function grows later.
+    const keys = keysFromBody(body);
+    const { keys: _discard, ...ctx } = body || {};
+
     if (!ctx?.instrument || !ctx?.finalCall) {
       return Response.json({ error: 'Missing instrument or signal context' }, { status: 400 });
     }
@@ -38,29 +44,38 @@ Keep under 120 words. Plain English. This is suggestion-only, not financial advi
     const userPrompt = buildPrompt(ctx);
     const errors = [];
 
-    if (hasGemini()) {
+    if (hasGemini(keys.gemini)) {
       try {
-        const text = await geminiGenerate({ system, userPrompt, maxTokens: 450 });
+        const text = await geminiGenerate({ system, userPrompt, maxTokens: 450, apiKey: keys.gemini });
         return Response.json({ text, provider: 'gemini' });
       } catch (error) {
-        console.error('Gemini EA error:', error);
+        console.error('Gemini EA failed:', error.message);
         errors.push(`Gemini: ${error.message}`);
       }
     }
 
-    if (getGroqKey()) {
+    if (hasGroq(keys.groq)) {
       try {
-        const text = await groqGenerate({ system, userPrompt, maxTokens: 450 });
+        const text = await groqGenerate({ system, userPrompt, maxTokens: 450, apiKey: keys.groq });
         return Response.json({ text, provider: 'groq' });
       } catch (error) {
-        console.error('Groq EA error:', error);
+        console.error('Groq EA failed:', error.message);
         errors.push(`Groq: ${error.message}`);
       }
     }
 
-    const message = errors.length ? errors.join(' | ') : `AI is not configured. ${GEMINI_SETUP_HINT}`;
-    const status = /not set|configured/i.test(message) ? 503 : 502;
-    return Response.json({ error: message }, { status });
+    if (errors.length) {
+      return Response.json({ error: errors.join(' | ') }, { status: 502 });
+    }
+    return Response.json(
+      {
+        error: sharedKeysEnabled()
+          ? 'AI is not configured. Add a key in Settings → Assistant, or set GEMINI_API_KEY on the server.'
+          : 'Add your own Gemini or Groq key in Settings → Assistant. This deployment does not share one.',
+        needsKey: true,
+      },
+      { status: 503 }
+    );
   } catch (error) {
     console.error('EA API error:', error);
     return Response.json({ error: error.message || 'Failed to reach AI provider' }, { status: 502 });

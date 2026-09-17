@@ -23,6 +23,8 @@ import { preOpenTrend, postOpenTrend } from "./lib/trend";
 import { annotateStructure } from "./lib/smc";
 import { vwapCrossSignal } from "./lib/vwapCross";
 import { loadPersisted, savePersisted } from "./lib/storage";
+import { AI_PROVIDERS, maskKey } from "./lib/aiProviders";
+import { loadAiKeys, loadAiKeyMeta, saveAiKey, clearAiKey } from "./lib/aiKeys";
 import {
   buildNiftySignalLogEntry,
   applyNiftyLogUpdate,
@@ -43,6 +45,7 @@ import {
 import { getMarketStatus } from "./lib/marketHours";
 import { THEMES, cardStyle, glassStyle } from "./lib/themes";
 import { GEMINI_CHAT_MODELS, DEFAULT_GEMINI_MODEL } from "./lib/geminiModels";
+import { GROQ_CHAT_MODELS } from "./lib/groqModels";
 
 const INSTRUMENTS = {
   "NIFTY":  { base: 25000, vol: 0.0012, lot: 50 },
@@ -2791,6 +2794,171 @@ function MoveCard({ move, C, S }) {
   );
 }
 
+/**
+ * Where a key is typed in, tested and forgotten again.
+ *
+ * Deliberately a module-level component rendered from the root rather than a
+ * card inside the Settings tab. The tab bodies are arrow functions rebuilt on
+ * every render, so React remounts that whole subtree each time the five-second
+ * price poll lands — which a text input cannot survive, because it loses focus
+ * and its half-typed contents with it.
+ */
+function AiKeysSheet({ keys, meta, shared, onSave, onClear, onClose, C, S }) {
+  const [drafts, setDrafts] = useState({});
+  const [remember, setRemember] = useState(() => {
+    const out = {};
+    for (const p of AI_PROVIDERS) out[p.id] = meta[p.id]?.remembered ?? true;
+    return out;
+  });
+  const [tests, setTests] = useState({});
+
+  const test = async (id) => {
+    const candidate = (drafts[id] ?? "").trim() || keys[id] || "";
+    setTests((t) => ({ ...t, [id]: { busy: true } }));
+    try {
+      const res = await fetch("/api/ai-test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: id, key: candidate }),
+      });
+      const data = await res.json();
+      setTests((t) => ({
+        ...t,
+        [id]: { busy: false, ok: data.ok, msg: data.ok ? (data.detail || "Key works") : (data.error || "Key rejected") },
+      }));
+    } catch {
+      setTests((t) => ({ ...t, [id]: { busy: false, ok: false, msg: "Could not reach the server" } }));
+    }
+  };
+
+  const save = (id) => {
+    const value = (drafts[id] ?? "").trim();
+    if (!value) return;
+    onSave(id, value, remember[id]);
+    setDrafts((d) => ({ ...d, [id]: "" }));
+    setTests((t) => ({ ...t, [id]: { busy: false, ok: true, msg: "Saved" } }));
+  };
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.72)", backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", zIndex: 220, display: "flex", alignItems: "flex-end", justifyContent: "center" }}
+      onClick={onClose}
+    >
+      <div
+        style={{ ...glassStyle(C), width: "100%", maxWidth: 520, maxHeight: "86vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: "16px 16px calc(20px + env(safe-area-inset-bottom))" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <div style={{ color: C.text, fontWeight: 800, fontSize: 16 }}>Assistant keys</div>
+          <button onClick={onClose} aria-label="Close" style={{ background: C.dim, border: "none", color: C.muted, cursor: "pointer", borderRadius: 8, padding: 6 }}><X size={16} /></button>
+        </div>
+
+        <p style={{ color: C.muted, fontSize: 11, lineHeight: 1.55, margin: "0 0 14px" }}>
+          {shared
+            ? "This deployment shares its own key, so the assistant already works. A key you add here is used instead of it."
+            : "The assistant needs a key of your own. It is kept on this device and sent only with your own questions — nobody else's."}
+        </p>
+
+        {AI_PROVIDERS.map((p) => {
+          const held = keys[p.id];
+          const state = tests[p.id];
+          const draft = drafts[p.id] ?? "";
+          const odd = draft.length > 8 && !p.looksRight(draft);
+          return (
+            <div key={p.id} style={{ ...S.card, marginBottom: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+                  <span style={{ color: C.text, fontWeight: 800, fontSize: 14 }}>{p.label}</span>
+                  <span style={{ color: C.muted, fontSize: 9, border: `1px solid ${C.dim}`, borderRadius: 999, padding: "1px 6px" }}>
+                    {p.order === 1 ? "tried first" : "fallback"}
+                  </span>
+                </div>
+                {held ? (
+                  <span style={{ color: C.green, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" }}>
+                    {maskKey(held)} · {meta[p.id]?.remembered ? "saved" : "this session"}
+                  </span>
+                ) : (
+                  <span style={{ color: C.muted, fontSize: 10 }}>not set</span>
+                )}
+              </div>
+
+              <div style={{ display: "flex", gap: 6, marginTop: 9 }}>
+                <input
+                  type="password"
+                  value={draft}
+                  onChange={(e) => setDrafts((d) => ({ ...d, [p.id]: e.target.value }))}
+                  placeholder={held ? "Replace key…" : `Paste ${p.label} key`}
+                  autoComplete="off"
+                  spellCheck={false}
+                  style={{ flex: 1, minWidth: 0, background: C.dim, border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 10px", color: C.text, fontSize: 12, fontFamily: "monospace" }}
+                />
+                <button
+                  onClick={() => save(p.id)}
+                  disabled={!draft.trim()}
+                  style={{ background: draft.trim() ? C.green : C.dim, border: "none", borderRadius: 8, padding: "9px 13px", color: draft.trim() ? "#04240f" : C.muted, fontWeight: 700, fontSize: 12, cursor: draft.trim() ? "pointer" : "default" }}
+                >
+                  Save
+                </button>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 9 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, color: C.muted, fontSize: 11, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={remember[p.id]}
+                    onChange={(e) => setRemember((r) => ({ ...r, [p.id]: e.target.checked }))}
+                    style={{ accentColor: C.green }}
+                  />
+                  Remember on this device
+                </label>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    onClick={() => test(p.id)}
+                    disabled={state?.busy || (!draft.trim() && !held && !shared)}
+                    style={{ background: C.dim, border: `1px solid ${C.border}`, borderRadius: 8, padding: "6px 11px", color: C.text, fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+                  >
+                    {state?.busy ? "Testing…" : "Test"}
+                  </button>
+                  {held && (
+                    <button
+                      onClick={() => { onClear(p.id); setTests((t) => ({ ...t, [p.id]: undefined })); }}
+                      style={{ background: "transparent", border: `1px solid ${C.red}55`, borderRadius: 8, padding: "6px 11px", color: C.red, fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+                    >
+                      Forget
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {odd && (
+                <div style={{ color: C.yellow, fontSize: 10, marginTop: 7 }}>
+                  {p.hint} — saving anyway, in case the format changed.
+                </div>
+              )}
+              {state?.msg && (
+                <div style={{ color: state.ok ? C.green : C.red, fontSize: 10, marginTop: 7, lineHeight: 1.45 }}>
+                  {state.msg}
+                </div>
+              )}
+              <div style={{ color: C.muted, fontSize: 10, marginTop: 7 }}>
+                Free key from <a href={p.keyUrl} target="_blank" rel="noreferrer" style={{ color: C.blue }}>{p.keyUrlLabel}</a>
+              </div>
+            </div>
+          );
+        })}
+
+        <p style={{ color: C.muted, fontSize: 10, lineHeight: 1.55, margin: "12px 2px 0" }}>
+          A remembered key sits in this browser&apos;s storage, so anyone with the
+          device can read it — the same footing as a saved password, and the
+          reason &quot;this session&quot; exists. Keys are sent to Google or Groq only,
+          never to a third party, and the chat also sends your holdings; see
+          docs/assistant.md.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [theme, setTheme] = useState("dark");
   const C = THEMES[theme];
@@ -2843,6 +3011,15 @@ export default function App() {
   const [marketStatus, setMarketStatus] = useState(() => getMarketStatus());
   const [selectedStock, setSelectedStock] = useState(null);
 
+  // Assistant keys live on this device, not on the server: see lib/aiKeys.js.
+  // `aiShared` records whether the deployment will answer without one, so the
+  // settings card can say "bring your own" instead of offering a chat that
+  // fails on the first message.
+  const [aiKeys, setAiKeys] = useState({});
+  const [aiKeyMeta, setAiKeyMeta] = useState({});
+  const [aiKeysOpen, setAiKeysOpen] = useState(false);
+  const [aiShared, setAiShared] = useState(false);
+
   const [chatOpen, setChatOpen] = useState(false);
   const [msgs, setMsgs] = useState([
     { role: "assistant", content: "👋 Hi! I'm your EA assistant.\n\nTry: \"Add RELIANCE 10 shares at 2850\", \"Remove TCS from portfolio\", \"Switch to GOLD\", or \"What does RSI say for NIFTY?\"" },
@@ -2855,12 +3032,17 @@ export default function App() {
   const csvRef = useRef(null);
   const portfolioRef = useRef(portfolio);
   const pricesRef = useRef(prices);
+  const aiKeysRef = useRef({});
   const prevNiftyLogRef = useRef(null);
   const niftyLogRef = useRef([]);
   const portfolioLogRef = useRef([]);
   const serverLogConfiguredRef = useRef(false);
   portfolioRef.current = portfolio;
   pricesRef.current = prices;
+  // Read by askEA, which is memoised with no dependencies so the signal cards
+  // do not re-render on every tick. Without the ref it would send the keys as
+  // they were on first render, which is to say none of them.
+  aiKeysRef.current = aiKeys;
   niftyLogRef.current = niftySignalLog;
   portfolioLogRef.current = portfolioSignalLog;
   serverLogConfiguredRef.current = serverLogConfigured;
@@ -2896,13 +3078,41 @@ export default function App() {
   /** Reassigned every render, so the listener never closes over stale state. */
   const goBackRef = useRef(() => false);
 
-  const canGoBack = Boolean(selNews) || Boolean(selectedStock) || chatOpen || tab !== "dashboard";
+  const aiHeld = AI_PROVIDERS.filter((p) => aiKeys[p.id]);
+  const aiConfigured = aiHeld.length > 0;
+  const aiConfiguredLabel = aiHeld.map((p) => p.label).join(" and ");
+
+  // The picker used to list Gemini models unconditionally, which is wrong the
+  // moment somebody arrives with only a Groq key: every option in it names a
+  // model their key cannot reach. Offer the models of whichever provider will
+  // actually answer — Gemini first, exactly as the routes try them.
+  const chatProvider = aiKeys.gemini || (!aiKeys.groq && aiShared)
+    ? "gemini"
+    : aiKeys.groq
+      ? "groq"
+      : "gemini";
+  const chatModelChoices = chatProvider === "groq" ? GROQ_CHAT_MODELS : GEMINI_CHAT_MODELS;
+  const chatProviderLabel = chatProvider === "groq"
+    ? "Powered by Groq"
+    : "Powered by Google Gemini";
+
+  // Keep the selection inside the list on offer, so switching keys cannot leave
+  // a Gemini id selected while Groq is the provider being asked.
+  useEffect(() => {
+    if (!chatModelChoices.some((m) => m.id === chatModel)) {
+      setChatModel(chatModelChoices[0]?.id);
+    }
+  }, [chatModelChoices, chatModel]);
+
+  const canGoBack = Boolean(selNews) || Boolean(selectedStock) || chatOpen
+    || aiKeysOpen || tab !== "dashboard";
 
   // Innermost layer first: a news article sits on top of the News tab, and the
   // detail sheet on top of whichever tab opened it, so closing the outer one
   // first would strand the sheet over the wrong screen.
   useEffect(() => {
     goBackRef.current = () => {
+      if (aiKeysOpen) { setAiKeysOpen(false); return true; }
       if (selNews) { setSelNews(null); return true; }
       if (selectedStock) { setSelectedStock(null); return true; }
       if (chatOpen) { setChatOpen(false); return true; }
@@ -2933,6 +3143,27 @@ export default function App() {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
+  useEffect(() => {
+    setAiKeys(loadAiKeys());
+    setAiKeyMeta(loadAiKeyMeta());
+    fetch("/api/ai-test", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setAiShared(Boolean(d?.available?.length)))
+      .catch(() => {});
+  }, []);
+
+  const applyAiKey = useCallback((id, key, remember) => {
+    saveAiKey(id, key, remember);
+    setAiKeys(loadAiKeys());
+    setAiKeyMeta(loadAiKeyMeta());
+  }, []);
+
+  const forgetAiKey = useCallback((id) => {
+    clearAiKey(id);
+    setAiKeys(loadAiKeys());
+    setAiKeyMeta(loadAiKeyMeta());
+  }, []);
+
   // Hydrate from localStorage
   useEffect(() => {
     const data = loadPersisted();
@@ -2942,7 +3173,7 @@ export default function App() {
       if (data.sett) setSett(data.sett);
       if (data.refresh) setRefresh(data.refresh);
       if (data.alerts) setAlerts(data.alerts);
-      if (data.chatModel && GEMINI_CHAT_MODELS.some((m) => m.id === data.chatModel)) setChatModel(data.chatModel);
+      if (data.chatModel && [...GEMINI_CHAT_MODELS, ...GROQ_CHAT_MODELS].some((m) => m.id === data.chatModel)) setChatModel(data.chatModel);
       if (data.niftySignalLog?.length) {
         setNiftySignalLog(data.niftySignalLog);
         prevNiftyLogRef.current = data.niftySignalLog[0];
@@ -3618,7 +3849,7 @@ export default function App() {
       const res = await fetch("/api/ea", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, keys: aiKeysRef.current }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -3658,7 +3889,7 @@ Tabs: dashboard|portfolio|news|settings`;
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ system: sys, messages: [...msgs.slice(-8), { role: "user", content: text }], model: chatModel }),
+        body: JSON.stringify({ system: sys, messages: [...msgs.slice(-8), { role: "user", content: text }], model: chatModel, keys: aiKeys }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -3989,6 +4220,25 @@ Tabs: dashboard|portfolio|news|settings`;
           <Toggle on={bgAlerts.enabled} onToggle={toggleBackgroundAlerts} C={C} />
         </div>
       </div>
+
+      <div style={S.card}>
+        <div style={{ color: C.text, fontWeight: 700, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+          <MessageCircle size={14} /> Assistant
+        </div>
+        <p style={{ color: C.muted, fontSize: 10, lineHeight: 1.5, margin: "0 0 10px" }}>
+          {aiConfigured
+            ? `Ready — ${aiConfiguredLabel}.`
+            : aiShared
+              ? "Ready on this deployment's own key. Add yours to use it instead."
+              : "Needs a key of your own. Free from Google AI Studio or Groq, kept on this device."}
+        </p>
+        <button
+          onClick={() => setAiKeysOpen(true)}
+          style={{ width: "100%", background: aiConfigured || aiShared ? C.dim : C.green, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px", color: aiConfigured || aiShared ? C.text : "#04240f", fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+        >
+          {aiConfigured ? "Manage keys" : "Add a key"}
+        </button>
+      </div>
     </div>
   );
 
@@ -4185,6 +4435,19 @@ Tabs: dashboard|portfolio|news|settings`;
         />
       )}
 
+      {aiKeysOpen && (
+        <AiKeysSheet
+          keys={aiKeys}
+          meta={aiKeyMeta}
+          shared={aiShared}
+          onSave={applyAiKey}
+          onClear={forgetAiKey}
+          onClose={() => setAiKeysOpen(false)}
+          C={C}
+          S={S}
+        />
+      )}
+
       {selNews && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", zIndex: 200, display: "flex", alignItems: "flex-end" }} onClick={() => setSelNews(null)}>
           <div onClick={(e) => e.stopPropagation()} style={{ ...glassStyle(C), borderRadius: "22px 22px 0 0", padding: 20, width: "100%", maxHeight: "72vh", overflowY: "auto", boxShadow: C.shadow }}>
@@ -4209,13 +4472,15 @@ Tabs: dashboard|portfolio|news|settings`;
           <div style={{ ...glassStyle(C), borderTop: "none", borderLeft: "none", borderRight: "none", padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>⚡ AI Assistant</div>
-              <div style={{ color: C.muted, fontSize: 10, marginBottom: 8 }}>Powered by Google Gemini</div>
+              <div style={{ color: C.muted, fontSize: 10, marginBottom: 8 }}>
+                {chatProviderLabel}
+              </div>
               <select
                 value={chatModel}
                 onChange={(e) => setChatModel(e.target.value)}
                 style={{ width: "100%", maxWidth: 280, padding: "6px 10px", borderRadius: 8, background: C.dim, color: C.text, border: `1px solid ${C.border}`, fontSize: 12, outline: "none" }}
               >
-                {GEMINI_CHAT_MODELS.map((m) => (
+                {chatModelChoices.map((m) => (
                   <option key={m.id} value={m.id}>{m.label}</option>
                 ))}
               </select>

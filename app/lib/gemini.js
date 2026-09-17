@@ -1,16 +1,43 @@
 import { resolveGeminiModel } from './geminiModels';
+import { resolveKey } from './aiShared';
 
 export const GEMINI_SETUP_HINT =
-  'Add GEMINI_API_KEY from https://aistudio.google.com/apikey in Vercel → Environment Variables, then redeploy.';
+  'Add a Gemini key in Settings → Assistant, or set GEMINI_API_KEY with SCALPAI_SHARED_KEYS=1 to share the deployment\'s own.';
 
-export function getGeminiKey() {
-  const key = (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)?.trim();
-  if (!key || key === 'your_gemini_api_key_here') return null;
-  return key;
+/**
+ * The key for this request: the caller's, or the deployment's when sharing is
+ * on. `apiKey` is what the settings page sent up with the request.
+ */
+export function getGeminiKey(apiKey) {
+  return resolveKey('gemini', apiKey);
 }
 
-export function hasGemini() {
-  return Boolean(getGeminiKey());
+export function hasGemini(apiKey) {
+  return Boolean(getGeminiKey(apiKey));
+}
+
+const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta';
+
+/**
+ * One cheap round trip that tells us whether a key works.
+ *
+ * Lists models rather than generating, so pressing Test never spends tokens
+ * and never depends on a particular model still existing.
+ */
+export async function geminiVerifyKey(apiKey) {
+  const key = (apiKey || '').trim();
+  if (!key) throw new Error('No key supplied');
+
+  const res = await fetch(`${GEMINI_API}/models`, {
+    headers: { 'x-goog-api-key': key },
+    cache: 'no-store',
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error(data?.error?.message || `Gemini rejected the key (${res.status})`);
+  }
+  const count = (data?.models || []).length;
+  return { ok: true, detail: count ? `${count} models available` : 'key accepted' };
 }
 
 export async function geminiChat({
@@ -19,9 +46,10 @@ export async function geminiChat({
   maxTokens = 1000,
   temperature = 0.5,
   model,
+  apiKey,
 }) {
-  const apiKey = getGeminiKey();
-  if (!apiKey) throw new Error(`GEMINI_API_KEY is not set. ${GEMINI_SETUP_HINT}`);
+  const key = getGeminiKey(apiKey);
+  if (!key) throw new Error(`No Gemini key. ${GEMINI_SETUP_HINT}`);
 
   const resolved = resolveGeminiModel(model);
 
@@ -39,12 +67,12 @@ export async function geminiChat({
   };
 
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(resolved)}:generateContent`,
+    `${GEMINI_API}/models/${encodeURIComponent(resolved)}:generateContent`,
     {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
+        'x-goog-api-key': key,
       },
       body: JSON.stringify(body),
       cache: 'no-store',
@@ -72,6 +100,7 @@ export async function geminiGenerate({
   maxTokens = 800,
   temperature = 0.35,
   model,
+  apiKey,
 }) {
   return geminiChat({
     system,
@@ -79,5 +108,6 @@ export async function geminiGenerate({
     maxTokens,
     temperature,
     model,
+    apiKey,
   });
 }
