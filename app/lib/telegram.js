@@ -128,7 +128,15 @@ export function formatNiftySignalAlert(entry) {
   return lines.join('\n');
 }
 
-/** Setup-check message, so delivery can be verified outside market hours. */
+/**
+ * Setup-check message, so delivery can be verified outside market hours.
+ *
+ * It says how to switch itself off, because the documented way to verify a
+ * scheduler is to add `&test=1` to the URL — and a scheduler left on that URL
+ * sends this, unchanged, every couple of minutes around the clock. Whoever is
+ * being woken up by it is reading this message and nothing else, so the
+ * instruction belongs here rather than only in a README.
+ */
 export function formatTestAlert(context = {}) {
   const now = new Date();
   const stamp = now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'medium' });
@@ -141,8 +149,18 @@ export function formatTestAlert(context = {}) {
     `Signal storage: ${context.storage ? 'configured' : '<b>NOT configured</b>'}`,
     `Background alerts: ${context.enabled === false ? '<b>OFF</b> — turn the toggle on in Settings' : 'on'}`,
     `Market: ${esc(context.market || 'unknown')}`,
-    '',
-    `<i>${esc(stamp)} IST</i>`,
   ];
+
+  if (context.repeated) {
+    lines.push(
+      '',
+      '⚠️ <b>Getting this repeatedly?</b>',
+      'Your scheduler is calling the endpoint with <code>&amp;test=1</code> still on it.',
+      'Remove <code>&amp;test=1</code> from the cron URL and these stop — real signal',
+      'alerts are unaffected.'
+    );
+  }
+
+  lines.push('', `<i>${esc(stamp)} IST</i>`);
   return lines.join('\n');
 }

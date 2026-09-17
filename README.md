@@ -233,9 +233,17 @@ IST. **Every two minutes** is the interval to pick: each tick rewrites the whole
 log blob, so Upstash bandwidth is the limit you would reach first, and signals
 are scored on 5-minute candles so a faster poll buys nothing.
 
-Append `&test=1` to that URL to get a Telegram test message and a config
-readout; any `false` in it is the thing to fix. Alerts fire on **new** signals
-only, so a call that persists updates its log row without messaging you again.
+Append `&test=1` to that URL **in a browser** to get a Telegram test message and
+a config readout; any `false` in it is the thing to fix. Then **give the
+scheduler the URL without `&test=1`.** Test mode ignores market hours on
+purpose — that is how you check delivery while the market is shut — so a
+scheduler left on that URL is the one thing here that can message you at 3am,
+with the same text every time. Repeat test pings are capped at one per fifteen
+minutes and say how to stop themselves, but the fix is to drop the parameter.
+
+Real alerts fire on **new** signals only, so a call that persists updates its
+log row without messaging you again, and the tick returns
+`{"skipped":true,"reason":"market_closed"}` outside trading hours.
 
 **Settings → Alerts → Background alerts** is the master switch, stored on the
 server rather than in your browser so the cron can see it. With it off each call
@@ -251,6 +259,7 @@ messages.
 | VWAP panel reads "no volume" | Expected on Yahoo data, which reports zero volume for an index. It needs the engine |
 | Assistant says it is not configured | Add `GEMINI_API_KEY` and redeploy |
 | Prices frozen | Market hours are 09:15–15:30 IST; outside them the last close is correct |
+| Telegram repeating the same message, at night | Your scheduler still has `&test=1` on the cron URL. Remove it — the real tick skips when the market is shut |
 | No install option on the phone | Install needs HTTPS. A LAN IP over plain HTTP cannot offer it |
 
 ## Licence

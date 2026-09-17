@@ -3,7 +3,11 @@ export const maxDuration = 30;
 
 import { authorizeCron } from '../../../lib/cronAuth';
 import { runNiftyLogTick } from '../../../lib/niftyLogTick';
-import { isNiftyLogStorageConfigured } from '../../../lib/niftyLogStore';
+import {
+  claimTestPing,
+  isNiftyLogStorageConfigured,
+  TEST_PING_COOLDOWN_MIN,
+} from '../../../lib/niftyLogStore';
 import { isTelegramConfigured, sendTelegramMessage, formatTestAlert } from '../../../lib/telegram';
 import { getMarketStatus } from '../../../lib/marketHours';
 import { getAlertsEnabled } from '../../../lib/alertSettings';
@@ -17,10 +21,29 @@ export async function GET(request) {
   const market = getMarketStatus();
 
   // ?test=1 verifies auth, config and Telegram delivery without waiting for a
-  // real signal — the tick itself only does anything during market hours.
+  // real signal, and deliberately ignores market hours — the whole point is to
+  // check delivery while the market is shut.
+  //
+  // It is rate-limited because that same property makes it the one thing here
+  // that can message you at 3am. The README tells you to append `&test=1` to
+  // verify the endpoint, and a scheduler left pointing at that URL then sends
+  // an identical ping every couple of minutes indefinitely. A person testing
+  // presses once; only a scheduler returns inside the cooldown.
   if (new URL(request.url).searchParams.get('test')) {
     const { enabled } = await getAlertsEnabled();
-    const alert = await sendTelegramMessage(formatTestAlert({ storage, market: market.label, enabled }));
+    const claim = await claimTestPing();
+
+    const alert = claim.allowed
+      ? await sendTelegramMessage(formatTestAlert({
+          storage,
+          market: market.label,
+          enabled,
+          // Storage unavailable means the cooldown could not be checked, so do
+          // not claim this is the first ping.
+          repeated: Boolean(claim.reason),
+        }))
+      : { sent: false, reason: 'test_rate_limited' };
+
     return Response.json({
       test: true,
       config: {
@@ -30,6 +53,18 @@ export async function GET(request) {
         market: market.label,
       },
       alert,
+      ...(claim.limited
+        ? {
+            rateLimited: true,
+            cooldownMinutes: TEST_PING_COOLDOWN_MIN,
+            warning:
+              'Test pings are capped at one per ' + TEST_PING_COOLDOWN_MIN +
+              ' minutes. If a scheduler is calling this URL, remove "&test=1" ' +
+              'from it — test mode ignores market hours by design, so it is the ' +
+              'only thing that messages you outside trading hours.',
+          }
+        : {}),
+      ...(claim.reason ? { rateLimit: claim.reason } : {}),
     });
   }
 
