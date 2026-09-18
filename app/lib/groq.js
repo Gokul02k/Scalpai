@@ -123,6 +123,80 @@ export async function groqGenerate({
   });
 }
 
+/**
+ * Groq's Compound systems, which search the web server-side.
+ *
+ * These are not models but small agent systems wrapped behind the same
+ * completions endpoint: `groq/compound` may run several tools per request,
+ * `groq/compound-mini` exactly one and answers faster. Nothing has to be sent
+ * to enable it — choosing the id is what turns search on — so this is an
+ * ordinary completion with a fixed model and a richer return value.
+ *
+ * Custom tools are not accepted by these systems, which is why the retired-model
+ * retry in `groqChat` is not reused here: there is no equivalent to fall back
+ * to, and quietly answering from weights alone would present a brief as current
+ * when it is not.
+ */
+export const GROQ_SEARCH_MODELS = ['groq/compound', 'groq/compound-mini'];
+
+export async function groqGenerateGrounded({
+  system,
+  userPrompt,
+  maxTokens = 1400,
+  temperature = 0.3,
+  model = GROQ_SEARCH_MODELS[0],
+  apiKey,
+}) {
+  const key = getGroqKey(apiKey);
+  if (!key) throw new Error(`No Groq key. ${GROQ_SETUP_HINT}`);
+
+  const res = await fetch(`${GROQ_API}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${key}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        ...(system ? [{ role: 'system', content: system }] : []),
+        { role: 'user', content: userPrompt },
+      ],
+      max_tokens: maxTokens,
+      temperature,
+    }),
+    cache: 'no-store',
+  });
+
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error(data?.error?.message || `Groq API error (${res.status})`);
+  }
+
+  const message = data?.choices?.[0]?.message;
+  const text = message?.content?.trim();
+  if (!text) throw new Error('Empty response from Groq');
+
+  // `executed_tools` is the system's own record of what it ran. A search tool
+  // reports the results it read, which is where the citable sources come from.
+  const executed = message.executed_tools || [];
+  const sources = [];
+  for (const tool of executed) {
+    const results = tool?.search_results?.results || tool?.output?.results || [];
+    for (const r of Array.isArray(results) ? results : []) {
+      if (r?.url || r?.title) sources.push({ title: r.title, url: r.url });
+    }
+  }
+
+  return {
+    text,
+    model,
+    searched: executed.some((t) => /search|visit|browse/i.test(t?.type || t?.name || '')),
+    queries: executed.map((t) => t?.arguments?.query).filter(Boolean),
+    sources,
+  };
+}
+
 /* `groqVision` lived here. Nothing called it, and the model it named
  * (`llama-3.2-90b-vision-preview`) has been retired along with the rest of
  * the old catalogue — Groq currently serves no vision model at all. Left as

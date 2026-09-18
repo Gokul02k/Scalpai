@@ -85,9 +85,9 @@ export const UNKNOWN_SECTOR = 'Unsectored';
 // Values that mean "nobody filled this in". They have to be screened rather
 // than trusted, because a stored holding is not a controlled input: `qty`-era
 // rows carry the literal string "Other", an argument-order bug stored the
-// number 0, and an imported CSV column contains whatever the broker printed.
-// Any of those reaching a chip row puts a placeholder on the screen as though
-// it were a sector.
+// number 0, and rows left by the retired CSV importer carry whatever the
+// broker printed in a sector column. Any of those reaching a chip row puts a
+// placeholder on the screen as though it were a sector.
 const PLACEHOLDERS = new Set(['', 'other', 'stock', 'na', 'n/a', 'none', 'unknown', '-', '—']);
 
 /**
@@ -115,8 +115,8 @@ export function staticSector(symbol) {
  *
  * Live profile first, because it is the only source that can be right about a
  * symbol nobody here has heard of. Then whatever the holding was stored with,
- * so a sector typed into a CSV is not overruled by this file. The table last,
- * as the offline floor.
+ * so a sector the assistant supplied — or one already saved against a row — is
+ * not overruled by this file. The table last, as the offline floor.
  */
 export function resolveSector({ symbol, fundamentalsSector, storedSector } = {}) {
   return normalizeSector(fundamentalsSector)

@@ -96,6 +96,13 @@ python3 -m venv .venv
 
 `./start.sh` wraps the recurring workflow for syncing, status checks, paper trading, and dashboard setup.
 
+### 3) Run the tests
+
+```bash
+npm test                              # dashboard logic (Node's test runner, no deps)
+.venv/bin/python -m pytest engine/tests -q   # engine, including JS/Python parity
+```
+
 ## Architecture
 
 ```text
@@ -105,6 +112,7 @@ engine/     Data adapters, archive, research, ML, backtest, and paper trading
 docs/       Dashboard documentation and assistant notes
 public/     PWA assets, icons, manifest, service worker
 scripts/    Setup, sync, paper, and status routines
+tests/      Dashboard-only tests for logic with no Python mirror
 ```
 
 ## Project flow

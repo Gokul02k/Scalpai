@@ -8,7 +8,7 @@ import {
 import {
   Settings, ChevronRight, MessageCircle, X, Send, Newspaper,
   Briefcase, Home, ArrowUp, ArrowDown, Zap, RefreshCw,
-  Upload, Plus, Trash2, Bell, Sun, Moon, ScrollText, Info,
+  Plus, Trash2, Bell, Sun, Moon, ScrollText, Info,
 } from "lucide-react";
 import {
   fetchAllMarketData, fetchRealMarketData, fetchEngineDecision, fetchCandles, fetchStockCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, fetchStockFundamentals, genFallbackCandles, SYMBOL_MAP,
@@ -17,8 +17,8 @@ import { vwapSeries, supertrendSeries } from "./lib/chartIndicators";
 import { ETFS, isETF, etfMeta } from "./lib/etf";
 import { resolveSector, normalizeSector, UNKNOWN_SECTOR, sortSectors } from "./lib/sectors";
 import { analyzeFromCandles, calcEMA } from "./lib/indicators";
-import { generateIndexSignals, generatePortfolioSignals, parsePortfolioCSV } from "./lib/signals";
-import { buildUnifiedSuggestion, explainAssetMove, getPortfolioSuggestion } from "./lib/suggestion";
+import { generateIndexSignals, generatePortfolioSignals } from "./lib/signals";
+import { buildUnifiedSuggestion, getPortfolioSuggestion } from "./lib/suggestion";
 import { runStrategies, STRATEGIES } from "./lib/strategies";
 import { preOpenTrend, postOpenTrend } from "./lib/trend";
 import { annotateStructure } from "./lib/smc";
@@ -933,27 +933,78 @@ function SignalCard({ sig, price, C }) {
 
 function NewsCard({ n, onClick, C }) {
   const sc = n.sentiment === "positive" ? C.green : n.sentiment === "negative" ? C.red : C.yellow;
-  const ic = n.impact === "HIGH" ? C.red : n.impact === "MEDIUM" ? C.yellow : C.muted;
+  // The `⚡HIGH`/`⚡MEDIUM` badge that used to sit here was `headline.length > 80`
+  // — a longer headline was ranked a bigger event. Nothing else about the item
+  // fed it. A made-up severity next to a real headline is worse than no
+  // severity, because it is the part a reader scans for.
   return (
     <div onClick={() => onClick(n)} style={{ ...cardStyle(C), cursor: "pointer", padding: 12 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6 }}>
         <span style={{ background: `${sc}22`, color: sc, fontSize: 10, padding: "2px 7px", borderRadius: 4, fontWeight: 700 }}>{n.cat}</span>
-        <div style={{ display: "flex", gap: 8 }}>
-          <span style={{ color: ic, fontSize: 10, fontWeight: 700 }}>⚡{n.impact}</span>
-          <span style={{ color: C.muted, fontSize: 10 }}>{n.time}</span>
-        </div>
+        <span style={{ color: C.muted, fontSize: 10, flexShrink: 0 }}>
+          {n.source ? `${n.source} · ` : ""}{n.time}
+        </span>
       </div>
-      <p style={{ color: C.text, fontSize: 13, lineHeight: 1.45, margin: "0 0 6px" }}>{n.headline}</p>
-      {n.marketImpact && (
-        <p style={{ color: C.muted, fontSize: 11, lineHeight: 1.4, margin: "0 0 8px", borderLeft: `2px solid ${sc}`, paddingLeft: 8 }}>
-          📈 Market impact: {n.marketImpact}
-        </p>
-      )}
+      <p style={{ color: C.text, fontSize: 13, lineHeight: 1.45, margin: "0 0 8px" }}>{n.headline}</p>
       <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
         {(n.stocks || []).slice(0, 3).map((s) => (
           <span key={s} style={{ background: C.dim, color: C.muted, fontSize: 10, padding: "2px 6px", borderRadius: 4 }}>{s}</span>
         ))}
       </div>
+    </div>
+  );
+}
+
+/**
+ * How current the brief is, said plainly.
+ *
+ * The three states are genuinely different products and the difference is not
+ * visible in the prose: a searched brief is about today, an unsearched one from
+ * a search-capable model is the model's own knowledge, and a headlines-only one
+ * is the page's own feed reorganised. Only the first is worth refreshing during
+ * a session, so the reader has to be able to tell which they are looking at.
+ */
+function BriefProvenance({ brief, C }) {
+  const GROUNDING = {
+    web: { label: "Searched the web", color: C.green },
+    model: { label: "From the model's own knowledge — it did not search", color: C.yellow },
+    headlines: { label: "Organised from the headlines below — no web search", color: C.yellow },
+  };
+  const g = GROUNDING[brief.grounding] || GROUNDING.headlines;
+  const when = brief.generatedAt
+    ? new Date(brief.generatedAt).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" })
+    : null;
+  const model = brief.model || brief.provider;
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+      <span style={{ fontSize: 10, fontWeight: 800, color: g.color, background: `${g.color}18`, border: `1px solid ${g.color}44`, borderRadius: 999, padding: "3px 9px" }}>
+        {g.label}
+      </span>
+      {model && (
+        <span style={{ fontSize: 10, color: C.muted, background: C.dim, borderRadius: 999, padding: "3px 9px" }}>{model}</span>
+      )}
+      {when && <span style={{ fontSize: 10, color: C.muted }}>· {when} IST</span>}
+    </div>
+  );
+}
+
+function BriefSection({ section, C, S }) {
+  return (
+    <div style={{ ...S.card, padding: 12, marginBottom: 8 }}>
+      <div style={{ color: C.muted, fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: section.empty ? 0 : 8 }}>
+        {section.label}
+      </div>
+      {section.empty ? (
+        <div style={{ color: C.muted, fontSize: 12, marginTop: 6 }}>Nothing notable.</div>
+      ) : (
+        section.points.map((p, i) => (
+          <div key={i} style={{ display: "flex", gap: 8, marginBottom: i < section.points.length - 1 ? 7 : 0 }}>
+            <span style={{ color: C.green, fontSize: 12, lineHeight: 1.55, flexShrink: 0 }}>•</span>
+            <span style={{ color: C.text, fontSize: 13, lineHeight: 1.55 }}>{p}</span>
+          </div>
+        ))
+      )}
     </div>
   );
 }
@@ -2436,8 +2487,6 @@ function PortfolioTab({
   onAddSymbol,
   onRemoveStock,
   onClearLog,
-  csvRef,
-  onCsvChange,
   C,
   S,
 }) {
@@ -2778,10 +2827,6 @@ function PortfolioTab({
             </>
           )}
 
-          <input ref={csvRef} type="file" accept=".csv,.txt" style={{ display: "none" }} onChange={onCsvChange} />
-          <button type="button" onClick={() => csvRef.current?.click()} style={{ width: "100%", marginTop: 10, padding: 10, borderRadius: 10, background: `${C.blue}12`, border: `1px dashed ${C.blue}44`, color: C.blue, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 12 }}>
-            <Upload size={13} /> Import stocks from CSV
-          </button>
         </>
       ) : (
         <>
@@ -2816,27 +2861,13 @@ function PortfolioTab({
   );
 }
 
-function MoveCard({ move, C, S }) {
-  return (
-    <div style={{
-      ...S.card,
-      borderColor: move.direction === "down" ? `${C.red}44` : move.direction === "up" ? `${C.green}44` : `${C.yellow}44`,
-    }}>
-      <div style={{ color: C.text, fontWeight: 800, fontSize: 14, marginBottom: 8 }}>{move.title}</div>
-      <p style={{ color: C.text, fontSize: 13, lineHeight: 1.55, margin: "0 0 10px" }}>{move.summary}</p>
-      {move.reasons?.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          <div style={{ color: C.muted, fontSize: 10, textTransform: "uppercase", marginBottom: 6 }}>Key reasons</div>
-          {move.reasons.map((r, i) => (
-            <div key={i} style={{ color: C.muted, fontSize: 12, padding: "6px 0", borderBottom: i < move.reasons.length - 1 ? `1px solid ${C.dim}` : "none" }}>
-              • {r}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+/* `MoveCard` lived here, and rendered three cards at the top of the News tab
+ * explaining why NIFTY, gold and silver had moved. The explanation was built by
+ * counting keywords in headlines — "surge" and "rally" scored positive, "fall"
+ * and "miss" negative — and then picking a pre-written sentence to match the
+ * total. It read like analysis and was arithmetic on words. The AI brief
+ * answers the same question from live prices and web results, and says which,
+ * so there is no longer a reason to guess. */
 
 /**
  * Where a key is typed in, tested and forgotten again.
@@ -3034,9 +3065,15 @@ export default function App() {
   const [portfolio, setPortfolio] = useState(DEFAULT_PORTFOLIO);
 
   const [news, setNews] = useState([]);
-  const [newsOverview, setNewsOverview] = useState("");
   const [selNews, setSelNews] = useState(null);
-  const [newsFilter, setNewsFilter] = useState("All");
+
+  // The AI brief is asked for, never fetched on open: it costs the user's own
+  // key and quota, so it happens when they press the button and not because
+  // they looked at the tab. Held in memory only — a brief restored from storage
+  // after an overnight reload would read as this morning's, and the whole value
+  // of it is that it is current.
+  const [brief, setBrief] = useState(null);
+  const [briefState, setBriefState] = useState({ loading: false, error: null, needsKey: false });
 
   const [portfolioAnalyses, setPortfolioAnalyses] = useState({});
   // The symbol set `portfolioAnalyses` is an answer for, so a missing entry can
@@ -3073,23 +3110,31 @@ export default function App() {
   const [chatLoading, setChatLoading] = useState(false);
   const [eaState, setEaState] = useState({});
   const chatEnd = useRef(null);
-  const csvRef = useRef(null);
   const portfolioRef = useRef(portfolio);
   const pricesRef = useRef(prices);
   const aiKeysRef = useRef({});
+  const aiSharedRef = useRef(false);
   const prevNiftyLogRef = useRef(null);
   const niftyLogRef = useRef([]);
   const portfolioLogRef = useRef([]);
   const serverLogConfiguredRef = useRef(false);
+  const newsRef = useRef([]);
+  const marketStatusRef = useRef(null);
   portfolioRef.current = portfolio;
   pricesRef.current = prices;
   // Read by askEA, which is memoised with no dependencies so the signal cards
   // do not re-render on every tick. Without the ref it would send the keys as
   // they were on first render, which is to say none of them.
   aiKeysRef.current = aiKeys;
+  aiSharedRef.current = aiShared;
   niftyLogRef.current = niftySignalLog;
   portfolioLogRef.current = portfolioSignalLog;
   serverLogConfiguredRef.current = serverLogConfigured;
+  // Same reason as the keys above: askNewsBrief is memoised with no
+  // dependencies, so it has to read the headlines and the session state at the
+  // moment the button is pressed rather than as they were on first render.
+  newsRef.current = news;
+  marketStatusRef.current = marketStatus;
   const stockNamesKey = portfolio.map((p) => p.name).sort().join(",");
 
   // ── the phone's back gesture ───────────────────────────────────────────────
@@ -3125,6 +3170,10 @@ export default function App() {
   const aiHeld = AI_PROVIDERS.filter((p) => aiKeys[p.id]);
   const aiConfigured = aiHeld.length > 0;
   const aiConfiguredLabel = aiHeld.map((p) => p.label).join(" and ");
+  // Whether anything will answer an AI request at all — the reader's own key,
+  // or the deployment's if it shares one. Asked before a request is sent rather
+  // than discovered from the reply.
+  const hasAiKey = aiConfigured || aiShared;
 
   // The picker used to list Gemini models unconditionally, which is wrong the
   // moment somebody arrives with only a Groq key: every option in it names a
@@ -3511,10 +3560,7 @@ export default function App() {
     const load = async () => {
       const stocks = stockNamesKey ? stockNamesKey.split(",") : [];
       const data = await fetchNews(stocks);
-      if (!cancelled) {
-        setNews(data.news || []);
-        setNewsOverview(data.overview || "");
-      }
+      if (!cancelled) setNews(data.news || []);
     };
     load();
     const id = setInterval(load, 120000);
@@ -3804,9 +3850,6 @@ export default function App() {
     return () => { cancelled = true; clearInterval(id); };
   }, [hydrated]);
 
-  const niftyMove = useMemo(() => explainAssetMove(prices.NIFTY, news, "NIFTY"), [prices.NIFTY, news]);
-  const goldMove = useMemo(() => explainAssetMove(prices.GOLD, news, "GOLD"), [prices.GOLD, news]);
-  const silverMove = useMemo(() => explainAssetMove(prices.SILVER, news, "SILVER"), [prices.SILVER, news]);
 
   useEffect(() => {
     setSignals([
@@ -3841,9 +3884,10 @@ export default function App() {
     const price = +buy || 0;
     const sec = kind === "mf" ? "Mutual Fund" : normalizeSector(sector);
     setPortfolio((p) => {
-      // Matched on the narrowed type. A CSV import stores no type at all, so
-      // comparing the raw field missed the row it had just created and added a
-      // second one for the same symbol the next time anything touched it.
+      // Matched on the narrowed type, not the raw field. Holdings written by
+      // the retired CSV importer carry no type at all, so comparing raw values
+      // missed rows that are still in saved portfolios and added a second one
+      // for the same symbol the next time anything touched it.
       const existing = p.find((s) => s.name.toUpperCase() === sym.toUpperCase() && holdingType(s.type) === kind);
       if (existing) {
         // Only overwrite what the caller actually supplied, so re-adding a
@@ -3916,6 +3960,66 @@ export default function App() {
     }
   }, []);
 
+  /**
+   * Ask the best available model for today's brief.
+   *
+   * The live prices and the headlines the page already holds go up with the
+   * request rather than being re-fetched on the server. Two reasons: the model
+   * is then explaining the same numbers the reader can see on this screen
+   * instead of a second set fetched a moment later, and the prompt has real
+   * material to work from even when the provider cannot search.
+   */
+  const askNewsBrief = useCallback(async () => {
+    // Nothing to spend and nothing shared by the deployment: open the key sheet
+    // instead of sending a request whose only possible answer is "add a key".
+    // The round trip cannot tell the reader anything they are not told here,
+    // and it puts a failure on screen for something they have not done wrong.
+    const held = Object.values(aiKeysRef.current || {}).some((v) => v && v.trim());
+    if (!held && !aiSharedRef.current) {
+      setBriefState({
+        loading: false,
+        needsKey: true,
+        error: "The brief needs an AI key of your own. Add a Gemini or Groq key — both have a free tier — and it will work from then on.",
+      });
+      setAiKeysOpen(true);
+      return;
+    }
+
+    setBriefState({ loading: true, error: null, needsKey: false });
+    try {
+      const res = await fetch("/api/news/brief", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          keys: aiKeysRef.current,
+          prices: {
+            NIFTY: pricesRef.current.NIFTY,
+            SENSEX: pricesRef.current.SENSEX,
+            GOLD: pricesRef.current.GOLD,
+            SILVER: pricesRef.current.SILVER,
+          },
+          headlines: newsRef.current.slice(0, 18).map((n) => ({
+            headline: n.headline,
+            time: n.time,
+            source: n.source,
+          })),
+          marketStatus: marketStatusRef.current
+            ? `${marketStatusRef.current.label} — ${marketStatusRef.current.detail}`
+            : null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setBriefState({ loading: false, error: data.error || "Could not get a brief", needsKey: Boolean(data.needsKey) });
+        return;
+      }
+      setBrief(data);
+      setBriefState({ loading: false, error: null, needsKey: false });
+    } catch {
+      setBriefState({ loading: false, error: "Connection error", needsKey: false });
+    }
+  }, []);
+
   const sendMsg = async () => {
     if (!chatInput.trim() || chatLoading) return;
     const text = chatInput.trim();
@@ -3935,7 +4039,7 @@ User portfolio: ${portSummary}
 This app tracks which stocks the user holds and what to do about them, not how
 many shares. Never ask for or mention a quantity.
 
-When the user asks to add, update, or remove holdings, emit a command (no CSV upload in chat):
+When the user asks to add, update, or remove holdings, emit a command:
 <CMD>{"action":"addStock","value":{"name":"RELIANCE","price":2850,"sector":"Energy"}}</CMD>
 <CMD>{"action":"updateStock","value":{"name":"RELIANCE","price":2900}}</CMD>
 <CMD>{"action":"removeStock","value":{"name":"TCS"}}</CMD>
@@ -3963,25 +4067,6 @@ Tabs: dashboard|portfolio|news|settings`;
     }
   };
 
-  const handleCSV = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const parsed = parsePortfolioCSV(ev.target.result);
-      if (!parsed.length) {
-        alert("Could not read CSV. It needs a symbol/name column; price is optional (a Groww or Zerodha export works as-is).");
-        return;
-      }
-      // Merged, not replaced. Importing one broker's holdings used to discard
-      // everything already in the list, which is a lot to lose to a file picker.
-      // Imported rows win on conflict, since they carry a real cost.
-      setPortfolio((prev) => dedupePortfolio([...prev, ...parsed.map((s) => ({ ...s, id: nextHoldingId() }))]));
-    };
-    reader.readAsText(file);
-    e.target.value = "";
-  };
-
   // Returns null on success or a sentence explaining the refusal. The caller
   // shows it: silently doing nothing is what made the add box feel broken.
   const addWatchStock = useCallback((symbol) => {
@@ -3996,8 +4081,8 @@ Tabs: dashboard|portfolio|news|settings`;
     // argument left: the sector became the number 0 and the type became
     // "Other", so a stock added with this button was stored as a kind of thing
     // that does not exist. It then failed to match the same symbol added by the
-    // assistant or a CSV — both of which store a real type — and the tab grew a
-    // second row for a stock it was already showing.
+    // assistant, which stores a real type, and the tab grew a second row for a
+    // stock it was already showing.
     upsertPortfolioStock(sym, 0, "Other", "stock");
     return null;
   }, [upsertPortfolioStock]);
@@ -4132,7 +4217,6 @@ Tabs: dashboard|portfolio|news|settings`;
     setPortfolioSignalLog([]);
   }, []);
 
-  const filteredNews = newsFilter === "All" ? news : news.filter((n) => n.cat === newsFilter);
 
   // ── TAB COMPONENTS ──
   const Dashboard = () => (
@@ -4207,41 +4291,128 @@ Tabs: dashboard|portfolio|news|settings`;
 
   const NewsTab = () => (
     <div style={{ padding: "0 14px 90px" }}>
-      <MoveCard move={niftyMove} C={C} S={S} />
-      <MoveCard move={goldMove} C={C} S={S} />
-      <MoveCard move={silverMove} C={C} S={S} />
-
-      <div style={{ ...S.card }}>
-        <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Market Overview</div>
+      <div style={{ ...S.card, padding: 12 }}>
+        <div style={{ color: C.muted, fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 8 }}>Where things stand</div>
         {INSTRUMENT_KEYS.map((name) => {
           const p = prices[name];
           if (!p) return null;
           const ch = +(p.cur - p.prev).toFixed(2);
           const pc = +((ch / p.prev) * 100).toFixed(2);
           return (
-            <div key={name} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: `1px solid ${C.dim}` }}>
+            <div key={name} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${C.dim}` }}>
               <div>
-                <span style={{ color: C.text, fontWeight: 700 }}>{name}</span>
+                <span style={{ color: C.text, fontWeight: 700, fontSize: 13 }}>{name}</span>
                 {INSTRUMENT_SUB[name] && <div style={{ color: C.muted, fontSize: 9 }}>{INSTRUMENT_SUB[name]}</div>}
               </div>
               <div style={{ textAlign: "right" }}>
-                <div style={{ color: C.text }}>₹{fmt(p.cur, name === "NIFTY" ? 0 : 2)}</div>
+                <div style={{ color: C.text, fontSize: 13 }}>₹{fmt(p.cur, name === "NIFTY" ? 0 : 2)}</div>
                 <div style={{ color: ch >= 0 ? C.green : C.red, fontSize: 11 }}>{ch >= 0 ? "+" : ""}{fmt(ch, name === "NIFTY" ? 0 : 2)} ({pc >= 0 ? "+" : ""}{pc}%)</div>
               </div>
             </div>
           );
         })}
-        {newsOverview && <p style={{ color: C.muted, fontSize: 12, lineHeight: 1.5, marginTop: 10, marginBottom: 0 }}>{newsOverview}</p>}
       </div>
 
-      <div style={{ display: "flex", gap: 6, marginBottom: 10, overflowX: "auto" }}>
-        {["All", "Market", "Earnings", "Sector", "Technical", "Corporate", "Global"].map((c) => (
-          <button key={c} onClick={() => setNewsFilter(c)} style={{ padding: "5px 12px", borderRadius: 7, background: c === newsFilter ? C.green : C.card, color: c === newsFilter ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap", fontWeight: c === newsFilter ? 800 : 400 }}>{c}</button>
-        ))}
-      </div>
+      {/* The brief is the tab's main content, and it is asked for rather than
+          loaded — it spends the reader's own AI key, so nothing is sent until
+          they press the button. */}
+      {!brief && !briefState.loading && (
+        <div style={{ ...S.card, padding: 16, textAlign: "center" }}>
+          <div style={{ color: C.text, fontWeight: 800, fontSize: 15, marginBottom: 6 }}>Today&apos;s market brief</div>
+          <p style={{ color: C.muted, fontSize: 12, lineHeight: 1.6, margin: "0 0 14px" }}>
+            NIFTY, the India market, gold and silver — read from the live web and
+            organised into one page.
+          </p>
+          <button
+            type="button"
+            onClick={askNewsBrief}
+            style={{ width: "100%", padding: 13, borderRadius: 12, background: `linear-gradient(135deg, ${C.green}, ${C.blue})`, color: "#000", border: "none", fontWeight: 800, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, boxShadow: `${C.glow} ${C.green}44` }}
+          >
+            <Zap size={16} /> Ask AI
+          </button>
+          {/* Said before the press, not after it. Pressing a button and being
+              handed a setup task is a worse introduction than knowing what the
+              button needs. */}
+          <div style={{ color: C.muted, fontSize: 10, marginTop: 9, lineHeight: 1.5 }}>
+            {aiConfigured
+              ? `Using your ${aiConfiguredLabel} key`
+              : aiShared
+                ? "Using this deployment's shared key"
+                : "Needs a free Gemini or Groq key — tapping this will ask for one"}
+          </div>
+        </div>
+      )}
 
-      {filteredNews.length ? filteredNews.map((n) => <NewsCard key={n.id} n={n} onClick={setSelNews} C={C} />)
-        : <div style={{ ...S.card, textAlign: "center", color: C.muted }}>No news available</div>}
+      {briefState.loading && (
+        <div style={{ ...S.card, padding: 20, textAlign: "center" }}>
+          <div style={{ color: C.text, fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Reading the market…</div>
+          <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.5 }}>
+            Searching for today&apos;s NIFTY, gold and silver news. This takes a few seconds.
+          </div>
+        </div>
+      )}
+
+      {briefState.error && (
+        <div style={{ ...S.card, borderColor: `${C.yellow}55`, padding: 12, marginBottom: 8 }}>
+          <div style={{ color: C.text, fontSize: 12, lineHeight: 1.55, marginBottom: 10 }}>{briefState.error}</div>
+          {/* Offers the key sheet only while there is still no key. Once one has
+              been saved the obstacle is gone, and leaving the button on "Add a
+              key" would send the reader back to a sheet they have already
+              filled in rather than letting them retry. */}
+          {briefState.needsKey && !hasAiKey ? (
+            <button type="button" onClick={() => setAiKeysOpen(true)} style={{ width: "100%", padding: 10, borderRadius: 8, background: C.green, color: "#000", border: "none", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>
+              Add a key
+            </button>
+          ) : (
+            <button type="button" onClick={askNewsBrief} style={{ width: "100%", padding: 10, borderRadius: 8, background: C.dim, border: `1px solid ${C.border}`, color: C.text, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+              Try again
+            </button>
+          )}
+        </div>
+      )}
+
+      {brief && !briefState.loading && (
+        <>
+          <BriefProvenance brief={brief} C={C} />
+
+          {brief.sections?.map((s) => <BriefSection key={s.id} section={s} C={C} S={S} />)}
+
+          {/* A reply that did not come back in the expected shape is still the
+              answer the request paid for, so it is shown as written rather than
+              dropped for failing to parse. */}
+          {!brief.sections?.length && brief.unstructured?.length > 0 && (
+            <BriefSection section={{ id: "raw", label: "Market brief", points: brief.unstructured }} C={C} S={S} />
+          )}
+
+          {brief.sources?.length > 0 && (
+            <div style={{ ...S.card, padding: 12, marginBottom: 8 }}>
+              <div style={{ color: C.muted, fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 8 }}>Sources</div>
+              {brief.sources.slice(0, 10).map((s, i) => (
+                <a key={i} href={s.url || undefined} target="_blank" rel="noopener noreferrer" style={{ display: "block", color: s.url ? C.blue : C.muted, fontSize: 11, lineHeight: 1.5, padding: "3px 0", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {s.url ? "↗ " : ""}{s.title}
+                </a>
+              ))}
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+            <button type="button" onClick={askNewsBrief} style={{ flex: 1, padding: 11, borderRadius: 10, background: C.dim, border: `1px solid ${C.border}`, color: C.text, fontWeight: 700, fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+              <RefreshCw size={13} /> Ask again
+            </button>
+          </div>
+
+          <p style={{ color: C.muted, fontSize: 10, lineHeight: 1.5, margin: "0 0 14px", textAlign: "center" }}>
+            Written by an AI model from live prices and web results. Check anything
+            you would trade on. Not financial advice.
+          </p>
+        </>
+      )}
+
+      <div style={{ color: C.muted, fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.4, margin: "4px 2px 8px" }}>
+        Latest headlines
+      </div>
+      {news.length ? news.map((n) => <NewsCard key={n.id} n={n} onClick={setSelNews} C={C} />)
+        : <div style={{ ...S.card, textAlign: "center", color: C.muted, fontSize: 12, padding: 16 }}>No headlines available right now.</div>}
     </div>
   );
 
@@ -4460,8 +4631,6 @@ Tabs: dashboard|portfolio|news|settings`;
             onAddSymbol={addWatchStock}
             onRemoveStock={removePortfolioStock}
             onClearLog={clearPortfolioLog}
-            csvRef={csvRef}
-            onCsvChange={handleCSV}
             C={C}
             S={S}
           />
@@ -4515,17 +4684,20 @@ Tabs: dashboard|portfolio|news|settings`;
       {selNews && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", zIndex: 200, display: "flex", alignItems: "flex-end" }} onClick={() => setSelNews(null)}>
           <div onClick={(e) => e.stopPropagation()} style={{ ...glassStyle(C), borderRadius: "22px 22px 0 0", padding: 20, width: "100%", maxHeight: "72vh", overflowY: "auto", boxShadow: C.shadow }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-              <span style={{ color: C.green, fontSize: 11, fontWeight: 700 }}>{selNews.cat} · {selNews.impact}</span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 12 }}>
+              <span style={{ color: C.green, fontSize: 11, fontWeight: 700 }}>
+                {selNews.cat}{selNews.source ? ` · ${selNews.source}` : ""} · {selNews.time}
+              </span>
               <button onClick={() => setSelNews(null)} style={{ background: C.dim, border: "none", color: C.muted, cursor: "pointer", borderRadius: 6, padding: 4 }}><X size={16} /></button>
             </div>
-            <p style={{ color: C.text, fontWeight: 700, fontSize: 16, marginBottom: 12 }}>{selNews.headline}</p>
-            <p style={{ color: C.muted, fontSize: 13, lineHeight: 1.6, marginBottom: 12 }}>{selNews.detail}</p>
-            {selNews.marketImpact && (
-              <div style={{ background: C.dim, borderRadius: 8, padding: 12, marginBottom: 12 }}>
-                <div style={{ color: C.yellow, fontSize: 11, fontWeight: 700, marginBottom: 4 }}>How this affects the market</div>
-                <p style={{ color: C.text, fontSize: 13, lineHeight: 1.5, margin: 0 }}>{selNews.marketImpact}</p>
-              </div>
+            <p style={{ color: C.text, fontWeight: 700, fontSize: 16, marginBottom: 14 }}>{selNews.headline}</p>
+            {/* The feed carries a headline and no body, so the summary paragraph
+                that used to sit here printed the headline a second time. The
+                article itself is the thing worth offering. */}
+            {selNews.link && (
+              <a href={selNews.link} target="_blank" rel="noopener noreferrer" style={{ display: "block", textAlign: "center", padding: 11, borderRadius: 10, background: C.green, color: "#000", fontWeight: 800, fontSize: 13, textDecoration: "none", marginBottom: 12 }}>
+                Read the full story ↗
+              </a>
             )}
           </div>
         </div>

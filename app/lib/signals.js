@@ -87,30 +87,11 @@ export function generatePortfolioSignals(portfolio, settings) {
   return signals;
 }
 
-/**
- * Read a broker export, or any list of symbols, into holdings.
+/* `parsePortfolioCSV` lived here, and read a broker export into holdings behind
+ * an "Import stocks from CSV" button on the Portfolio tab. Both are gone.
  *
- * Only a symbol column is required. A quantity column is read past rather than
- * demanded: the dashboard tracks what to do with a position, not how large it
- * is, so insisting on a `qty` header rejected exactly the file somebody with a
- * watchlist would try to import. Groww and Zerodha exports still work — their
- * quantity column is simply ignored.
- */
-export function parsePortfolioCSV(text) {
-  const lines = text.trim().split(/\r?\n/).filter(Boolean);
-  if (lines.length < 2) return [];
-  const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/"/g, ''));
-  const nameIdx = headers.findIndex(h => /symbol|name|stock|instrument/.test(h));
-  const priceIdx = headers.findIndex(h => /price|buy|avg|cost|entry/.test(h));
-  const sectorIdx = headers.findIndex(h => /sector/.test(h));
-  if (nameIdx < 0) return [];
-
-  return lines.slice(1).map((line, i) => {
-    const cols = line.split(',').map(c => c.trim().replace(/"/g, ''));
-    const name = cols[nameIdx]?.toUpperCase();
-    const buy = priceIdx >= 0 ? (+cols[priceIdx] || 0) : 0;
-    const sector = sectorIdx >= 0 ? cols[sectorIdx] : 'Other';
-    if (!name) return null;
-    return { id: Date.now() + i, name, buy, cur: buy || 100, sector };
-  }).filter(Boolean);
-}
+ * Rows it created are not. It wrote holdings with no `type` field at all, and
+ * those are still sitting in saved portfolios — which is why `holdingType` in
+ * page.js still has to normalise a missing type rather than trusting the two
+ * values the app now writes. Removing the importer does not remove what it
+ * imported. */

@@ -111,3 +111,76 @@ export async function geminiGenerate({
     apiKey,
   });
 }
+
+/**
+ * One generation with Google Search switched on.
+ *
+ * Kept apart from `geminiChat` rather than added as a flag, because the useful
+ * return value is different: a grounded answer is only worth having if you can
+ * also say whether it searched and what it read, and the callers of
+ * `geminiChat` want a string.
+ *
+ * `google_search` is the current tool name. Models before 2.0 took a
+ * `google_search_retrieval` tool with a different shape, and asking for the
+ * wrong one is rejected as an unknown field rather than ignored — so a caller
+ * naming an old model gets an error it can report, not a silently ungrounded
+ * brief presented as live.
+ */
+export async function geminiGenerateGrounded({
+  system,
+  userPrompt,
+  maxTokens = 1400,
+  temperature = 0.3,
+  model,
+  apiKey,
+}) {
+  const key = getGeminiKey(apiKey);
+  if (!key) throw new Error(`No Gemini key. ${GEMINI_SETUP_HINT}`);
+
+  const resolved = resolveGeminiModel(model);
+  const body = {
+    contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+    tools: [{ google_search: {} }],
+    generationConfig: { temperature, maxOutputTokens: maxTokens },
+    ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+  };
+
+  const res = await fetch(
+    `${GEMINI_API}/models/${encodeURIComponent(resolved)}:generateContent`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+      body: JSON.stringify(body),
+      cache: 'no-store',
+    }
+  );
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data?.error?.message || `Gemini API error (${res.status})`);
+  }
+
+  const cand = data?.candidates?.[0];
+  const text = cand?.content?.parts?.map((p) => p.text).filter(Boolean).join('').trim();
+  if (!text) {
+    const reason = cand?.finishReason || data?.promptFeedback?.blockReason;
+    throw new Error(reason ? `Gemini returned no text (${reason})` : 'Empty response from Gemini');
+  }
+
+  // The model decides per prompt whether searching would help, so grounding
+  // metadata being absent is a normal outcome and not an error. It does mean
+  // the answer is only as current as the training data plus what we sent, which
+  // is the distinction the caller passes on to the reader.
+  const meta = cand?.groundingMetadata || {};
+  const sources = (meta.groundingChunks || [])
+    .map((c) => ({ title: c?.web?.title, url: c?.web?.uri }))
+    .filter((s) => s.title || s.url);
+
+  return {
+    text,
+    model: resolved,
+    searched: sources.length > 0 || (meta.webSearchQueries || []).length > 0,
+    queries: meta.webSearchQueries || [],
+    sources,
+  };
+}

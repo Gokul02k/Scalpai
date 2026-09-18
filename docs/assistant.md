@@ -81,13 +81,14 @@ not hand your positions to a third party.
 
 **The chat** sends your portfolio. Every message carries a fresh system prompt
 containing the current NIFTY price, its RSI, the active theme, and one entry per
-holding as `SYMBOL xQTY @ ₹BUY` — so the symbol, the size and the price you paid
-leave the machine each time you ask anything. The last eight turns of the
+holding as `SYMBOL @ ₹BUY` — so the symbol and the price you paid leave the
+machine each time you ask anything. Not the size: quantity is no longer tracked
+anywhere in the app, so there is none to send. The last eight turns of the
 conversation go with it.
 
-Nothing else does. No candle history, no signal log, no CSV, no keys, and no
-part of the engine's archive. If that portfolio line is more than you want to
-send, the chat is the feature to leave alone; Ask EA does not include it.
+Nothing else does. No candle history, no signal log, no keys, and no part of the
+engine's archive. If that portfolio line is more than you want to send, the chat
+is the feature to leave alone; Ask EA does not include it.
 
 ## It can change your portfolio
 
