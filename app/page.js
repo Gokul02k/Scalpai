@@ -15,6 +15,7 @@ import {
 } from "./lib/marketData";
 import { vwapSeries, supertrendSeries } from "./lib/chartIndicators";
 import { ETFS, isETF, etfMeta } from "./lib/etf";
+import { resolveSector, normalizeSector, UNKNOWN_SECTOR, sortSectors } from "./lib/sectors";
 import { analyzeFromCandles, calcEMA } from "./lib/indicators";
 import { generateIndexSignals, generatePortfolioSignals, parsePortfolioCSV } from "./lib/signals";
 import { buildUnifiedSuggestion, explainAssetMove, getPortfolioSuggestion } from "./lib/suggestion";
@@ -98,20 +99,42 @@ function nextHoldingId() {
   return Date.now() * 1000 + (holdingSeq % 1000);
 }
 
+// The only two kinds of holding there are. A stored row can name a third —
+// "Other" was written by the add button for as long as its argument list was
+// one slot out — and an unrecognised type has to collapse to "stock" rather
+// than be preserved, or the repair below cannot pair the duplicate it created.
+function holdingType(value) {
+  return value === "mf" ? "mf" : "stock";
+}
+
 /**
  * Collapse duplicate holdings (same name + type), keeping the most complete row.
  *
- * Also the one chokepoint where a stored `qty` is dropped. Quantity is no
- * longer tracked, and every saved portfolio predates that, so without stripping
- * it here the field would survive every load-and-save cycle for ever and keep
- * turning up in anything that reads a holding.
+ * Also the one chokepoint where a stored row is brought up to date, which is
+ * why the repairs live here rather than at each call site: every holding passes
+ * through on load, so a load-and-save cycle is enough to clean a portfolio
+ * saved by any older version.
+ *
+ *   - `qty` is dropped. Quantity is no longer tracked, and every saved
+ *     portfolio predates that, so without stripping it the field would survive
+ *     for ever and keep turning up in anything that reads a holding.
+ *   - `type` is narrowed to the two that exist, which is what pairs the
+ *     duplicate rows the add button's argument bug left behind: the same
+ *     symbol stored once as "Other" and once as "stock" keyed as two holdings
+ *     and showed as two rows, one of them unsectored.
+ *   - `sector` is screened, so the placeholders ("Other", "Stock", the number
+ *     0) do not reach the chip row dressed as sectors. Dropping the key rather
+ *     than rewriting it lets the sector table answer instead.
  */
 function dedupePortfolio(list = []) {
   const byKey = new Map();
   for (const s of list) {
     if (!s?.name) continue;
-    const key = `${s.type || "stock"}:${String(s.name).toUpperCase()}`;
-    const { qty, ...row } = s;
+    const { qty, ...rest } = s;
+    const sector = normalizeSector(rest.sector);
+    const row = { ...rest, type: holdingType(rest.type) };
+    if (sector) row.sector = sector; else delete row.sector;
+    const key = `${row.type}:${String(row.name).toUpperCase()}`;
     const prev = byKey.get(key);
     if (!prev) { byKey.set(key, row); continue; }
     // Prefer the row carrying a real cost over a bare watchlist entry.
@@ -2441,8 +2464,11 @@ function PortfolioTab({
     return m;
   }, [suggestionItems]);
 
-  const sectorOf = (s) => portfolioFundamentals?.[s.name.toUpperCase()]?.sector
-    || (s.sector && s.sector !== "Other" && s.sector !== "Stock" ? s.sector : "Other");
+  const sectorOf = (s) => resolveSector({
+    symbol: s.name,
+    fundamentalsSector: portfolioFundamentals?.[s.name.toUpperCase()]?.sector,
+    storedSector: s.sector,
+  });
 
   // Why a row has no recommendation. A suggestion is withheld when there is no
   // daily analysis behind it, and that happens for good reasons — a thinly
@@ -2472,10 +2498,10 @@ function PortfolioTab({
   );
   const mfEntries = useMemo(() => holdings.filter((s) => s.type === "mf"), [holdings]);
 
-  const sectors = useMemo(() => {
-    const set = new Set(stockList.map(sectorOf));
-    return [...set].sort((a, b) => (a === "Other" ? 1 : 0) - (b === "Other" ? 1 : 0) || a.localeCompare(b));
-  }, [stockList, portfolioFundamentals]);
+  const sectors = useMemo(
+    () => sortSectors([...new Set(stockList.map(sectorOf))]),
+    [stockList, portfolioFundamentals]
+  );
 
   // A filter for a sector nothing is in any more strands the list behind an
   // empty state whose only escape, the chip row, has already unmounted.
@@ -2494,21 +2520,37 @@ function PortfolioTab({
     if (ai !== bi) return ai - bi;
     return a.name.localeCompare(b.name);
   };
-  const bySector = (a, b) => {
-    const ia = sectors.indexOf(sectorOf(a));
-    const ib = sectors.indexOf(sectorOf(b));
-    if (ia !== ib) return ia - ib;
-    return byConviction(a, b);
-  };
+
+  // Sector is a filter and nothing else. It was also a third sort mode, which
+  // grouped the list under sector headings — two controls for one idea, and the
+  // grouped one silently cost the reader the ordering the tab exists to show,
+  // since headings can only be kept in order by breaking "strongest first"
+  // across the portfolio. The chip row answers the same question without
+  // reordering anything.
+  const sectorMatch = (s) => sectorFilter === "all" || sectorOf(s) === sectorFilter;
 
   const visible = useMemo(() => {
-    let list = stockList.filter(matchesQuery);
-    if (sectorFilter !== "all") list = list.filter((s) => sectorOf(s) === sectorFilter);
-    const cmp = sortMode === "az"
-      ? (a, b) => a.name.localeCompare(b.name)
-      : sortMode === "sector" ? bySector : byConviction;
+    const list = stockList.filter((s) => matchesQuery(s) && sectorMatch(s));
+    const cmp = sortMode === "az" ? (a, b) => a.name.localeCompare(b.name) : byConviction;
     return [...list].sort(cmp);
-  }, [stockList, q, sortMode, sectorFilter, orderByName, sectors, portfolioFundamentals]);
+  }, [stockList, q, sortMode, sectorFilter, orderByName, portfolioFundamentals]);
+
+  // Which of the two filters emptied the list. Blaming the sector was wrong
+  // whenever a search was also running: the message named a sector the reader
+  // had not touched since typing, and the way out of it was the chip they could
+  // already see rather than the box they were typing in.
+  const emptyReason = useMemo(() => {
+    if (stockList.length === 0) {
+      return { text: "No stocks yet. Search one above and tap Add." };
+    }
+    if (q && !stockList.some(matchesQuery)) {
+      return { text: `Nothing matches "${q}". Tap Add to start following it.` };
+    }
+    if (q) {
+      return { text: `"${q}" is not in ${sectorFilter}.`, clear: true };
+    }
+    return { text: `Nothing in ${sectorFilter} right now.`, clear: true };
+  }, [stockList, q, sectorFilter]);
 
   const visibleEtfs = useMemo(
     () => [...etfList.filter(matchesQuery)].sort(byConviction),
@@ -2535,13 +2577,19 @@ function PortfolioTab({
     const it = suggByName[s.name.toUpperCase()];
     const action = it?.action;
     const clr = action === "BUY" ? C.green : action === "SELL" ? C.red : C.yellow;
+    // "Unsectored" is the absence of an answer, so it is drawn as one. Given
+    // the same solid badge as a real sector it reads like a classification, and
+    // a reader has no way to tell the rows nothing is known about from the rows
+    // that genuinely sit outside the eleven.
+    const sector = sectorOf(s);
+    const known = sector !== UNKNOWN_SECTOR;
     return (
       <div key={s.id} style={{ ...S.card, borderColor: it ? `${clr}35` : C.border, padding: 12, marginBottom: 8 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
           <div onClick={() => onSelectStock(s)} style={{ minWidth: 0, cursor: "pointer", flex: 1 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
               <span style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{s.name}</span>
-              <span style={{ fontSize: 9, color: C.muted, background: C.dim, borderRadius: 4, padding: "2px 6px" }}>{sectorOf(s)}</span>
+              <span style={{ fontSize: 9, color: C.muted, background: known ? C.dim : "transparent", border: known ? "1px solid transparent" : `1px dashed ${C.border}`, borderRadius: 4, padding: "2px 6px" }}>{sector}</span>
               <ChevronRight size={14} color={C.muted} />
             </div>
             {it ? (
@@ -2609,19 +2657,6 @@ function PortfolioTab({
     );
   };
 
-  const groupedBySector = () => {
-    const groups = {};
-    for (const s of visible) { const k = sectorOf(s); (groups[k] = groups[k] || []).push(s); }
-    // Same order as the filter chips. Sorting these independently put "Other"
-    // in the middle of the list while the chip row kept it last.
-    return sectors.filter((sec) => groups[sec]).map((sec) => (
-      <div key={sec}>
-        <div style={{ color: C.muted, fontSize: 10, fontWeight: 800, textTransform: "uppercase", margin: "8px 2px 8px" }}>{sec}</div>
-        {groups[sec].map(renderRow)}
-      </div>
-    ));
-  };
-
   return (
     <div style={{ padding: "0 14px 90px", position: "relative" }}>
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
@@ -2686,7 +2721,7 @@ function PortfolioTab({
       {view === "stocks" ? (
         <>
           <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-            {[{ id: "suggestion", l: "Suggestion" }, { id: "az", l: "A–Z" }, { id: "sector", l: "Sector" }].map((o) => (
+            {[{ id: "suggestion", l: "Strongest first" }, { id: "az", l: "A–Z" }].map((o) => (
               <button key={o.id} type="button" onClick={() => setSortMode(o.id)} style={{ flex: 1, padding: "8px 6px", borderRadius: 8, background: sortMode === o.id ? C.green : C.card, color: sortMode === o.id ? "#000" : C.muted, border: `1px solid ${C.border}`, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{o.l}</button>
             ))}
           </div>
@@ -2699,7 +2734,7 @@ function PortfolioTab({
                   <button
                     key={sec}
                     type="button"
-                    onClick={() => setSectorFilter(sec)}
+                    onClick={() => setSectorFilter((cur) => (cur === sec ? "all" : sec))}
                     style={{
                       flexShrink: 0, padding: "6px 12px", borderRadius: 999, fontSize: 11, fontWeight: 700, cursor: "pointer",
                       background: active ? `${C.blue}22` : "transparent",
@@ -2715,15 +2750,16 @@ function PortfolioTab({
           )}
 
           {visible.length === 0 ? (
-            <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 20 }}>
-              {stockList.length === 0
-                ? "No stocks yet. Search one above and tap Add."
-                : sectorFilter !== "all"
-                  ? `No ${sectorFilter} stocks here.`
-                  : `Nothing matches "${q}". Tap Add to start following it.`}
+            <div style={{ ...S.card, textAlign: "center", color: C.muted, padding: 20, fontSize: 12, lineHeight: 1.6 }}>
+              {emptyReason.text}
+              {emptyReason.clear && (
+                <div style={{ marginTop: 10 }}>
+                  <button type="button" onClick={() => setSectorFilter("all")} style={{ padding: "6px 12px", borderRadius: 6, background: C.dim, border: `1px solid ${C.border}`, color: C.text, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                    Show all sectors
+                  </button>
+                </div>
+              )}
             </div>
-          ) : sortMode === "sector" ? (
-            groupedBySector()
           ) : (
             visible.map(renderRow)
           )}
@@ -3450,8 +3486,13 @@ export default function App() {
 
   // Fundamentals per holding — fetched when the holdings set changes (slow-moving, not every refresh).
   // Stores the fundamentals object (P/E, ROE, sector, …) keyed by symbol.
+  //
+  // Companies only. A fund has no sector, earnings or margin to report, so
+  // every fund in the list was a round-trip whose whole answer was that none of
+  // the fields apply — and the ETF section reads its label and tracked index
+  // from the registry, not from here.
   useEffect(() => {
-    const syms = portfolioStockSymbols;
+    const syms = portfolioStockSymbols.filter((s) => !isETF(s));
     if (!syms.length) { setPortfolioFundamentals({}); return; }
     let cancelled = false;
     (async () => {
@@ -3795,11 +3836,15 @@ export default function App() {
   const cp = P?.cur ?? 0;
 
   const upsertPortfolioStock = useCallback((name, buy, sector = "Other", type = "stock") => {
-    const sym = type === "mf" ? String(name).trim() : String(name).toUpperCase().replace(/\.NS$/, "");
+    const kind = holdingType(type);
+    const sym = kind === "mf" ? String(name).trim() : String(name).toUpperCase().replace(/\.NS$/, "");
     const price = +buy || 0;
-    const sec = type === "mf" ? "Mutual Fund" : sector;
+    const sec = kind === "mf" ? "Mutual Fund" : normalizeSector(sector);
     setPortfolio((p) => {
-      const existing = p.find((s) => s.name.toUpperCase() === sym.toUpperCase() && s.type === type);
+      // Matched on the narrowed type. A CSV import stores no type at all, so
+      // comparing the raw field missed the row it had just created and added a
+      // second one for the same symbol the next time anything touched it.
+      const existing = p.find((s) => s.name.toUpperCase() === sym.toUpperCase() && holdingType(s.type) === kind);
       if (existing) {
         // Only overwrite what the caller actually supplied, so re-adding a
         // symbol you already hold cannot blank the cost you recorded for it.
@@ -3809,12 +3854,12 @@ export default function App() {
             name: sym,
             buy: price || s.buy,
             cur: price || s.cur,
-            sector: sec !== "Other" ? sec : s.sector,
-            type,
+            sector: sec || s.sector,
+            type: kind,
           }
           : s));
       }
-      return [...p, { id: nextHoldingId(), name: sym, buy: price, cur: price, sector: sec, type }];
+      return [...p, { id: nextHoldingId(), name: sym, buy: price, cur: price, sector: sec, type: kind }];
     });
   }, []);
 
@@ -3946,7 +3991,14 @@ Tabs: dashboard|portfolio|news|settings`;
     if (INDEX_ALIASES.has(sym)) {
       return `${sym} is an index the dashboard already tracks on Home — it is not something you can hold. For exposure to it, add a fund like NIFTYBEES.`;
     }
-    upsertPortfolioStock(sym, 0, 0, "Other", "stock");
+    // Four arguments, not five. This carried a `qty` of 0 in the second slot
+    // until quantity stopped being tracked, and losing it shifted every
+    // argument left: the sector became the number 0 and the type became
+    // "Other", so a stock added with this button was stored as a kind of thing
+    // that does not exist. It then failed to match the same symbol added by the
+    // assistant or a CSV — both of which store a real type — and the tab grew a
+    // second row for a stock it was already showing.
+    upsertPortfolioStock(sym, 0, "Other", "stock");
     return null;
   }, [upsertPortfolioStock]);
 
