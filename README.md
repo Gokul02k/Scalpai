@@ -1,270 +1,184 @@
 <div align="center">
 
-<img src="public/icons/icon-512.png" alt="ScalpAI" width="88">
+<img src="public/icons/icon-512.png" alt="ScalpAI" width="110" />
 
 # ScalpAI
 
 <p>
-  <img src="https://img.shields.io/badge/Next.js-14-00E676?style=for-the-badge&logo=nextdotjs&logoColor=white&labelColor=040810" alt="Next.js 14">
-  <img src="https://img.shields.io/badge/Python-3.13-4C8DFF?style=for-the-badge&logo=python&logoColor=white&labelColor=040810" alt="Python 3.13">
-  <img src="https://img.shields.io/badge/tests-454-3FB950?style=for-the-badge&labelColor=040810" alt="454 engine tests">
-  <img src="https://img.shields.io/badge/data-Fyers%20%C2%B7%20Yahoo-E3A008?style=for-the-badge&labelColor=040810" alt="Fyers and Yahoo data">
-  <img src="https://img.shields.io/badge/archive-local%20SQLite-A371F7?style=for-the-badge&labelColor=040810" alt="Local SQLite archive">
-  <img src="https://img.shields.io/badge/installs%20as-an%20app-2DD4BF?style=for-the-badge&labelColor=040810" alt="Installable as an app">
+  <img src="https://img.shields.io/badge/Next.js-14-00E676?style=for-the-badge&logo=nextdotjs&logoColor=white&labelColor=040810" alt="Next.js 14" />
+  <img src="https://img.shields.io/badge/Python-3.13-4C8DFF?style=for-the-badge&logo=python&logoColor=white&labelColor=040810" alt="Python 3.13" />
+  <img src="https://img.shields.io/badge/AI%20Assistant-enabled-8B5CF6?style=for-the-badge&labelColor=040810" alt="AI assistant" />
+  <img src="https://img.shields.io/badge/Fyers%20%2B%20Yahoo-data-E3A008?style=for-the-badge&labelColor=040810" alt="Fyers and Yahoo data" />
+  <img src="https://img.shields.io/badge/local%20archive-SQLite-A371F7?style=for-the-badge&labelColor=040810" alt="SQLite archive" />
+  <img src="https://img.shields.io/badge/app%20ready-PWA-2DD4BF?style=for-the-badge&labelColor=040810" alt="Installable app" />
 </p>
 
+An intraday market dashboard and research engine for NIFTY, SENSEX, and BANK NIFTY.
+Built to measure whether a scalping idea actually survives costs, data quality, and real market behavior.
+
 <p>
-  <a href="#running-it"><b>Run it</b></a> &nbsp;&#183;&nbsp;
-  <a href="engine/README.md"><b>The engine</b></a> &nbsp;&#183;&nbsp;
-  <a href="engine/README.md#backtesting"><b>Backtesting</b></a> &nbsp;&#183;&nbsp;
-  <a href="engine/README.md#paper-trading"><b>Paper trading</b></a> &nbsp;&#183;&nbsp;
-  <a href="#what-it-has-measured"><b>What it measured</b></a> &nbsp;&#183;&nbsp;
-  <a href="docs/assistant.md"><b>The assistant</b></a> &nbsp;&#183;&nbsp;
-  <a href="ALGO-PLAN.md"><b>The plan</b></a>
+  <a href="#quick-start"><b>Quick Start</b></a> &nbsp;·&nbsp;
+  <a href="#why-it-exists"><b>Why it exists</b></a> &nbsp;·&nbsp;
+  <a href="engine/README.md"><b>Engine Docs</b></a> &nbsp;·&nbsp;
+  <a href="docs/assistant.md"><b>Assistant</b></a> &nbsp;·&nbsp;
+  <a href="ALGO-PLAN.md"><b>Plan</b></a>
 </p>
 
 </div>
 
-An intraday scalping dashboard for NIFTY, SENSEX and BANK NIFTY, and a Python
-engine behind it whose main job is to find out whether any of it pays. So far
-it has mostly answered no, in writing, with the numbers attached.
+## Overview
 
-Two halves that can run apart. The dashboard is a Next.js app that works on its
-own against free Yahoo data and deploys to Vercel unchanged. The engine is a
-local Python process that owns the deeper market data, the backtest, the learned
-filter and the paper trader; point the dashboard at it and the chart renders the
-same Fyers-sourced bars the backtest scored, leave it unset and nothing breaks.
+ScalpAI is a two-part system:
 
-<table>
-<tr>
-<td width="33%" valign="top">
+- The dashboard is a Next.js app that works on its own with free Yahoo market data.
+- The Python engine owns the deeper market archive, backtests, model filtering, and paper-trading logic.
 
-### &#128225; It watches
+The idea is straightforward: if a strategy does not survive the real cost structure, it is not a strategy — it is a story.
 
-NIFTY, SENSEX and BANK NIFTY on 5-minute bars, plus your own stocks and ETFs.
-Every free provider serves a rolling window, so the engine merges each pull into
-a local archive and turns a disappearing window into history you own.
+> So far, the answer has mostly been: the signal exists, but the edge is smaller than the friction.
 
-</td>
-<td width="33%" valign="top">
+## Why it exists
 
-### &#128207; It measures
+<div align="center">
 
-The strategy is ported to Python and pinned by tests that run the real
-JavaScript under Node and diff the output, because a backtest of an
-*approximation* of your strategy tells you nothing about your strategy.
+| Feature | What it does |
+| --- | --- |
+| 📈 Intraday watchlist | Tracks NIFTY, SENSEX, BANK NIFTY and user-defined stocks/ETFs |
+| 🧠 Strategy testing | Replays signals against real data, not a simplified approximation |
+| 🗃️ Local archive | Merges rolling provider windows into a local SQLite store you control |
+| 🔍 Cost-aware evaluation | Measures round-trip cost per volatility regime instead of assuming a flat fee |
+| 🧪 Learned filter | Trains a model to keep only the higher-quality setups from the strategy |
+| 📱 Installable app | Runs as a PWA with a mobile-friendly dashboard |
 
-</td>
-<td width="33%" valign="top">
+</div>
 
-### &#128683; It refuses
+## What it measures
 
-Costs are measured per volatility regime rather than assumed, and most
-candidates do not survive that. The ones that fail stay in the tree with their
-numbers, wired to nothing.
+The important part is not just whether a signal fires — it is whether it survives the actual market structure.
 
-</td>
-</tr>
-</table>
+- The project measures real backtest performance on archived bars.
+- It tests whether a strategy is robust to costs, not just gross P&L.
+- It distinguishes between a signal working and a strategy winning after fees and volatility conditions.
 
-## Running it
+### Current result snapshot
 
-The dashboard alone, which needs no keys and no broker:
+The engine has found a real but thin edge in measured conditions, and the strongest evidence suggests the trade quality matters more than the raw signal count.
+
+- Gross profit factor: 1.21
+- Real cost-sensitive behavior is regime dependent
+- The filter can improve out-of-sample performance in recent periods
+- Long-only and other variants are being evaluated carefully rather than trusted by intuition
+
+## Quick start
+
+### 1) Run the dashboard
 
 ```bash
 npm install
-npm run dev                 # then open http://localhost:3000
+npm run dev
 ```
 
-Live index prices come from Yahoo, which needs no account. The header reads
-**LIVE** when real data is connected and **DEMO** when it is not. Charts,
-indicators, signals, the portfolio tracker and the signal log all work at this
-point; the AI assistant needs a key, and the backtest needs the engine.
+Then open: http://localhost:3000
 
-The engine, for the deep archive, the backtest and paper trading:
+The dashboard works without a broker key and can use free Yahoo data by default.
+
+### 2) Run the Python engine
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r engine/requirements.txt
 
-.venv/bin/python -m engine.cli status      # market open or shut
-.venv/bin/python -m engine.cli probe       # which providers answer
-.venv/bin/python -m engine.cli sync        # bank candles locally
+.venv/bin/python -m engine.cli status
+.venv/bin/python -m engine.cli probe
+.venv/bin/python -m engine.cli sync
 .venv/bin/python -m engine.cli backtest --show 20
 ```
 
-`./start.sh` wraps the daily routine — `morning`, `paper`, `dashboard`,
-`fyers`, `sync`, `status`, `setup` — and `./start.sh help` lists the rest.
+`./start.sh` wraps the recurring workflow for syncing, status checks, paper trading, and dashboard setup.
 
-To serve the dashboard from the engine rather than Yahoo, start
-`python -m engine.cli serve` and set `ENGINE_URL=http://127.0.0.1:8787`. The
-routes prefer it and fall back to Yahoo whenever it is down, has nothing
-archived for that symbol, or knows its own bars are behind the tape.
+## Architecture
 
-## What it has measured
+```text
+app/        Dashboard: Next.js App Router
+app/lib/    Indicator, signal, and strategy logic mirrored in Python
+engine/     Data adapters, archive, research, ML, backtest, and paper trading
+docs/       Dashboard documentation and assistant notes
+public/     PWA assets, icons, manifest, service worker
+scripts/    Setup, sync, paper, and status routines
+```
 
-The results are the point of the project, so they belong in front rather than
-three pages in. Both of these are one backtest against an assumed cost model,
-and both are written up in full in [the engine README](engine/README.md).
+## Project flow
 
-**The production strategy is not edgeless, and loses to costs.** Gross profit
-factor 1.21, then the round trip eats it. Filtering it with a walk-forward
-validated model moves the recent out-of-sample period from −0.69 to **+8.08 net
-points a trade**, robust across seeds — but that is roughly 25 trades a year,
-and the conclusion already flipped once when costs were priced at the volatility
-that actually prevailed instead of a calm day's snapshot.
+1. Pull market data from Yahoo or Fyers.
+2. Merge it into a local SQLite archive.
+3. Run the strategy with parity checks against the JS dashboard logic.
+4. Backtest and score the strategy under real cost assumptions.
+5. Filter weak candidates with a learned model.
+6. Run a paper-trading loop before trusting any live behavior.
 
-**The EMA 9 × VWAP cross does not pay.** The most widely traded NIFTY setup
-going, replayed over 246 fully volumed sessions: 510 crosses, 118 taken, a 25.4%
-win rate and **−9.71 net points a trade**, with 0 of 2 positive years. The
-mechanism is visible in the replay — a ₹800 stop is about 20 index points and
-the nearest support or resistance is frequently nearer than that, so the
-reward:risk floor refuses 66% of crosses, and widening the stop makes the gate
-bite harder rather than easier.
+## Documentation
 
-The more useful half of that second result is about data, not strategy. NIFTY is
-an index, so it has no volume of its own, and a volume-weighted average price is
-undefined without volume: only **269 of 2,260 archived sessions** carry any. The
-obvious fallback of using the close produces a "VWAP" line that *is* the close,
-which silently measures a strategy nobody described. Anyone reading a VWAP line
-on a NIFTY index chart is reading a volume proxy their platform chose.
-
-It is on the dashboard anyway, as a panel with its own number on it, wired to
-nothing that trades. A guard test fails the build if it ever reaches the
-decision path.
-
-## The documentation
-
-| | |
+| Resource | Purpose |
 | --- | --- |
-| [The assistant](docs/assistant.md) | Adding a model, what it is asked, and what leaves the machine |
-| [The engine](engine/README.md) | Setup, layout, and why the strategy was ported rather than reimplemented |
-| [Market data](engine/README.md#market-data) | The providers compared, the local archive, and the daily Fyers login |
-| [Backtesting](engine/README.md#backtesting) | Replay, variants, and the walk-forward filter |
-| [What a round trip costs](engine/README.md#what-a-round-trip-really-costs) | Spread, slippage and IV, measured per regime instead of assumed |
-| [Paper trading](engine/README.md#paper-trading) | Running the decision path against the live market with no orders |
-| [The EMA 9 / VWAP cross](engine/README.md#the-ema-9--vwap-cross-measured) | The full measurement, and the volume problem underneath it |
-| [Serving the dashboard from the engine](engine/README.md#serving-the-dashboard-from-the-engine) | The read-only JSON seam, and the three ways it declines to answer |
-| [The algo plan](ALGO-PLAN.md) | Phases from dashboard to executing algo, each ending in a gate |
+| [Engine README](engine/README.md) | Detailed setup, market data, backtests, and strategy notes |
+| [Assistant Docs](docs/assistant.md) | AI assistant behavior, prompts, and privacy-related settings |
+| [Algorithm Plan](ALGO-PLAN.md) | Roadmap and phases for future development |
+| [Market Data Notes](engine/README.md#market-data) | Provider comparison and local archive reasoning |
+| [Backtesting](engine/README.md#backtesting) | Replay, variants, and filter performance |
+| [Paper Trading](engine/README.md#paper-trading) | Live paper-trading workflow and risk controls |
 
-## The layout
+## Configuration
 
-```
-app/        the dashboard: Next.js App Router, one page and its API routes
-app/lib/    indicators, signals and the strategy the engine mirrors in Python
-engine/     data adapters, local archive, backtest, research, ml, paper trader
-docs/       the dashboard's own documentation
-public/     the installable-app pieces: manifest, service worker, icons
-scripts/    the morning routine, paper sessions, sync and status checks
-```
+Copy `.env.example` to `.env.local` if you want to enable environment-backed settings.
 
-Everything the engine writes — the SQLite archive, the Fyers token, fitted
-models, paper books — stays under `engine/var/`, so none of it is in the way of
-a deploy.
+Common keys and config include:
+
+- `GEMINI_API_KEY` / `GROQ_API_KEY`
+- `FYERS_CLIENT_ID`, `FYERS_SECRET_KEY`, `FYERS_REDIRECT_URI`
+- `ENGINE_URL`
+- `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+- `CRON_SECRET`
+
+Most features are optional; the dashboard still runs without a fully configured environment.
 
 ## On your phone
 
-Deployed over HTTPS, the dashboard installs as a real app: Chrome builds an
-Android package for it, so it gets a launcher icon, no address bar and its own
-entry in the app switcher. **Chrome ⋮ → Install app**, or **Share → Add to Home
-Screen** on iOS. If you added it to your home screen before, delete that icon
-first — it is a bookmark, and it will keep opening in the browser.
+The app is installable as a PWA.
 
-Install needs a secure origin, so `http://<lan-ip>:3000` cannot offer it however
-the manifest is written. The service worker deliberately never caches `/api`
-responses: a cached quote would render as a live price with nothing on screen
-admitting its age, so offline shows a page with no numbers on it at all.
+- Chrome: Install app from the menu
+- iPhone: Share → Add to Home Screen
+- Works best over HTTPS, which is required for install support
 
-The phone's back gesture unwinds the app — article, then detail sheet, then the
-assistant, then the tab — instead of closing it from wherever you happen to be.
+This gives it a more native feel while still being served from the same dashboard codebase.
 
-## The assistant
+## Assistant
 
-Two of them, asked different things. **Ask EA** reviews one signal card: it gets
-the instrument, the price, the app's own call and every factor behind it, and
-says whether it agrees. **The chat** answers questions about your holdings, and
-it gets your holdings — every message carries one line per position with the
-symbol, the size and the price you paid.
+ScalpAI includes two assistant modes:
 
-It can also edit them. The chat's prompt teaches the model to reply with command
-blocks, which the page strips out and executes, so "add 10 Reliance at 2850"
-changes your portfolio and the model decides what the change was. There is no
-confirmation step. Nothing it does reaches a broker — the edits are local state
-in your browser — but they happen without being approved first.
+- Ask EA: reviews a signal card and explains whether it agrees with the call
+- Chat assistant: answers questions about holdings and updates local portfolio state
 
-Keys are added at runtime in **Settings → Assistant** and stay in the browser
-that typed them, so a public deployment does not answer everyone's questions on
-the owner's key. Environment keys are ignored unless `SCALPAI_SHARED_KEYS=1`
-opts into exactly that. Gemini is asked first, Groq only if Gemini has no key or
-failed, and one key is enough.
-
-[The assistant](docs/assistant.md) covers what each is sent, every command it
-can issue, where a key is stored and for how long, and why a retired model reads
-as a rejected key.
-
-## Configuring
-
-Copy `.env.example` to `.env.local`. Everything in it is optional; the
-dashboard runs with all of it blank.
-
-| | |
-| --- | --- |
-| `GEMINI_API_KEY` · `GROQ_API_KEY` | Only read when `SCALPAI_SHARED_KEYS=1`. Normally a key is added in Settings → Assistant instead |
-| `SCALPAI_SHARED_KEYS` | Let this deployment answer with its own key for anyone who has not added one. Off by default, so a public deployment does not bill the owner |
-| `FYERS_CLIENT_ID` · `FYERS_SECRET_KEY` · `FYERS_REDIRECT_URI` | The engine's market data and option chain. Tokens expire daily, so `engine.cli fyers-auth` is a morning ritual |
-| `ENGINE_URL` | Serve charts and quotes from the engine. Unset means Yahoo |
-| `UPSTASH_REDIS_REST_URL` · `_TOKEN` | The signal log, and the background-alerts switch the cron reads |
-| `TELEGRAM_BOT_TOKEN` · `TELEGRAM_CHAT_ID` | Where background alerts are sent |
-| `CRON_SECRET` | Guards `/api/nifty-log/cron` |
-| `FINNHUB_API_KEY` | Optional. Its free tier excludes Indian indices, so Yahoo is the default |
-
-### Alerts with the app closed
-
-The in-app sound and notification come from a timer in the page, so they stop
-the moment the tab is backgrounded or the phone locks. Installing the site does
-not change that — it is the same frozen timer. To be alerted with the app shut,
-the signal has to be evaluated on the server: `/api/nifty-log/cron` runs the
-whole evaluation with no browser involved and pushes new signals to Telegram.
-
-Set the Upstash pair, the Telegram pair and `CRON_SECRET`, redeploy, then point
-a scheduler at it. Vercel Hobby caps cron at once a day, so use an external one
-such as [cron-job.org](https://cron-job.org), restricted to Mon–Fri 09:15–15:30
-IST. **Every two minutes** is the interval to pick: each tick rewrites the whole
-log blob, so Upstash bandwidth is the limit you would reach first, and signals
-are scored on 5-minute candles so a faster poll buys nothing.
-
-Append `&test=1` to that URL **in a browser** to get a Telegram test message and
-a config readout; any `false` in it is the thing to fix. Then **give the
-scheduler the URL without `&test=1`.** Test mode ignores market hours on
-purpose — that is how you check delivery while the market is shut — so a
-scheduler left on that URL is the one thing here that can message you at 3am,
-with the same text every time. Repeat test pings are capped at one per fifteen
-minutes and say how to stop themselves, but the fix is to drop the parameter.
-
-Real alerts fire on **new** signals only, so a call that persists updates its
-log row without messaging you again, and the tick returns
-`{"skipped":true,"reason":"market_closed"}` outside trading hours.
-
-**Settings → Alerts → Background alerts** is the master switch, stored on the
-server rather than in your browser so the cron can see it. With it off each call
-returns after one cheap read — which pauses the signal log too, not just the
-messages.
+Keys remain browser-local by default, which helps avoid sharing one public deployment's billing and permissions across all users.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 | --- | --- |
-| Header shows **DEMO** | Check `/api/market?symbol=%5ENSEI` returns `"source"` as `yahoo` or `fyers` |
-| Chart is hours behind | The Fyers token expired overnight. `engine.cli fyers-auth`, or clear `ENGINE_URL` to fall back to Yahoo |
-| VWAP panel reads "no volume" | Expected on Yahoo data, which reports zero volume for an index. It needs the engine |
-| Assistant says it is not configured | Add `GEMINI_API_KEY` and redeploy |
-| Prices frozen | Market hours are 09:15–15:30 IST; outside them the last close is correct |
-| Telegram repeating the same message, at night | Your scheduler still has `&test=1` on the cron URL. Remove it — the real tick skips when the market is shut |
-| No install option on the phone | Install needs HTTPS. A LAN IP over plain HTTP cannot offer it |
+| Header shows DEMO | Check the market source response and make sure the provider is connected |
+| Chart is stale | Refresh Fyers auth or fall back to Yahoo |
+| VWAP panel shows no volume | Expected on Yahoo index data; engine data resolves this |
+| Assistant not configured | Add the key and redeploy or set it in the app settings |
+| Phone install not available | Use HTTPS; local HTTP is not enough for PWAs |
 
-## Licence
+## License
 
-None yet — there is no `LICENSE` file in this tree, which means default
-copyright: nobody else has permission to use, copy or adapt it. That is the
-right default for something that has not decided what it wants to be, and the
-wrong one to leave in place if this is ever shared.
+There is no license file in the repository yet.
+
+That means the default copyright applies unless a license is added. If this project is intended to be shared or reused publicly, it is worth adding one explicitly.
+
+---
+
+<div align="center">
+  <sub>Built for research, measurement, and disciplined market testing.</sub>
+</div>
