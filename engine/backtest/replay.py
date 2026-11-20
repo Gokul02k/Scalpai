@@ -35,6 +35,23 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 
+_INTERVAL_MS = {
+    "1m": 60_000,
+    "5m": 5 * 60_000,
+    "15m": 15 * 60_000,
+    "30m": 30 * 60_000,
+    "1h": 60 * 60_000,
+    "1d": 24 * 60 * 60_000,
+}
+
+
+def _interval_ms(interval: str) -> int:
+    try:
+        return _INTERVAL_MS[interval]
+    except KeyError:
+        raise ValueError(f"unknown interval {interval!r}") from None
+
+
 @dataclass
 class BacktestConfig:
     symbol: str = "NIFTY"
@@ -147,6 +164,8 @@ def run_backtest(
     evaluated = 0
     filtered = 0
 
+    bar_ms = _interval_ms(config.interval)
+
     for i in range(config.warmup, len(rows), config.step):
         window = rows[max(0, i - config.window + 1): i + 1]
         bar = rows[i]
@@ -180,7 +199,13 @@ def run_backtest(
             chg_pct,
             index_signals,
             None,
-            now=datetime.fromtimestamp(bar["ts"] / 1000, tz=timezone.utc),
+            # Stamped at the bar's close, not its start. The decision used this
+            # bar's close, so its high and low were already in the past when
+            # the trade could be entered. Stamping at the start let grading
+            # (which keeps bars with ts >= entry) resolve trades against the
+            # very bar that produced them — about one trade in nine in a
+            # recent NIFTY replay. The live runner already skips that bar.
+            now=datetime.fromtimestamp((bar["ts"] + bar_ms) / 1000, tz=timezone.utc),
         )
         entry["instrument"] = config.instrument
 

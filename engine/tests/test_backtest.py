@@ -17,6 +17,7 @@ from engine.backtest.costs import (
 )
 from engine.core import indicators as ind
 from engine.core import signal_log as slog
+from engine.core import suggestion as sug
 from engine.data import CandleStore
 
 
@@ -136,6 +137,29 @@ def test_backtest_is_deterministic(candles):
     b = run_backtest(candles, config, IndexPointCost())
     assert a.stats == b.stats
     assert [e["id"] for e in a.logs] == [e["id"] for e in b.logs]
+
+
+def test_signal_bar_is_never_graded(candles):
+    """A signal is decided on a bar's close, so that bar's high and low are in
+    the past at entry and must not resolve the trade. Stamping signals at the
+    bar's start used to let roughly one trade in nine hit its target or stop on
+    the bar that produced it."""
+    # Production flags: on recent bars v1 is gated so hard it rarely fires.
+    window = candles
+    result = run_backtest(window, BacktestConfig(flags=sug.PRODUCTION_FLAGS))
+    by_start = {c.ts: c for c in window}
+    bar_ms = 5 * 60_000
+    graded = 0
+    for entry in result.logs:
+        # `firstTs` belongs to the first signal of a merged run; `ts` to the last.
+        entered = slog._parse_iso(entry["firstTs"]).timestamp() * 1000
+        decision_bar = by_start.get(entered - bar_ms)
+        assert decision_bar is not None, "entry is not stamped at a bar close"
+        resolved = (entry.get("outcome") or {}).get("resolvedTs")
+        if resolved:
+            graded += 1
+            assert slog._parse_iso(resolved).timestamp() * 1000 > decision_bar.ts
+    assert graded, "no graded trades; the assertion above never ran"
 
 
 def test_option_cost_is_dominated_by_spread():
