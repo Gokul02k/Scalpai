@@ -1,13 +1,21 @@
 export const dynamic = 'force-dynamic';
 
 import { getAlertsEnabled, setAlertsEnabled } from '../../lib/alertSettings';
+import { isAdmin, adminRequired } from '../../lib/adminAuth';
 
-export async function GET() {
+export async function GET(request) {
   const state = await getAlertsEnabled();
-  return Response.json(state, { headers: { 'Cache-Control': 'no-store' } });
+  // `admin` tells the page whether the token it sent would be accepted, so
+  // Settings can say so before anyone presses a switch that will be refused.
+  return Response.json(
+    { ...state, admin: isAdmin(request) },
+    { headers: { 'Cache-Control': 'no-store' } }
+  );
 }
 
 export async function POST(request) {
+  if (!isAdmin(request)) return adminRequired();
+
   let body;
   try {
     body = await request.json();

@@ -1,4 +1,5 @@
-const YAHOO_INDEX = {
+/** Dashboard symbols → Yahoo symbols. The one copy; routes import it. */
+export const YAHOO_INDEX = {
   '^NSEI': '^NSEI',
   '^BSESN': '^BSESN',
   '^NSEBANK': '^NSEBANK',
@@ -8,7 +9,7 @@ const YAHOO_INDEX = {
   'SILVERBEES.NS': 'SILVERBEES.NS',
 };
 
-const TF_MAP = {
+export const TF_MAP = {
   '1m': { interval: '1m', range: '1d' },
   '5m': { interval: '5m', range: '5d' },
   '15m': { interval: '15m', range: '5d' },
@@ -186,6 +187,8 @@ export async function fetchYahooQuote(symbol = '^NSEI') {
         previousClose,
         change: +change.toFixed(2),
         changePercent: previousClose ? +((change / previousClose) * 100).toFixed(2) : 0,
+        timestamp: (meta.regularMarketTime ?? Date.now() / 1000) * 1000,
+        name: meta.shortName || meta.longName,
       },
     };
   } catch (error) {
@@ -193,30 +196,55 @@ export async function fetchYahooQuote(symbol = '^NSEI') {
   }
 }
 
-export async function fetchYahooCandles(symbol = '^NSEI', tf = '5m') {
+/**
+ * Candles from Yahoo's chart endpoint.
+ *
+ * Bars with any missing price are dropped rather than zero-filled. Yahoo
+ * leaves gaps as nulls, and `null ?? 0` used to plot a bar with a zero low (or
+ * open) in the middle of a 24,000-point index, which drew a spike to the floor
+ * of the chart and dragged every indicator computed over it.
+ *
+ * Returns `{ candles, error }` so a route can tell "no bars" from "Yahoo
+ * refused"; `fetchYahooCandles` keeps the plain-array shape for the cron.
+ */
+export async function fetchYahooChart(symbol = '^NSEI', tf = '5m') {
   const yahooSymbol = YAHOO_INDEX[symbol] || symbol;
   const { interval, range } = TF_MAP[tf] || TF_MAP['5m'];
 
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=${interval}&range=${range}`;
     const res = await fetch(url, { cache: 'no-store', headers: UA });
-    if (!res.ok) return [];
+    if (!res.ok) return { candles: [], yahooSymbol, error: `Yahoo HTTP ${res.status}` };
 
     const body = await res.json();
     const result = body?.chart?.result?.[0];
     const timestamps = result?.timestamp || [];
     const q = result?.indicators?.quote?.[0] || {};
+    const label = {
+      timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit',
+      ...(tf === '1d' ? { month: 'short', day: 'numeric' } : {}),
+    };
 
-    return timestamps.map((t, i) => ({
-      t: new Date(t * 1000).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }),
-      ts: t * 1000,
-      o: +(q.open?.[i] ?? 0).toFixed(2),
-      h: +(q.high?.[i] ?? 0).toFixed(2),
-      l: +(q.low?.[i] ?? 0).toFixed(2),
-      c: +(q.close?.[i] ?? 0).toFixed(2),
-      vol: Math.floor(q.volume?.[i] ?? 0),
-    })).filter((c) => c.c > 0);
-  } catch {
-    return [];
+    const candles = [];
+    timestamps.forEach((t, i) => {
+      const o = q.open?.[i], h = q.high?.[i], l = q.low?.[i], c = q.close?.[i];
+      if (![o, h, l, c].every((v) => Number.isFinite(v) && v > 0)) return;
+      candles.push({
+        t: new Date(t * 1000).toLocaleTimeString('en-IN', label),
+        ts: t * 1000,
+        o: +o.toFixed(2),
+        h: +h.toFixed(2),
+        l: +l.toFixed(2),
+        c: +c.toFixed(2),
+        vol: Math.floor(q.volume?.[i] ?? 0),
+      });
+    });
+    return { candles, yahooSymbol, error: null };
+  } catch (error) {
+    return { candles: [], yahooSymbol, error: error.message || 'Yahoo candles fetch failed' };
   }
+}
+
+export async function fetchYahooCandles(symbol = '^NSEI', tf = '5m') {
+  return (await fetchYahooChart(symbol, tf)).candles;
 }

@@ -2,17 +2,7 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 import { engineQuote } from '../../lib/engineClient';
-
-// Finnhub symbols → Yahoo Finance symbols (Yahoo has free NSE/BSE index data)
-const YAHOO_SYMBOL = {
-  '^NSEI': '^NSEI',
-  '^BSESN': '^BSESN',
-  '^NSEBANK': '^NSEBANK',
-  '^NSEFI': '^CNXFIN',
-  '^NSMIDCP': 'NIFTY_MID_SELECT.NS',
-  'GOLDBEES.NS': 'GOLDBEES.NS',
-  'SILVERBEES.NS': 'SILVERBEES.NS',
-};
+import { fetchYahooQuote } from '../../lib/yahooServer';
 
 async function fetchFromFinnhub(symbol, apiKey) {
   const quoteRes = await fetch(
@@ -45,48 +35,6 @@ async function fetchFromFinnhub(symbol, apiKey) {
   };
 }
 
-async function fetchFromYahoo(symbol) {
-  const yahooSymbol = YAHOO_SYMBOL[symbol] || symbol;
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1m&range=1d`;
-
-  const res = await fetch(url, {
-    cache: 'no-store',
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ScalpAI/1.0)' },
-  });
-
-  if (!res.ok) {
-    return { ok: false, error: `Yahoo Finance HTTP ${res.status}` };
-  }
-
-  const body = await res.json();
-  const result = body?.chart?.result?.[0];
-  const meta = result?.meta;
-
-  if (!meta?.regularMarketPrice) {
-    return { ok: false, error: `No Yahoo quote for ${yahooSymbol}` };
-  }
-
-  const current = meta.regularMarketPrice;
-  const previousClose = meta.chartPreviousClose ?? meta.previousClose ?? current;
-  const change = current - previousClose;
-  const changePercent = previousClose ? (change / previousClose) * 100 : 0;
-
-  return {
-    ok: true,
-    data: {
-      current,
-      high: meta.regularMarketDayHigh ?? current,
-      low: meta.regularMarketDayLow ?? current,
-      open: meta.regularMarketOpen ?? previousClose,
-      previousClose,
-      change: +change.toFixed(2),
-      changePercent: +changePercent.toFixed(2),
-      timestamp: (meta.regularMarketTime ?? Date.now()) * 1000,
-      name: meta.shortName || meta.longName,
-    },
-  };
-}
-
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const symbol = searchParams.get('symbol') || '^NSEI';
@@ -114,7 +62,7 @@ export async function GET(request) {
 
   // Yahoo Finance — free, works for NSE/BSE indices without an API key
   try {
-    const yahoo = await fetchFromYahoo(symbol);
+    const yahoo = await fetchYahooQuote(symbol);
     if (yahoo.ok) {
       return Response.json({ ...yahoo.data, source: 'yahoo' }, noStore);
     }

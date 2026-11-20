@@ -12,6 +12,7 @@ import { getMarketStatus } from './marketHours';
 import { getNiftyLogs, saveNiftyLogs, isNiftyLogStorageConfigured } from './niftyLogStore';
 import { sendTelegramMessage, formatNiftySignalAlert } from './telegram';
 import { getAlertsEnabled } from './alertSettings';
+import { MIN_SCALP_POINTS, gateScalp } from './scalpGate';
 
 const DEFAULT_SETT = {
   riskLimit: 10000,
@@ -30,12 +31,6 @@ export async function runNiftyLogTick() {
     return { skipped: true, reason: 'market_closed', label: marketStatus.label };
   }
 
-  // Master switch from the app's Alerts panel. Checked after the (free) market
-  // test so a closed market costs no storage reads.
-  const { enabled } = await getAlertsEnabled();
-  if (!enabled) {
-    return { skipped: true, reason: 'alerts_disabled' };
-  }
 
   const quote = await fetchYahooQuote('^NSEI');
   if (!quote.ok) {
@@ -61,7 +56,9 @@ export async function runNiftyLogTick() {
   const priceData = { cur: price, prev, high: quote.data.high, low: quote.data.low };
 
   const indexSignals = generateIndexSignals(analysis, price, 'NIFTY', DEFAULT_SETT);
-  const finalCall = buildUnifiedSuggestion({
+  // Gated as the dashboard's scalp card and log gate it, so a signal too small
+  // to scalp is neither logged nor pushed to Telegram.
+  const finalCall = gateScalp(buildUnifiedSuggestion({
     analysis,
     price,
     chgPct,
@@ -69,7 +66,7 @@ export async function runNiftyLogTick() {
     settings: DEFAULT_SETT,
     mode: 'scalp',
     instrument: 'NIFTY',
-  });
+  }), MIN_SCALP_POINTS.NIFTY);
 
   if (!isLoggableNiftySignal(finalCall)) {
     return {
@@ -95,9 +92,17 @@ export async function runNiftyLogTick() {
 
   // Only an appended row is a new signal. 'update' is the same signal being
   // re-read inside its session window, so alerting on it would spam the chat.
-  const alert = decision === 'append'
-    ? await sendTelegramMessage(formatNiftySignalAlert(logs[0]))
-    : { sent: false, reason: `deduped_${decision}` };
+  //
+  // The alerts switch is read here, not at the top of the tick: it silences
+  // Telegram only. It used to end the tick early, so turning alerts off also
+  // stopped the background log and its grading without saying so.
+  let alert = { sent: false, reason: `deduped_${decision}` };
+  if (decision === 'append') {
+    const { enabled } = await getAlertsEnabled();
+    alert = enabled
+      ? await sendTelegramMessage(formatNiftySignalAlert(logs[0]))
+      : { sent: false, reason: 'alerts_disabled' };
+  }
 
   return {
     ok: true,

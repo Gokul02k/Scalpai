@@ -1,5 +1,26 @@
 export const dynamic = 'force-dynamic';
 
+const istDay = (sec) =>
+  new Date(sec * 1000).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+/**
+ * Yesterday's close, from the daily bars themselves.
+ *
+ * This route asks for five days of daily bars, and `meta.chartPreviousClose`
+ * is the close *before the first of them* — so "today's change" used to be
+ * the change over the whole week. The last bar dated before the quote's own
+ * session day is the real previous close.
+ */
+function previousSessionClose(result) {
+  const ts = result?.timestamp || [];
+  const closes = result?.indicators?.quote?.[0]?.close || [];
+  const today = istDay(result?.meta?.regularMarketTime ?? Date.now() / 1000);
+  for (let i = ts.length - 1; i >= 0; i--) {
+    if (closes[i] != null && istDay(ts[i]) < today) return closes[i];
+  }
+  return null;
+}
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const symbol = searchParams.get('symbol');
@@ -21,13 +42,14 @@ export async function GET(request) {
     }
 
     const body = await res.json();
-    const meta = body?.chart?.result?.[0]?.meta;
+    const result = body?.chart?.result?.[0];
+    const meta = result?.meta;
     if (!meta?.regularMarketPrice) {
       return Response.json({ error: 'No quote' }, { status: 404 });
     }
 
     const current = meta.regularMarketPrice;
-    const prev = meta.chartPreviousClose ?? meta.previousClose ?? current;
+    const prev = previousSessionClose(result) ?? meta.previousClose ?? current;
 
     return Response.json({
       symbol: yahooSymbol,

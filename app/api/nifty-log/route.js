@@ -10,6 +10,7 @@ import {
   clearNiftyLogs,
   isNiftyLogStorageConfigured,
 } from '../../lib/niftyLogStore';
+import { isAdmin, adminRequired } from '../../lib/adminAuth';
 
 export async function GET() {
   const { logs, configured, error } = await getNiftyLogs();
@@ -20,6 +21,7 @@ export async function GET() {
 }
 
 export async function POST(request) {
+  if (!isAdmin(request)) return adminRequired();
   if (!isNiftyLogStorageConfigured()) {
     return Response.json({ ok: false, reason: 'storage_not_configured' }, { status: 503 });
   }
@@ -50,7 +52,8 @@ export async function POST(request) {
   return Response.json({ ok: false, error: 'Provide entry or logs' }, { status: 400 });
 }
 
-export async function DELETE() {
+export async function DELETE(request) {
+  if (!isAdmin(request)) return adminRequired();
   if (!isNiftyLogStorageConfigured()) {
     return Response.json({ ok: true, configured: false });
   }

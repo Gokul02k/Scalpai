@@ -133,20 +133,32 @@ async function fetchYahooNews(query, stocks = []) {
   }
 }
 
+// Whole words, with an optional plural or tense ending. A plain substring test
+// read "executive" as a cut, "again" as a gain, "turmoil" as oil, "credit" as
+// an IT story and "setup" as up — and `sentiment` feeds the portfolio
+// suggestion, so those misreads moved recommendations.
+const words = (list) => new RegExp(`\\b(?:${list.join('|')})(?:s|es|d|ed|ing)?\\b`, 'i');
+
+const CATEGORY = [
+  ['Earnings', words(['earnings', 'quarter', 'q[1-4]', 'revenue', 'profit(?![- ]taking|[- ]booking)', 'results?'])],
+  ['Commodity', words(['gold', 'silver', 'bullion', 'mcx'])],
+  ['Sector', words(['bank', 'banking', 'auto', 'it', 'pharma', 'sector'])],
+  ['Global', words(['rbi', 'gdp', 'inflation', 'fed', 'crude', 'oil', 'rupee'])],
+  ['Corporate', words(['deal', 'jv', 'merger', 'ipo'])],
+];
+const POSITIVE = words(['surge', 'rally', 'rallies', 'rallied', 'gain', 'beat', 'buy', 'inflow', 'jump', 'up', 'rise', 'rose', 'high']);
+const NEGATIVE = words(['fall', 'fell', 'drop', 'dropped', 'slipped', 'slip', 'miss', 'cut', 'down', 'loss', 'outflow', 'slump', 'slide', 'slid', 'low']);
+
 // Rough buckets for scanning, and a mild factor in the portfolio suggestion.
 // Neither is analysis — see the note at the top of the file.
 function classify(item) {
-  const lower = item.headline.toLowerCase();
-  let cat = 'Market';
-  if (/earn|quarter|revenue|profit/.test(lower)) cat = 'Earnings';
-  else if (/gold|silver|bullion|mcx/.test(lower)) cat = 'Commodity';
-  else if (/bank|auto|it |pharma|sector/.test(lower)) cat = 'Sector';
-  else if (/rbi|gdp|inflation|fed|crude|oil|rupee/.test(lower)) cat = 'Global';
-  else if (/deal|jv|merger|ipo/.test(lower)) cat = 'Corporate';
+  const text = item.headline;
+  const cat = CATEGORY.find(([, re]) => re.test(text))?.[0] || 'Market';
 
-  let sentiment = 'neutral';
-  if (/surge|rally|gain|beat|buy|inflow|jump|up /.test(lower)) sentiment = 'positive';
-  if (/fall|drop|miss|cut|down |loss|outflow|slump|slide/.test(lower)) sentiment = 'negative';
+  const pos = POSITIVE.test(text);
+  const neg = NEGATIVE.test(text);
+  // Both present ("Sensex falls, IT gains") is a mixed headline, not a bad one.
+  const sentiment = pos === neg ? 'neutral' : pos ? 'positive' : 'negative';
 
   return { ...item, cat, sentiment };
 }

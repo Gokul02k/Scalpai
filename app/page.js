@@ -11,7 +11,7 @@ import {
   Plus, Trash2, Bell, Sun, Moon, ScrollText, Info,
 } from "lucide-react";
 import {
-  fetchAllMarketData, fetchRealMarketData, fetchEngineDecision, fetchCandles, fetchStockCandles, fetchPortfolioPrices, fetchNews, fetchStockQuote, fetchStockFundamentals, genFallbackCandles, SYMBOL_MAP,
+  fetchAllMarketData, fetchRealMarketData, fetchEngineDecision, fetchCandles, fetchStockCandles, fetchNews, fetchStockQuote, fetchStockFundamentals, genFallbackCandles, SYMBOL_MAP,
 } from "./lib/marketData";
 import { vwapSeries, supertrendSeries } from "./lib/chartIndicators";
 import { ETFS, isETF, etfMeta } from "./lib/etf";
@@ -26,6 +26,8 @@ import { vwapCrossSignal } from "./lib/vwapCross";
 import { loadPersisted, savePersisted } from "./lib/storage";
 import { AI_PROVIDERS, maskKey } from "./lib/aiProviders";
 import { loadAiKeys, loadAiKeyMeta, saveAiKey, clearAiKey } from "./lib/aiKeys";
+import { loadAdminToken, saveAdminToken, adminHeaders } from "./lib/adminToken";
+import { MIN_SCALP_POINTS, gateScalp } from "./lib/scalpGate";
 import {
   buildNiftySignalLogEntry,
   applyNiftyLogUpdate,
@@ -34,7 +36,6 @@ import {
   mergeNiftyLogLists,
   isLoggableNiftySignal,
   OUTCOME_LABELS,
-  NIFTY_LOG_MAX_ENTRIES,
   NIFTY_LOG_MIN_CONFIDENCE,
   NIFTY_MIN_PASS_POINTS,
   evaluateSignalOutcome,
@@ -55,13 +56,22 @@ const INSTRUMENTS = {
   "SILVER": { base: 228,   vol: 0.0020, lot: 1 },
 };
 
-// Smallest projected move worth scalping. NIFTY's 50 points is the number the
-// engine and the signal log already grade against; SENSEX is the same 0.2% of
-// price at its own level, which is what makes the two calls comparable.
-//
-// Only reached when the engine is unreachable. With it up, the verdict below
-// decides, and this hand-rolled floor is not part of it.
-const MIN_SCALP_POINTS = { NIFTY: 50, SENSEX: 165 };
+
+/** Bounds of the price refresh interval, in seconds — the Settings slider's. */
+const REFRESH_MIN_S = 3;
+const REFRESH_MAX_S = 60;
+/** Tabs the assistant may switch to; matches the bottom bar. */
+const CHAT_TABS = ["dashboard", "portfolio", "news", "niftylog", "settings"];
+
+/** A refresh interval within bounds, or null for anything that is not a number. */
+function clampRefresh(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(REFRESH_MAX_S, Math.max(REFRESH_MIN_S, Math.round(n)));
+}
+
+/** How often intraday candles are re-fetched while the market is open. */
+const CANDLE_POLL_MS = 60_000;
 
 const INSTRUMENT_KEYS = Object.keys(INSTRUMENTS);
 
@@ -201,12 +211,23 @@ function sortPortfolioSuggestions(items) {
   });
 }
 
+/**
+ * Whether a headline is about a symbol.
+ *
+ * Tagged items match on the tag. Otherwise the symbol must appear as a whole
+ * word: a substring test attached "RESULT" to LT, "SWITCH" to ITC and
+ * "WATCHES" to TCS, and those stories then fed each holding's suggestion.
+ */
+function newsMentions(n, symbol) {
+  const sym = String(symbol || "").toUpperCase();
+  if (!sym) return false;
+  if ((n.stocks || []).some((s) => String(s).toUpperCase() === sym)) return true;
+  const escaped = sym.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^A-Z0-9])${escaped}([^A-Z0-9]|$)`).test((n.headline || "").toUpperCase());
+}
+
 function latestNewsHeadline(name, newsList = []) {
-  const sym = name.toUpperCase();
-  const item = newsList.find(
-    (n) => (n.stocks || []).some((s) => String(s).toUpperCase() === sym)
-      || (n.headline || "").toUpperCase().includes(sym)
-  );
+  const item = newsList.find((n) => newsMentions(n, name));
   return item?.headline || null;
 }
 
@@ -237,19 +258,40 @@ function pushSuggestionItem(items, { id, name, mode, call, priceData, newsHeadli
 }
 
 const fmt  = (n, d = 2) => n?.toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d }) ?? "—";
-const fmtD = (n) => (n >= 0 ? "+" : "") + fmt(n);
+// Deterministic on purpose. The page is prerendered, and a random previous
+// close made the server's HTML and the browser's first render disagree, which
+// React reports as a hydration error (#418) and recovers from by throwing the
+// server render away. Real or simulated prices replace these within a tick.
 function initPrices() {
   const p = {};
   Object.entries(INSTRUMENTS).forEach(([k, v]) => {
-    const prev = +(v.base * (1 + (Math.random() - 0.5) * 0.006)).toFixed(2);
+    const prev = v.base;
     p[k] = { cur: v.base, open: +(v.base * 0.999).toFixed(2), high: +(v.base * 1.007).toFixed(2), low: +(v.base * 0.993).toFixed(2), prev };
   });
   return p;
 }
 
+// One context for the page's lifetime. A new one per beep was never closed,
+// and browsers cap how many can exist. Mobile starts it suspended until a
+// user gesture, so it is resumed on the first tap anywhere.
+let beepCtx = null;
+function audioCtx() {
+  if (typeof window === "undefined") return null;
+  if (!beepCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    beepCtx = new Ctx();
+    const unlock = () => { beepCtx.resume?.().catch(() => {}); };
+    window.addEventListener("pointerdown", unlock, { once: true, capture: true });
+  }
+  return beepCtx;
+}
+
 function playBeep() {
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = audioCtx();
+    if (!ctx) return;
+    if (ctx.state === "suspended") ctx.resume?.().catch(() => {});
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
@@ -261,13 +303,30 @@ function playBeep() {
   } catch (_) {}
 }
 
-function formatElapsed(ms) {
-  const s = Math.floor(ms / 1000);
-  const m = Math.floor(s / 60);
-  const h = Math.floor(m / 60);
-  if (h > 0) return `${h}h ${m % 60}m ${s % 60}s`;
-  if (m > 0) return `${m}m ${s % 60}s`;
-  return `${s}s`;
+/** Stable identity for an index signal, without the live numbers in its text. */
+function signalKey(s) {
+  const what = s.tag || String(s.reason || "").replace(/[-+]?[\d.,]+%?/g, "#");
+  return `${s.instrument}|${s.type}|${what}`;
+}
+
+/**
+ * Show a system notification without ever throwing.
+ *
+ * `new Notification()` throws "Illegal constructor" on Android Chrome, where
+ * only a service worker may show one — and thrown inside an effect with no
+ * error boundary, that took the whole app down on the first new signal.
+ */
+function notify(title, body) {
+  try {
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    const direct = () => { try { new Notification(title, { body }); } catch (_) {} };
+    // getRegistration, not `ready`: `ready` never settles when no worker was
+    // registered (plain HTTP), and the notification would silently vanish.
+    if (!navigator.serviceWorker?.getRegistration) return direct();
+    navigator.serviceWorker.getRegistration()
+      .then((reg) => (reg ? reg.showNotification(title, { body, icon: "/icons/icon-192.png" }) : direct()))
+      .catch(direct);
+  } catch (_) {}
 }
 
 /** Rolling Bollinger Bands series aligned 1:1 with closes (null until warm-up done). */
@@ -897,40 +956,6 @@ function ChartLegend({ overlays, decimals, C }) {
   );
 }
 
-function SignalCard({ sig, price, C }) {
-  const buy = sig.type === "BUY";
-  const target = sig.target ?? +(price * (buy ? 1.009 : 0.991)).toFixed(2);
-  const sl = sig.stopLoss ?? +(price * (buy ? 0.994 : 1.006)).toFixed(2);
-  const rr = sig.rr ?? (Math.abs(target - price) / Math.abs(price - sl)).toFixed(1);
-  const clr = buy ? C.green : C.red;
-  return (
-    <div style={{ background: `${clr}0d`, border: `1px solid ${clr}45`, borderRadius: 12, padding: 13, marginBottom: 8 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-          <span style={{ background: clr, color: "#000", fontWeight: 800, fontSize: 10, padding: "2px 9px", borderRadius: 4 }}>{sig.type}</span>
-          <span style={{ color: C.muted, fontSize: 11, fontWeight: 600 }}>{sig.str}</span>
-          {sig.instrument && <span style={{ color: C.blue, fontSize: 10, fontWeight: 700 }}>{sig.instrument}</span>}
-        </div>
-        <span style={{ color: clr, fontWeight: 800, fontSize: 13 }}>{sig.prob}%</span>
-      </div>
-      <p style={{ color: C.text, fontSize: 12, lineHeight: 1.45, margin: "0 0 9px" }}>{sig.reason}</p>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 5 }}>
-        {[
-          { l: "Entry", v: fmt(price), c: C.blue },
-          { l: "Target", v: fmt(target), c: C.green },
-          { l: "Stop Loss", v: fmt(sl), c: C.red },
-          { l: "R:R", v: `1:${rr}`, c: C.yellow },
-        ].map((x) => (
-          <div key={x.l} style={{ background: C.dim, borderRadius: 6, padding: "6px 3px", textAlign: "center" }}>
-            <div style={{ color: C.muted, fontSize: 9, marginBottom: 2, textTransform: "uppercase" }}>{x.l}</div>
-            <div style={{ color: x.c, fontWeight: 800, fontSize: 11 }}>{x.v}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function NewsCard({ n, onClick, C }) {
   const sc = n.sentiment === "positive" ? C.green : n.sentiment === "negative" ? C.red : C.yellow;
   // The `⚡HIGH`/`⚡MEDIUM` badge that used to sit here was `headline.length > 80`
@@ -1009,9 +1034,9 @@ function BriefSection({ section, C, S }) {
   );
 }
 
-function Toggle({ on, onToggle, C }) {
+function Toggle({ on, onToggle, label, disabled = false, C }) {
   return (
-    <button onClick={onToggle} style={{ width: 46, height: 26, borderRadius: 13, background: on ? C.green : C.dim, border: "none", cursor: "pointer", position: "relative", flexShrink: 0 }}>
+    <button type="button" role="switch" aria-checked={Boolean(on)} aria-label={label} disabled={disabled} onClick={onToggle} style={{ opacity: disabled ? 0.45 : 1, width: 46, height: 26, borderRadius: 13, background: on ? C.green : C.dim, border: "none", cursor: disabled ? "default" : "pointer", position: "relative", flexShrink: 0 }}>
       <div style={{ width: 20, height: 20, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: on ? 23 : 3, transition: "left .2s", boxShadow: "0 1px 4px rgba(0,0,0,.4)" }} />
     </button>
   );
@@ -1878,7 +1903,6 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, strategySplits, 
   // VWAP and a fast EMA are what an intraday chart is read against; everything
   // else is opt-in, because five overlays at once is a chart nobody can read.
   const [chartOv, setChartOv] = useState({ ema: true, vwap: true, st: false, bb: false, fvg: false, smc: false, cross: false });
-  const [chartNonce, setChartNonce] = useState(0);
   const [chartBusy, setChartBusy] = useState(false);
 
   const TIMEFRAMES = [
@@ -1913,14 +1937,14 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, strategySplits, 
   }, [dataSym, isScalpIndex]);
 
   useEffect(() => {
-    if (candlesByTf[chartTf] && !chartNonce) return;
+    if (candlesByTf[chartTf]) return;
     let cancelled = false;
     (async () => {
       const c = await fetchStockCandles(dataSym, chartTf);
       if (!cancelled) setCandlesByTf((p) => ({ ...p, [chartTf]: c || [] }));
     })();
     return () => { cancelled = true; };
-  }, [chartTf, dataSym, candlesByTf, chartNonce]);
+  }, [chartTf, dataSym, candlesByTf]);
 
   // Refreshes this chart and the call beside it, and nothing else in the app.
   const refreshChart = useCallback(async () => {
@@ -1952,10 +1976,7 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, strategySplits, 
   const priceData = { cur: price, prev };
 
   const stockNews = useMemo(
-    () => news.filter((n) =>
-      (n.stocks || []).some((s) => String(s).toUpperCase() === sym)
-      || (n.headline || "").toUpperCase().includes(sym)
-    ).slice(0, 6),
+    () => news.filter((n) => newsMentions(n, sym)).slice(0, 6),
     [news, sym]
   );
 
@@ -2040,7 +2061,7 @@ function StockDetailModal({ stock, news = [], sett, macroCalls, strategySplits, 
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 210, display: "flex", flexDirection: "column", background: C.bg, backgroundImage: C.bgGrad }}>
-      <div style={{ ...glassStyle(C), borderTop: "none", borderLeft: "none", borderRight: "none", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, position: "sticky", top: 0, zIndex: 5 }}>
+      <div style={{ ...glassStyle(C), borderTop: "none", borderLeft: "none", borderRight: "none", padding: "12px 16px", paddingTop: "max(12px, env(safe-area-inset-top))", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, position: "sticky", top: 0, zIndex: 5 }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ color: C.text, fontWeight: 900, fontSize: 18 }}>{sym}</span>
@@ -2965,7 +2986,7 @@ function AiKeysSheet({ keys, meta, shared, onSave, onClear, onClose, C, S }) {
                   placeholder={held ? "Replace key…" : `Paste ${p.label} key`}
                   autoComplete="off"
                   spellCheck={false}
-                  style={{ flex: 1, minWidth: 0, background: C.dim, border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 10px", color: C.text, fontSize: 12, fontFamily: "monospace" }}
+                  style={{ flex: 1, minWidth: 0, background: C.dim, border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 10px", color: C.text, fontSize: 16, fontFamily: "monospace" }}
                 />
                 <button
                   onClick={() => save(p.id)}
@@ -3040,13 +3061,15 @@ export default function App() {
   const S = { card: cardStyle(C) };
 
   const [hydrated, setHydrated] = useState(false);
-  const [instrument, setInstrument] = useState("NIFTY");
+  // The main analysis instrument and timeframe. Fixed: nothing in the UI
+  // changes them, and the chat may no longer either.
+  const instrument = "NIFTY";
   const [niftySignalLog, setNiftySignalLog] = useState([]);
   const [niftyLogFilter, setNiftyLogFilter] = useState("all");
   const [portfolioSignalLog, setPortfolioSignalLog] = useState([]);
   const [serverLogConfigured, setServerLogConfigured] = useState(false);
   const [tab, setTab] = useState("dashboard");
-  const [tf, setTf] = useState("5m");
+  const tf = "5m";
   const [refresh, setRefresh] = useState(5);
 
   const [prices, setPrices] = useState(initPrices);
@@ -3087,9 +3110,16 @@ export default function App() {
     ind: { rsi: true, macd: true, bb: true, ema20: true, ema50: true, vol: true },
   });
   const [alerts, setAlerts] = useState({ sound: true, notification: true });
-  const [bgAlerts, setBgAlerts] = useState({ enabled: false, configured: false, loaded: false, busy: false });
+  const [bgAlerts, setBgAlerts] = useState({ enabled: false, configured: false, loaded: false, busy: false, admin: false });
+  // Token that lets this device change the shared log and alerts switch.
+  const [adminToken, setAdminToken] = useState("");
+  const adminTokenInputRef = useRef(null);
 
-  const [marketStatus, setMarketStatus] = useState(() => getMarketStatus());
+  // Read from the clock after mount, not during render: the prerendered HTML
+  // carries the build's time, and a status computed from it disagreed with the
+  // browser's on first render. Closed until then, which suppresses logging and
+  // polling for the one tick before the real status arrives.
+  const [marketStatus, setMarketStatus] = useState({ open: false, label: "Checking market…", detail: "", reason: "unknown" });
   const [selectedStock, setSelectedStock] = useState(null);
 
   // Assistant keys live on this device, not on the server: see lib/aiKeys.js.
@@ -3103,7 +3133,7 @@ export default function App() {
 
   const [chatOpen, setChatOpen] = useState(false);
   const [msgs, setMsgs] = useState([
-    { role: "assistant", content: "👋 Hi! I'm your EA assistant.\n\nTry: \"Add RELIANCE at 2850\", \"Remove TCS from portfolio\", \"Switch to GOLD\", or \"What does RSI say for NIFTY?\"" },
+    { role: "assistant", content: "👋 Hi! I'm your EA assistant.\n\nTry: \"Add RELIANCE at 2850\", \"Remove TCS from portfolio\", \"Switch to light theme\", or \"What does RSI say for NIFTY?\"" },
   ]);
   const [chatInput, setChatInput] = useState("");
   const [chatModel, setChatModel] = useState(DEFAULT_GEMINI_MODEL);
@@ -3130,6 +3160,20 @@ export default function App() {
   niftyLogRef.current = niftySignalLog;
   portfolioLogRef.current = portfolioSignalLog;
   serverLogConfiguredRef.current = serverLogConfigured;
+  // Read inside state updaters and intervals, which would otherwise see the
+  // value from whichever render created them.
+  const adminRef = useRef({ token: "", ok: false });
+  adminRef.current = { token: adminToken, ok: bgAlerts.admin };
+
+  /** Send a log change to the shared server log, when this device may write. */
+  const pushNiftyLog = useCallback((body) => {
+    if (!serverLogConfiguredRef.current || !adminRef.current.ok) return;
+    fetch("/api/nifty-log", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...adminHeaders(adminRef.current.token) },
+      body: JSON.stringify(body),
+    }).catch(() => {});
+  }, []);
   // Same reason as the keys above: askNewsBrief is memoised with no
   // dependencies, so it has to read the headlines and the session state at the
   // moment the button is pressed rather than as they were on first render.
@@ -3237,6 +3281,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    setAdminToken(loadAdminToken());
     setAiKeys(loadAiKeys());
     setAiKeyMeta(loadAiKeyMeta());
     fetch("/api/ai-test", { cache: "no-store" })
@@ -3261,10 +3306,15 @@ export default function App() {
   useEffect(() => {
     const data = loadPersisted();
     if (data) {
-      if (data.theme) setTheme(data.theme);
+      // Stored data is trusted only as far as it matches what the code knows:
+      // an unknown theme made THEMES[theme] undefined and crashed the render.
+      if (THEMES[data.theme]) setTheme(data.theme);
       if (data.portfolio?.length) setPortfolio(dedupePortfolio(data.portfolio));
-      if (data.sett) setSett(data.sett);
-      if (data.refresh) setRefresh(data.refresh);
+      if (data.sett && typeof data.sett === "object") {
+        // Merged, so a setting added since the blob was saved keeps its default.
+        setSett((d) => ({ ...d, ...data.sett, ind: { ...d.ind, ...(data.sett.ind || {}) } }));
+      }
+      if (clampRefresh(data.refresh) != null) setRefresh(clampRefresh(data.refresh));
       if (data.alerts) setAlerts(data.alerts);
       if (data.chatModel && [...GEMINI_CHAT_MODELS, ...GROQ_CHAT_MODELS].some((m) => m.id === data.chatModel)) setChatModel(data.chatModel);
       if (data.niftySignalLog?.length) {
@@ -3304,36 +3354,45 @@ export default function App() {
   useEffect(() => {
     if (!hydrated) return;
     let cancelled = false;
-    fetch("/api/alerts", { cache: "no-store" })
+    fetch("/api/alerts", { cache: "no-store", headers: adminHeaders(adminToken) })
       .then((r) => r.json())
       .then((d) => {
         if (cancelled) return;
-        setBgAlerts({ enabled: Boolean(d.enabled), configured: Boolean(d.configured), loaded: true, busy: false });
+        setBgAlerts({ enabled: Boolean(d.enabled), configured: Boolean(d.configured), loaded: true, busy: false, admin: Boolean(d.admin) });
       })
       .catch(() => {
         if (!cancelled) setBgAlerts((p) => ({ ...p, loaded: true }));
       });
     return () => { cancelled = true; };
-  }, [hydrated]);
+  }, [hydrated, adminToken]);
+
+  const applyAdminToken = useCallback((token) => {
+    saveAdminToken(token);
+    setAdminToken((token || "").trim());
+  }, []);
 
   const toggleBackgroundAlerts = useCallback(async () => {
-    if (!bgAlerts.configured || bgAlerts.busy) return;
+    if (!bgAlerts.configured || bgAlerts.busy || !bgAlerts.admin) return;
     const next = !bgAlerts.enabled;
     setBgAlerts((p) => ({ ...p, enabled: next, busy: true }));
 
     try {
       const res = await fetch("/api/alerts", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...adminHeaders(adminToken) },
         body: JSON.stringify({ enabled: next }),
       });
+      if (res.status === 401) {
+        setBgAlerts((p) => ({ ...p, enabled: !next, busy: false, admin: false }));
+        return;
+      }
       if (!res.ok) throw new Error("save failed");
       const data = await res.json();
-      setBgAlerts({ enabled: Boolean(data.enabled), configured: Boolean(data.configured), loaded: true, busy: false });
+      setBgAlerts((p) => ({ ...p, enabled: Boolean(data.enabled), configured: Boolean(data.configured), loaded: true, busy: false }));
     } catch {
       setBgAlerts((p) => ({ ...p, enabled: !next, busy: false }));
     }
-  }, [bgAlerts.configured, bgAlerts.busy, bgAlerts.enabled]);
+  }, [bgAlerts.configured, bgAlerts.busy, bgAlerts.enabled, bgAlerts.admin, adminToken]);
 
   // Persist on change
   useEffect(() => {
@@ -3343,6 +3402,7 @@ export default function App() {
 
   // Market status ticker
   useEffect(() => {
+    setMarketStatus(getMarketStatus());
     const id = setInterval(() => setMarketStatus(getMarketStatus()), 30000);
     return () => clearInterval(id);
   }, []);
@@ -3403,22 +3463,36 @@ export default function App() {
     return () => clearInterval(id);
   }, [refresh, isLive]);
 
-  // Real candles for all instruments on timeframe change
+  // Real candles for all instruments, on timeframe change and then on a poll.
+  //
+  // This used to fetch once per timeframe change and never again, so every
+  // analysis, scalp call, alert and log entry for the session ran on the bars
+  // from page load while only the latest price moved. Polled once a minute
+  // while the market is open — enough to pick up each new 5m bar promptly.
+  // A failed refresh keeps the bars already held rather than swapping in
+  // generated ones mid-session.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    const load = async (initial) => {
       await Promise.all(INSTRUMENT_KEYS.map(async (inst) => {
         const data = await fetchCandles(inst, tf);
         if (cancelled) return;
         if (data?.length) {
           setCandles((prev) => ({ ...prev, [inst]: data }));
-        } else {
+        } else if (initial) {
           const base = pricesRef.current[inst]?.cur ?? INSTRUMENTS[inst].base;
-          setCandles((prev) => ({ ...prev, [inst]: genFallbackCandles(base, 65, INSTRUMENTS[inst].vol) }));
+          // Marked so nothing downstream mistakes generated bars for a session.
+          const fake = genFallbackCandles(base, 65, INSTRUMENTS[inst].vol);
+          fake.synthetic = true;
+          setCandles((prev) => ({ ...prev, [inst]: fake }));
         }
       }));
-    })();
-    return () => { cancelled = true; };
+    };
+    load(true);
+    const id = setInterval(() => {
+      if (marketStatusRef.current?.open && document.visibilityState === "visible") load(false);
+    }, CANDLE_POLL_MS);
+    return () => { cancelled = true; clearInterval(id); };
   }, [tf]);
 
   // One instrument's price and candles, for the chart's own refresh button.
@@ -3457,11 +3531,24 @@ export default function App() {
   // Portfolio live prices
   useEffect(() => {
     let cancelled = false;
+    // One quote per holding per poll, feeding both the portfolio price and
+    // the quote the Home cards read. The result is merged into the latest
+    // portfolio rather than replacing it with the snapshot taken before the
+    // fetch, which silently undid any edit made while a poll was in flight.
     const refreshPortfolio = async () => {
-      const current = portfolioRef.current;
-      if (!current.length) return;
-      const updated = await fetchPortfolioPrices(current);
-      if (!cancelled) setPortfolio(updated);
+      const syms = [...new Set(portfolioRef.current
+        .filter((s) => s.type !== "mf")
+        .map((s) => s.name.toUpperCase()))];
+      if (!syms.length) return;
+      const entries = await Promise.all(syms.map(async (sym) => [sym, await fetchStockQuote(sym)]));
+      if (cancelled) return;
+      const quotes = Object.fromEntries(entries.filter(([, q]) => q?.current));
+      if (!Object.keys(quotes).length) return;
+      setStockQuotes((prev) => ({ ...prev, ...quotes }));
+      setPortfolio((latest) => latest.map((s) => {
+        const q = s.type !== "mf" && quotes[s.name.toUpperCase()];
+        return q && q.current !== s.cur ? { ...s, cur: q.current } : s;
+      }));
     };
     refreshPortfolio();
     const id = setInterval(refreshPortfolio, refresh * 1000 + 5000);
@@ -3505,21 +3592,10 @@ export default function App() {
     [portfolio]
   );
 
-  useEffect(() => {
-    const syms = portfolioStockSymbols;
-    if (!syms.length) return;
-    let cancelled = false;
-    (async () => {
-      const entries = await Promise.all(syms.map(async (s) => {
-        const q = await fetchStockQuote(s);
-        return [s, q];
-      }));
-      if (!cancelled) {
-        setStockQuotes(Object.fromEntries(entries.filter(([, q]) => q)));
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [portfolioStockSymbols.join(","), refresh]);
+  // Quotes for holdings are refreshed by the portfolio poll above, which also
+  // updates the portfolio price — one request per holding per poll. They used
+  // to be fetched once here and never again, leaving Home's "Your stocks"
+  // cards on the opening price all session.
 
   // India VIX daily closes, for the volatility factor in the trend panel.
   // Fetched by symbol rather than added to SYMBOL_MAP, which is iterated to
@@ -3695,15 +3771,6 @@ export default function App() {
   // pairs with v1's stop floor, which is the geometry this call was computed
   // with — the engine's wider pool would need the filter to be worth taking,
   // and the filter is not something the browser can run.
-  const gateScalp = useCallback((call, floor) => {
-    if (!call) return call;
-    const moveDist = call.target != null ? Math.abs(call.target - call.entry) : 0;
-    if ((call.action === "BUY" || call.action === "SELL") && moveDist < floor) {
-      return { ...call, action: "HOLD", label: "No scalp trade", target: null, stopLoss: null, rr: null, gatedReason: `Projected move ~${Math.round(moveDist)} pts — under ${floor} pts, not worth scalping.` };
-    }
-    return call;
-  }, []);
-
   // The engine's verdict, in the shape the cards already read.
   //
   // Whatever the paper trader would do is what gets shown, including when it
@@ -3739,11 +3806,11 @@ export default function App() {
 
   const niftyScalpCall = useMemo(
     () => withEngineVerdict(engineCalls.NIFTY, gateScalp(finalCalls.NIFTY, MIN_SCALP_POINTS.NIFTY)),
-    [engineCalls.NIFTY, finalCalls.NIFTY, gateScalp, withEngineVerdict]
+    [engineCalls.NIFTY, finalCalls.NIFTY, withEngineVerdict]
   );
   const sensexScalpCall = useMemo(
     () => withEngineVerdict(engineCalls.SENSEX, gateScalp(finalCalls.SENSEX, MIN_SCALP_POINTS.SENSEX)),
-    [engineCalls.SENSEX, finalCalls.SENSEX, gateScalp, withEngineVerdict]
+    [engineCalls.SENSEX, finalCalls.SENSEX, withEngineVerdict]
   );
 
   // The vote split by strategy, for the panel under each scalp call.
@@ -3790,7 +3857,15 @@ export default function App() {
 
   useEffect(() => {
     if (!hydrated) return;
-    const call = finalCalls.NIFTY;
+    // Only real sessions on real bars. In DEMO mode the prices are a random
+    // walk, and when the candle fetch fails the bars are generated, so
+    // anything logged from either is noise — and it used to be POSTed to the
+    // shared server log too. The NIFTY log promises entries "during market
+    // hours"; this is where that is enforced.
+    if (!isLive || !marketStatus.open || candles.NIFTY?.synthetic) return;
+    // Gated exactly as the server cron gates it, so the two logs agree. The
+    // engine verdict is left out on purpose: the cron cannot see the engine.
+    const call = gateScalp(finalCalls.NIFTY, MIN_SCALP_POINTS.NIFTY);
     if (!isLoggableNiftySignal(call)) return;
 
     const niftyPct = prices.NIFTY?.prev
@@ -3805,20 +3880,17 @@ export default function App() {
       marketStatus,
     });
 
-    setNiftySignalLog((prev) => {
-      const { logs, changed } = applyNiftyLogUpdate(prev, entry);
-      if (!changed) return prev;
-      prevNiftyLogRef.current = logs[0];
-      if (serverLogConfiguredRef.current) {
-        fetch("/api/nifty-log", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ entry }),
-        }).catch(() => {});
-      }
-      return logs;
-    });
-  }, [hydrated, finalCalls.NIFTY, prices.NIFTY, analyses.NIFTY, signalsByInstrument.NIFTY, marketStatus]);
+    // Computed from the ref, then committed, then sent. The POST used to run
+    // inside the state updater, which React may call twice (it does in Strict
+    // Mode) and which must not have side effects; the ref is updated at once
+    // so a second update in the same tick builds on this one.
+    const { logs, changed } = applyNiftyLogUpdate(niftyLogRef.current, entry);
+    if (!changed) return;
+    niftyLogRef.current = logs;
+    prevNiftyLogRef.current = logs[0];
+    setNiftySignalLog(logs);
+    pushNiftyLog({ entry });
+  }, [hydrated, isLive, candles.NIFTY, finalCalls.NIFTY, prices.NIFTY, analyses.NIFTY, signalsByInstrument.NIFTY, marketStatus]);
 
   // Grade logged predictions against the real NIFTY price path (passed/failed/expired).
   // Runs on load and every 60s; works retroactively so signals resolved while the
@@ -3831,19 +3903,12 @@ export default function App() {
       if (!openCount) return;
       const candles = await fetchCandles("NIFTY", "5m");
       if (cancelled || !candles?.length) return;
-      setNiftySignalLog((prev) => {
-        const { logs, changed } = applyOutcomeToLogs(prev, candles, Date.now());
-        if (!changed) return prev;
-        prevNiftyLogRef.current = logs[0];
-        if (serverLogConfiguredRef.current) {
-          fetch("/api/nifty-log", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ logs }),
-          }).catch(() => {});
-        }
-        return logs;
-      });
+      const { logs, changed } = applyOutcomeToLogs(niftyLogRef.current, candles, Date.now());
+      if (!changed) return;
+      niftyLogRef.current = logs;
+      prevNiftyLogRef.current = logs[0];
+      setNiftySignalLog(logs);
+      pushNiftyLog({ logs });
     };
     evaluate();
     const id = setInterval(evaluate, 60_000);
@@ -3862,21 +3927,18 @@ export default function App() {
     if (!hydrated) return;
     const indexSigs = signals.filter((s) => s.scope === "index");
     const prev = prevIndexSigs.current;
-    const isNew = indexSigs.some((s) => !prev.find((p) => p.type === s.type && p.reason === s.reason));
-    if (isNew && prev.length > 0) {
+    // Identity ignores the numbers in the reason ("RSI 71.3"), which change on
+    // every tick and used to make the same signal alert again and again.
+    const prevKeys = new Set(prev.map(signalKey));
+    const fresh = indexSigs.filter((s) => !prevKeys.has(signalKey(s)));
+    if (fresh.length && prev.length > 0) {
       if (alerts.sound) playBeep();
-      if (alerts.notification && typeof Notification !== "undefined" && Notification.permission === "granted") {
-        const sig = indexSigs[0];
-        new Notification(`ScalpAI ${sig.type} — ${instrument}`, { body: sig.reason });
-      }
+      if (alerts.notification) notify(`ScalpAI ${fresh[0].type} — ${fresh[0].instrument}`, fresh[0].reason);
     }
     prevIndexSigs.current = indexSigs;
-  }, [signals, hydrated, alerts, instrument]);
+  }, [signals, hydrated, alerts]);
 
   useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs]);
-
-  const P = prices[instrument];
-  const cp = P?.cur ?? 0;
 
   const upsertPortfolioStock = useCallback((name, buy, sector = "Other", type = "stock") => {
     const kind = holdingType(type);
@@ -3919,11 +3981,16 @@ export default function App() {
   const execCmd = useCallback((json) => {
     try {
       const { action, value } = JSON.parse(json);
-      if (action === "changeInstrument" && INSTRUMENTS[value]) setInstrument(value);
-      if (action === "changeTimeframe") setTf(value);
-      if (action === "changeRefreshRate") setRefresh(+value);
-      if (action === "toggleIndicator") setSett((p) => ({ ...p, ind: { ...p.ind, [value]: !p.ind[value] } }));
-      if (action === "setRiskLimit") setSett((p) => ({ ...p, riskLimit: +value }));
+      // Model output is untrusted input, so only the commands the prompt
+      // teaches are honoured, and each is checked. An unchecked refresh of 0.1
+      // or -5 set four polls running every 100ms or less and survived reloads.
+      // changeInstrument, changeTimeframe, toggleIndicator and setRiskLimit
+      // used to run too: never taught, with no UI to see or undo them, and the
+      // timeframe one could turn every "scalp" call into a daily-bar call.
+      if (action === "changeRefreshRate") {
+        const secs = clampRefresh(value);
+        if (secs != null) setRefresh(secs);
+      }
       if (action === "setTheme") setTheme(value === "light" ? "light" : "dark");
       // A `qty` in the model's command is read past rather than rejected: the
       // older prompt taught it to send one, and a stale conversation should
@@ -3937,7 +4004,10 @@ export default function App() {
       if (action === "removeStock") {
         removePortfolioStock(value.name || value.symbol || value);
       }
-      if (action === "switchTab") setTab(value === "watchlist" ? "portfolio" : value);
+      if (action === "switchTab") {
+        const id = value === "watchlist" ? "portfolio" : value;
+        if (CHAT_TABS.includes(id)) setTab(id);
+      }
     } catch (_) {}
   }, [upsertPortfolioStock, removePortfolioStock]);
 
@@ -4033,7 +4103,7 @@ export default function App() {
       const sys = `You are EA, an investing assistant for Indian markets (NSE) inside this app.
 Focus on swing and long-term investing decisions, not intraday scalping.
 When asked whether to buy/sell/hold a stock, weigh BOTH fundamentals (P/E, P/B, ROE, debt, growth, margins, analyst view) AND technicals (trend, RSI, support/resistance), plus recent news. Be concise and practical; always note it is suggestion-only, not financial advice.
-Context — NIFTY ₹${fmt(cp)} | RSI ${analysis?.rsi ?? "—"} | Theme ${theme}
+Context — NIFTY ₹${fmt(prices.NIFTY?.cur ?? 0)} | RSI ${analyses.NIFTY?.rsi ?? "—"} | Theme ${theme}
 User portfolio: ${portSummary}
 
 This app tracks which stocks the user holds and what to do about them, not how
@@ -4045,8 +4115,8 @@ When the user asks to add, update, or remove holdings, emit a command:
 <CMD>{"action":"removeStock","value":{"name":"TCS"}}</CMD>
 
 Other commands via <CMD>{"action":"...","value":"..."}</CMD>:
-changeRefreshRate, setTheme, switchTab
-Tabs: dashboard|portfolio|news|settings`;
+changeRefreshRate (seconds, ${REFRESH_MIN_S}-${REFRESH_MAX_S}), setTheme (dark|light), switchTab
+Tabs: ${CHAT_TABS.join("|")}`;
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -4095,11 +4165,7 @@ Tabs: dashboard|portfolio|news|settings`;
 
   const portfolioStocks = portfolio.filter((s) => s.type !== "mf" && !INDEX_ALIASES.has(s.name.toUpperCase()));
 
-  const matchesSymbol = (n, sym) => {
-    const S = sym.toUpperCase();
-    return (n.stocks || []).some((st) => st.toUpperCase() === S)
-      || (n.headline || "").toUpperCase().includes(S);
-  };
+  const matchesSymbol = newsMentions;
   const portfolioNewsBySymbol = useMemo(() => {
     const map = {};
     for (const s of portfolioStocks) {
@@ -4423,12 +4489,12 @@ Tabs: dashboard|portfolio|news|settings`;
           {theme === "dark" ? <Moon size={16} color={C.muted} /> : <Sun size={16} color={C.yellow} />}
           <span style={{ color: C.text, fontWeight: 700 }}>Theme</span>
         </div>
-        <Toggle on={theme === "light"} onToggle={() => setTheme(theme === "dark" ? "light" : "dark")} C={C} />
+        <Toggle on={theme === "light"} label="Light theme" onToggle={() => setTheme(theme === "dark" ? "light" : "dark")} C={C} />
       </div>
 
       <div style={S.card}>
         <div style={{ color: C.text, fontWeight: 700, marginBottom: 8 }}>Refresh · <span style={{ color: C.green }}>{refresh}s</span></div>
-        <input type="range" min={3} max={60} value={refresh} onChange={(e) => setRefresh(+e.target.value)} style={{ width: "100%", accentColor: C.green }} />
+        <input type="range" min={REFRESH_MIN_S} max={REFRESH_MAX_S} value={refresh} onChange={(e) => setRefresh(+e.target.value)} style={{ width: "100%", accentColor: C.green }} />
       </div>
 
       <div style={S.card}>
@@ -4436,7 +4502,7 @@ Tabs: dashboard|portfolio|news|settings`;
         {[{ k: "sound", l: "Sound" }, { k: "notification", l: "Notification" }].map(({ k, l }) => (
           <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.dim}` }}>
             <span style={{ color: C.text, fontSize: 13 }}>{l}</span>
-            <Toggle on={alerts[k]} onToggle={() => { if (k === "notification") requestNotifPerm(); setAlerts((p) => ({ ...p, [k]: !p[k] })); }} C={C} />
+            <Toggle on={alerts[k]} label={`${k === "sound" ? "Sound" : "Notification"} alerts`} onToggle={() => { if (k === "notification") requestNotifPerm(); setAlerts((p) => ({ ...p, [k]: !p[k] })); }} C={C} />
           </div>
         ))}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "10px 0 2px" }}>
@@ -4449,11 +4515,52 @@ Tabs: dashboard|portfolio|news|settings`;
                   ? "Needs Upstash Redis on Vercel — see README."
                   : bgAlerts.enabled
                     ? "On — the server tracks NIFTY and messages you on Telegram even with this app closed."
-                    : "Off — no background tracking and no Telegram messages."}
+                    : "Off — no Telegram messages. The server still logs and grades signals."}
             </div>
           </div>
-          <Toggle on={bgAlerts.enabled} onToggle={toggleBackgroundAlerts} C={C} />
+          <Toggle on={bgAlerts.enabled} label="Background alerts" disabled={!bgAlerts.configured || !bgAlerts.admin} onToggle={toggleBackgroundAlerts} C={C} />
         </div>
+        {bgAlerts.loaded && bgAlerts.configured && (
+          <div style={{ padding: "10px 0 2px", borderTop: `1px solid ${C.border}`, marginTop: 10 }}>
+            <div style={{ color: C.text, fontSize: 13 }}>Admin token</div>
+            <div style={{ color: C.muted, fontSize: 10, lineHeight: 1.45, margin: "3px 0 8px" }}>
+              {bgAlerts.admin
+                ? "This device can change the alerts switch and the shared NIFTY log."
+                : adminToken
+                  ? "That token was refused. Check it matches ADMIN_TOKEN on the server."
+                  : "Needed to change the alerts switch or the shared log. Set ADMIN_TOKEN on the server and enter the same value here."}
+            </div>
+            {adminToken ? (
+              <button
+                type="button"
+                onClick={() => applyAdminToken("")}
+                style={{ padding: "8px 12px", borderRadius: 8, background: C.dim, border: `1px solid ${C.border}`, color: C.text, fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+              >
+                Forget token on this device
+              </button>
+            ) : (
+              <form
+                onSubmit={(e) => { e.preventDefault(); applyAdminToken(adminTokenInputRef.current?.value); }}
+                style={{ display: "flex", gap: 8 }}
+              >
+                <input
+                  ref={adminTokenInputRef}
+                  type="password"
+                  autoComplete="off"
+                  aria-label="Admin token"
+                  placeholder="ADMIN_TOKEN"
+                  style={{ flex: 1, minWidth: 0, background: C.dim, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", color: C.text, fontSize: 16 }}
+                />
+                <button
+                  type="submit"
+                  style={{ padding: "8px 12px", borderRadius: 8, background: C.green, border: "none", color: "#04240f", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                >
+                  Save
+                </button>
+              </form>
+            )}
+          </div>
+        )}
       </div>
 
       <div style={S.card}>
@@ -4502,7 +4609,9 @@ Tabs: dashboard|portfolio|news|settings`;
                 if (!window.confirm("Clear all NIFTY signal log entries?")) return;
                 setNiftySignalLog([]);
                 prevNiftyLogRef.current = null;
-                fetch("/api/nifty-log", { method: "DELETE" }).catch(() => {});
+                if (adminRef.current.ok) {
+                  fetch("/api/nifty-log", { method: "DELETE", headers: adminHeaders(adminRef.current.token) }).catch(() => {});
+                }
               }}
               style={{ padding: "6px 10px", borderRadius: 6, background: `${C.red}18`, border: `1px solid ${C.red}44`, color: C.red, fontSize: 11, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
             >
@@ -4583,12 +4692,17 @@ Tabs: dashboard|portfolio|news|settings`;
     { id: "settings", Icon: Settings, label: "Settings" },
   ];
 
+  // Called as functions, never rendered as <ActiveTab />. Each is redefined on
+  // every App render, so as a component type it was a new type every time and
+  // React remounted the whole tab on each price tick — breaking the refresh
+  // slider mid-drag and any input mid-typing. They hold no hooks, so calling
+  // them inline is exactly equivalent to inlining their JSX.
   const CONTENT = { dashboard: Dashboard, news: NewsTab, niftylog: NiftyLogTab, settings: SettingsTab };
-  const ActiveTab = CONTENT[tab];
+  const renderActiveTab = CONTENT[tab];
 
   return (
     <div style={{ background: "transparent", minHeight: "100dvh", width: "100%", maxWidth: "min(100%, 960px)", margin: "0 auto", position: "relative", fontFamily: "'SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif", paddingBottom: 96, color: C.text }}>
-      <div style={{ ...glassStyle(C), borderTop: "none", borderLeft: "none", borderRight: "none", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", position: "sticky", top: 0, zIndex: 50 }}>
+      <div style={{ ...glassStyle(C), borderTop: "none", borderLeft: "none", borderRight: "none", padding: "12px 16px", paddingTop: "max(12px, env(safe-area-inset-top))", display: "flex", justifyContent: "space-between", alignItems: "center", position: "sticky", top: 0, zIndex: 50 }}>
         <div>
           <div style={{ fontWeight: 900, fontSize: 20, letterSpacing: -0.3, background: `linear-gradient(95deg, ${C.green}, ${C.blue})`, WebkitBackgroundClip: "text", backgroundClip: "text", WebkitTextFillColor: "transparent", display: "inline-block" }}>⚡ ScalpAI</div>
           <div style={{ color: C.muted, fontSize: 10 }}>{marketStatus.label} · {marketStatus.detail}</div>
@@ -4635,7 +4749,7 @@ Tabs: dashboard|portfolio|news|settings`;
             S={S}
           />
         ) : (
-          ActiveTab && <ActiveTab />
+          renderActiveTab && renderActiveTab()
         )}
       </div>
 
@@ -4705,7 +4819,7 @@ Tabs: dashboard|portfolio|news|settings`;
 
       {chatOpen && (
         <div style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex", flexDirection: "column", background: C.bg, backgroundImage: C.bgGrad }}>
-          <div style={{ ...glassStyle(C), borderTop: "none", borderLeft: "none", borderRight: "none", padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+          <div style={{ ...glassStyle(C), borderTop: "none", borderLeft: "none", borderRight: "none", padding: "14px 16px", paddingTop: "max(14px, env(safe-area-inset-top))", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>⚡ AI Assistant</div>
               <div style={{ color: C.muted, fontSize: 10, marginBottom: 8 }}>
@@ -4714,7 +4828,7 @@ Tabs: dashboard|portfolio|news|settings`;
               <select
                 value={chatModel}
                 onChange={(e) => setChatModel(e.target.value)}
-                style={{ width: "100%", maxWidth: 280, padding: "6px 10px", borderRadius: 8, background: C.dim, color: C.text, border: `1px solid ${C.border}`, fontSize: 12, outline: "none" }}
+                style={{ width: "100%", maxWidth: 280, padding: "6px 10px", borderRadius: 8, background: C.dim, color: C.text, border: `1px solid ${C.border}`, fontSize: 16, outline: "none" }}
               >
                 {chatModelChoices.map((m) => (
                   <option key={m.id} value={m.id}>{m.label}</option>
@@ -4735,7 +4849,7 @@ Tabs: dashboard|portfolio|news|settings`;
             <div ref={chatEnd} />
           </div>
           <div style={{ ...glassStyle(C), borderBottom: "none", borderLeft: "none", borderRight: "none", padding: "10px 16px max(16px, env(safe-area-inset-bottom))", display: "flex", gap: 8 }}>
-            <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && sendMsg()} placeholder="Ask or control the app…" style={{ flex: 1, padding: 12, borderRadius: 14, background: C.dim, color: C.text, border: `1px solid ${C.glassBorder}`, fontSize: 14, outline: "none" }} />
+            <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && sendMsg()} placeholder="Ask or control the app…" aria-label="Message the assistant" style={{ flex: 1, padding: 12, borderRadius: 14, background: C.dim, color: C.text, border: `1px solid ${C.glassBorder}`, fontSize: 16, outline: "none" }} />
             <button onClick={sendMsg} disabled={chatLoading} style={{ padding: "12px 14px", borderRadius: 14, background: chatLoading ? C.dim : `linear-gradient(135deg, ${C.green}, ${C.blue})`, border: "none", cursor: chatLoading ? "not-allowed" : "pointer", boxShadow: chatLoading ? "none" : `${C.glow} ${C.green}44` }}><Send size={18} color={chatLoading ? C.muted : "#000"} /></button>
           </div>
         </div>

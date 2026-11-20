@@ -20,8 +20,14 @@
  * the "clear site data" button.
  */
 
-const VERSION = 'scalpai-v2';
+const VERSION = 'scalpai-v3';
 const SHELL = `${VERSION}-shell`;
+/* Copies of static assets, kept apart from the shell so they can be trimmed
+   without ever evicting the offline page. Every deploy issues new hashed chunk
+   URLs, and with one shared cache that was only cleared on a hand-bumped
+   VERSION, every chunk of every deploy ever loaded stayed on the phone. */
+const RUNTIME = `${VERSION}-runtime`;
+const RUNTIME_MAX_ENTRIES = 80;
 const OFFLINE_URL = '/offline.html';
 
 /* Enough to render the offline page with its icon and nothing else. */
@@ -48,7 +54,9 @@ self.addEventListener('activate', (event) => {
     caches
       .keys()
       .then((keys) =>
-        Promise.all(keys.filter((k) => k !== SHELL).map((k) => caches.delete(k))),
+        Promise.all(
+          keys.filter((k) => k !== SHELL && k !== RUNTIME).map((k) => caches.delete(k)),
+        ),
       )
       .then(() => self.clients.claim()),
   );
@@ -77,6 +85,10 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(pageOrOfflineNotice(request));
     return;
   }
+
+  /* React Server Component payloads are page data, not assets: one per
+     navigation and query, and stale the moment they are written. */
+  if (url.searchParams.has('_rsc') || request.headers.get('RSC')) return;
 
   event.respondWith(freshOrCached(request, event));
 });
@@ -120,16 +132,25 @@ async function pageOrOfflineNotice(request) {
  * worker down as soon as the response has been returned — so the copy that the
  * offline fallback depends on may never actually be written. */
 async function freshOrCached(request, event) {
-  const cache = await caches.open(SHELL);
+  const cache = await caches.open(RUNTIME);
   try {
     const response = await fetch(request);
     if (response && response.ok && response.type === 'basic') {
-      event.waitUntil(cache.put(request, response.clone()));
+      event.waitUntil(
+        cache.put(request, response.clone()).then(() => trim(cache, RUNTIME_MAX_ENTRIES)),
+      );
     }
     return response;
   } catch (err) {
-    const hit = await cache.match(request);
+    const hit = (await cache.match(request)) || (await caches.match(request));
     if (hit) return hit;
     throw err;
   }
+}
+
+/* Oldest first: `keys()` returns entries in insertion order, and a re-put
+   moves an entry to the end, so what goes is what has not been loaded since. */
+async function trim(cache, max) {
+  const keys = await cache.keys();
+  await Promise.all(keys.slice(0, Math.max(0, keys.length - max)).map((k) => cache.delete(k)));
 }

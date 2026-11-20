@@ -3,7 +3,9 @@ import { isUpstashConfigured, upstashCommand } from './upstash';
 const ALERTS_KEY = 'scalpai:alerts-enabled';
 
 /**
- * Master switch for the background tick, flipped from the app's Alerts panel.
+ * Whether the background tick may message Telegram, flipped from Settings.
+ * It silences messages only: signals are still logged and graded either way.
+ *
  * An absent key means it was never set, which counts as on so alerts start
  * working as soon as the env vars are in place.
  */
@@ -15,8 +17,11 @@ export async function getAlertsEnabled() {
     return { enabled: raw == null ? true : raw === '1', configured: true };
   } catch (error) {
     console.error('alertSettings get:', error);
-    // Fail open — a storage blip shouldn't silently stop the alerts.
-    return { enabled: true, configured: true, error: error.message };
+    // Fail closed. When the switch cannot be read, the one thing known is that
+    // somebody may have turned it off, and a message sent after "off" is the
+    // failure the owner asked not to have. A missed alert on a storage blip is
+    // the smaller cost: the signal is still logged.
+    return { enabled: false, configured: true, error: error.message };
   }
 }
 
