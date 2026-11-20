@@ -75,3 +75,39 @@ def test_an_unknown_year_says_so_rather_than_guessing():
     ms = _ms(f"{unknown}-06-01 11:00")
     assert call_js("marketHours", "holidayCalendarKnown", ms) is False
     assert unknown not in NSE_HOLIDAYS
+
+
+def test_holiday_list_matches_the_archive():
+    """The parity test above only proves the two lists agree with each other,
+    which a shared mistake passes: the 2026 list once carried five dates the
+    market traded on and missed six it was shut. Every archived weekday must
+    either have bars or be a holiday, never both and never neither."""
+    import sqlite3
+    from datetime import date, datetime, timedelta
+
+    from engine.data.store import DEFAULT_DB
+    from engine.data.timeutil import IST, NSE_HOLIDAYS
+
+    if not DEFAULT_DB.exists():
+        pytest.skip("no local archive")
+    since = int(datetime(2026, 1, 1, tzinfo=IST).timestamp() * 1000)
+    with sqlite3.connect(f"file:{DEFAULT_DB}?mode=ro", uri=True) as cx:
+        traded = {
+            r[0] for r in cx.execute(
+                "SELECT DISTINCT date((ts/1000)+19800,'unixepoch') FROM candles "
+                "WHERE symbol='NIFTY' AND interval='5m' AND ts>=?",
+                (since,),
+            )
+        }
+    if not traded:
+        pytest.skip("archive has no 2026 NIFTY 5m bars")
+
+    wrong = []
+    d, last = date(2026, 1, 1), date.fromisoformat(max(traded))
+    while d <= last:
+        if d.weekday() < 5:
+            key = d.isoformat()
+            if (key in traded) == (key in NSE_HOLIDAYS[2026]):
+                wrong.append(key)
+        d += timedelta(days=1)
+    assert not wrong, f"holiday list disagrees with archived sessions on {wrong}"

@@ -2,7 +2,7 @@
 applied at display and market-hours boundaries."""
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -37,29 +37,33 @@ def _hm(pair: tuple[int, int]) -> int:
     return pair[0] * 60 + pair[1]
 
 
-# NSE trading holidays. The JS `marketHours.js` only knows about weekends, which
-# is harmless for a dashboard and wrong for an algo: without this the engine
-# wakes up and tries to trade on Republic Day.
+# NSE trading holidays, mirrored in `app/lib/marketHours.js` and diffed by
+# `test_market_hours_parity.py`.
 #
-# Verify against the NSE circular each year before the year starts.
+# NSE circular NSE/CMTR/71775 (12 Dec 2025), amended by NSE/CMTR/72260
+# (12 Jan 2026) to add 15 Jan. Weekday holidays only: Mahashivratri (15 Feb),
+# Id-Ul-Fitr (21 Mar), Independence Day (15 Aug) and Diwali Laxmi Pujan
+# (8 Nov, muhurat session) fall on weekends and need no entry.
+#
+# Add each year from the NSE circular, normally issued in mid-December. An
+# unknown year raises `HolidayCalendarMissing` rather than being guessed.
 NSE_HOLIDAYS: dict[int, set[str]] = {
     2026: {
+        "2026-01-15",  # Maharashtra municipal elections (NSE/CMTR/72260)
         "2026-01-26",  # Republic Day
-        "2026-03-04",  # Holi
-        "2026-03-21",  # Id-ul-Fitr
-        "2026-03-27",  # Ram Navami
-        "2026-04-01",  # Mahavir Jayanti
+        "2026-03-03",  # Holi
+        "2026-03-26",  # Shri Ram Navami
+        "2026-03-31",  # Shri Mahavir Jayanti
         "2026-04-03",  # Good Friday
-        "2026-04-14",  # Dr. Ambedkar Jayanti
+        "2026-04-14",  # Dr. Baba Saheb Ambedkar Jayanti
         "2026-05-01",  # Maharashtra Day
-        "2026-05-27",  # Bakri Id
-        "2026-08-15",  # Independence Day
-        "2026-08-26",  # Ganesh Chaturthi
-        "2026-10-02",  # Gandhi Jayanti
+        "2026-05-28",  # Bakri Id
+        "2026-06-26",  # Muharram
+        "2026-09-14",  # Ganesh Chaturthi
+        "2026-10-02",  # Mahatma Gandhi Jayanti
         "2026-10-20",  # Dussehra
-        "2026-11-09",  # Diwali Laxmi Pujan (muhurat session separate)
         "2026-11-10",  # Diwali Balipratipada
-        "2026-11-24",  # Guru Nanak Jayanti
+        "2026-11-24",  # Prakash Gurpurb Sri Guru Nanak Dev
         "2026-12-25",  # Christmas
     },
 }
@@ -110,11 +114,3 @@ def market_status(now: datetime | None = None, *, strict: bool = True) -> dict:
         "past_square_off": mins >= _hm(SQUARE_OFF),
     }
 
-
-def trading_days_between(start: date, end: date, *, strict: bool = False) -> list[date]:
-    out, cur = [], start
-    while cur <= end:
-        if is_trading_day(cur, strict=strict):
-            out.append(cur)
-        cur += timedelta(days=1)
-    return out
