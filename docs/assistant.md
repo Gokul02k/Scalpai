@@ -2,10 +2,12 @@
 
 Adding a model, what it is asked, and what leaves the machine.
 
-There are two of them, and they are asked different things. **Ask EA** sits on a
+There are three, and they are asked different things. **Ask EA** sits on a
 signal card and reviews that one call. **The chat** is the panel behind the AI
 button in the header, and it answers questions about your holdings — it can also
-edit them, which is the part worth reading before you use it.
+edit them, which is the part worth reading before you use it. **The news brief**
+on the News tab summarises the day's market and commodity news, searching the
+web where the provider can.
 
 Both are optional. With no key configured the dashboard works exactly as it
 does otherwise; the assistant says it is not configured and nothing else
@@ -31,10 +33,11 @@ matters more than it sounds — see [when a provider fails](#when-a-provider-fai
 
 ### Your key, not the deployment's
 
-A key you add stays in the browser you typed it into. It is sent to `/api/chat`
-and `/api/ea` with your own questions and nowhere else, and it is never written
-to the server — there are no accounts here, so there is nowhere to keep a key
-*for* somebody.
+A key you add stays in the browser you typed it into. It travels in the request
+body to the routes that call a model — `/api/chat`, `/api/ea` and
+`/api/news/brief` — and to `/api/ai-test` when you press **Test**, and nowhere
+else. It is never written to the server: there are no accounts here, so there
+is nowhere to keep a key *for* somebody.
 
 Ticking **remember on this device** puts it in `localStorage`, where it survives
 closing the tab. Leaving it unticked uses `sessionStorage`, and it is gone when
@@ -60,17 +63,12 @@ Set `SCALPAI_SHARED_KEYS=1` for local development, or on a deployment only you
 can reach, and the environment key fills in for anyone who has not added their
 own. A supplied key still wins over it.
 
-Patchvane resolves this the other way round — there, the environment beats
-anything typed into the page, so an operator can pin a key the page cannot
-replace. That is the right answer for something self-hosted one person at a
-time. Here the goal is the opposite.
-
 The placeholder strings from `.env.example` count as unset, so a half-filled
 `.env.local` behaves as no key rather than as a key that mysteriously 400s.
 
 ## What is sent
 
-The two ask for different things, and the difference matters if you would rather
+Each sends something different, and the difference matters if you would rather
 not hand your positions to a third party.
 
 **Ask EA** sends the signal and nothing about you:
@@ -79,16 +77,21 @@ not hand your positions to a third party.
 - the app's own call — label, confidence, entry, target, stop, reward:risk
 - every factor behind that call, with the reason attached to each
 
+**The news brief** sends the index and commodity prices on screen, the market
+status and the current headlines — nothing about your holdings.
+
 **The chat** sends your portfolio. Every message carries a fresh system prompt
 containing the current NIFTY price, its RSI, the active theme, and one entry per
 holding as `SYMBOL @ ₹BUY` — so the symbol and the price you paid leave the
-machine each time you ask anything. Not the size: quantity is no longer tracked
+machine each time you ask anything. Not the size: quantity is not tracked
 anywhere in the app, so there is none to send. The last eight turns of the
 conversation go with it.
 
-Nothing else does. No candle history, no signal log, no keys, and no part of the
-engine's archive. If that portfolio line is more than you want to send, the chat
-is the feature to leave alone; Ask EA does not include it.
+Nothing else goes into the prompt: no candle history, no signal log and no part
+of the engine's archive. Your key rides in the same request body (see above) so
+the server can call the provider, but it is never put into the prompt. If that
+portfolio line is more than you want to send, the chat is the feature to leave
+alone; Ask EA and the brief do not include it.
 
 ## It can change your portfolio
 
@@ -96,27 +99,31 @@ This is the one behaviour that would be surprising to discover by accident. The
 chat's system prompt teaches the model to answer with command blocks:
 
 ```
-<CMD>{"action":"addStock","value":{"name":"RELIANCE","qty":10,"price":2850}}</CMD>
+<CMD>{"action":"addStock","value":{"name":"RELIANCE","price":2850,"sector":"Energy"}}</CMD>
 ```
 
 The reply is scanned for those blocks, each one is executed, and the blocks are
-stripped before the text is shown. So "add 10 Reliance at 2850" edits your
+stripped before the text is shown. So "add Reliance at 2850" edits your
 holdings, and the model decides what the edit was.
 
 | Action | Effect |
 |---|---|
-| `addStock` · `updateStock` | Add a holding, or change the quantity, price or sector of one you hold |
+| `addStock` · `updateStock` | Add a holding, or change the price or sector of one you hold |
 | `removeStock` | Drop a holding |
-| `changeInstrument` · `changeTimeframe` | Switch the chart |
-| `changeRefreshRate` · `setTheme` · `switchTab` | The same settings the UI exposes |
-| `toggleIndicator` · `setRiskLimit` | Indicator switches, and the risk limit signals are sized against |
+| `changeRefreshRate` | Price refresh interval, clamped to the Settings slider's 3–60 seconds |
+| `setTheme` | `dark` or `light` |
+| `switchTab` | One of the bottom-bar tabs |
+
+Nothing else is honoured. Model output is treated as untrusted input: an
+unknown action is ignored, and each known one is range-checked before it runs.
+Commands that once changed the analysis instrument, timeframe, indicator
+switches or risk limit were removed — the prompt never taught them, nothing in
+the UI showed their effect, and there was no way back.
 
 Two things to know about how that is handled. A command runs **without asking
 you first** — there is no confirmation step, so a misread instruction becomes an
 edit you then have to notice. And an update only overwrites the fields it was
-actually given: re-adding a symbol you already hold without a quantity keeps the
-quantity you had, because the earlier behaviour of defaulting it to one share
-silently destroyed real positions.
+actually given, so updating a price leaves the sector alone.
 
 Everything a command touches is local state in your browser, persisted to
 `localStorage`. No order is placed and no broker is contacted — nothing in this
@@ -129,21 +136,25 @@ to answer — Gemini's when you hold a Gemini key, Groq's when Groq is all you
 have. It used to list Gemini's unconditionally, which meant somebody arriving
 with only a Groq key was offered four models their key could not reach.
 
+The lists live in `app/lib/geminiModels.js` and `app/lib/groqModels.js`; those
+files are the source of truth, and this page only summarises them.
+
 | Gemini | |
 |---|---|
-| `gemini-2.5-flash` | the default, and the right answer for almost everything |
-| `gemini-3.5-flash` | newest |
-| `gemini-2.5-flash-lite` | fastest, least capable |
-| `gemini-2.5-pro` | most capable, slowest |
+| `gemini-3.8-flash` | the default |
+| `gemini-3.5-flash-lite` | fastest |
+| `gemini-3.1-pro-preview` | most capable |
+| `gemini-2.5-flash`, `gemini-2.5-pro` | legacy, for keys that can still reach them |
 
 | Groq | |
 |---|---|
-| `openai/gpt-oss-120b` | the default |
+| `openai/gpt-oss-120b` | the default, and the model the news brief searches with |
 | `openai/gpt-oss-20b` | faster |
-| `groq/compound`, `groq/compound-mini` | Groq's own |
 | `qwen/qwen3.8-27b` | |
 
-`GEMINI_MODEL` and `GROQ_MODEL` override the defaults.
+`GEMINI_MODEL` and `GROQ_MODEL` override the defaults. Groq's Compound systems
+(`groq/compound`, `groq/compound-mini`) were decommissioned; web search now uses
+the `browser_search` tool on the GPT-OSS models.
 
 ## When a provider fails
 
@@ -183,16 +194,16 @@ to weigh fundamentals and technicals, to say plainly whether it agrees, and to
 note that it is suggestion-only — but a model agreeing with a call is not a
 measurement of that call, and this repository is fairly blunt about which calls
 have been measured and what the numbers were. [What the engine
-measured](../README.md#what-it-has-measured) is the part with evidence behind
+measures](../README.md#what-it-measures) is the part with evidence behind
 it; the assistant is the part with prose behind it.
 
 Worth asking it:
 
 - Whether a holding still looks reasonable on fundamentals
 - What the main risk in a setup is, before acting on it elsewhere
-- To add, resize or drop a holding, in plain English
+- To add, reprice or drop a holding, in plain English
 - What an indicator is saying, when you would rather not read the panel
 
 Worth not asking it: anything where you would act on the answer without
-checking it. It has the price, the RSI and your position sizes. It does not have
+checking it. It has the NIFTY price, its RSI and what you hold. It does not have
 the order book, your risk appetite, or any part of the backtest.

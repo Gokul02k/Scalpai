@@ -55,10 +55,15 @@ price. `engine.cli sync` merges each pull into a SQLite store, so running it on
 a schedule converts a disappearing window into history you own. Re-syncing an
 overlapping range is idempotent.
 
-A weekly cron is enough:
+Sources are ranked: a Fyers bar is never replaced by a yfinance one, so a plain
+`sync` (yfinance by default) only fills gaps around Fyers history. Daily bars
+keep one row per date even though the two providers timestamp them differently.
+Only completed bars inside the 09:15–15:30 session are stored.
+
+A weekly cron is enough (run from the repository root):
 
 ```
-0 18 * * 6 cd /home/gokul/Scalpai && .venv/bin/python -m engine.cli sync
+0 18 * * 6 cd /path/to/Scalpai && .venv/bin/python -m engine.cli sync
 ```
 
 ### Fyers setup
@@ -85,13 +90,14 @@ engine/
 ├── research/      hypothesis tests with multiple-testing correction
 ├── ml/            signal features and the walk-forward-validated filter
 ├── live/          paper trading: live ticks, strike selection, the book
-├── tests/         441 tests, most of them parity against the live JavaScript
+├── tests/         the suite, much of it parity against the live JavaScript
 └── cli.py
 ```
 
 Commands: `status`, `probe`, `sync`, `inventory`, `serve`, `backtest`, `ab`,
-`sweep`, `smc`, `vwap-cross`, `ml`, `costs`, `option-pnl`, `regime`,
-`research`, `train`, `paper`, `fyers-auth`.
+`strategies`, `sweep`, `smc`, `vwap-cross`, `ml`, `costs`, `option-pnl`,
+`regime`, `research`, `train`, `paper`, `cross-paper`, `fyers-auth`.
+`python -m engine.cli <command> --help` lists each one's options.
 
 ### On the port
 
@@ -164,7 +170,8 @@ curl -fsSL https://ollama.com/install.sh | sh && ollama pull qwen2.5:7b
 
 ```bash
 .venv/bin/python -m engine.cli backtest --symbol NIFTY --interval 5m --show 20
-.venv/bin/python -m engine.cli backtest --min-confidence 85 --costs option_buy
+.venv/bin/python -m engine.cli backtest --min-confidence 85
+.venv/bin/python -m engine.cli option-pnl          # the same signals priced as option buys
 ```
 
 The replay hands the engine the same 5-day trailing window production requests
@@ -182,6 +189,15 @@ ordering is unknown, and assuming the favourable fill is the standard way a
 backtest flatters itself.
 
 ### Current result: a real but too-thin edge
+
+> **Superseded (20 Nov 2026).** The numbers in this section and below were
+> measured while the replay stamped each signal at its bar's *start*, so grading
+> could resolve a trade on the bar that produced it. With signals stamped at
+> the bar's close, the same replay gives a profit factor of **1.08** (was 1.21)
+> and **−3.63** net points per trade (was −0.35): 1,342 resolved, 40% win rate,
+> max drawdown 5,921 points. Later sections' figures, and the trained filter,
+> rest on the old replay and should be re-run (`ml`, then `train`) before
+> they are relied on.
 
 On the full 5-minute archive — 168,177 bars, 21 Jul 2017 to 11 Aug 2026:
 
