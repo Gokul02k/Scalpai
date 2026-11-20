@@ -14,7 +14,9 @@ Provider constraints handled here:
   * 100 days per request for intraday resolutions -> paginated transparently
   * 366 days per request for daily
   * Access tokens expire daily -> cached to disk with a clear re-auth error
-  * Trailing partial candle -> excluded, never acted on
+  * Trailing partial candle -> returned, because the cross-shadow fills at
+    its open. The paper runner decides on completed bars only, and the
+    store drops it (and pre-open / special-session bars) on sync.
 
 Setup:
     1. Open a Fyers account, create an app at https://myapi.fyers.in/dashboard
@@ -226,35 +228,6 @@ class FyersSource(DataSource):
             return f"NSE:{s}-EQ"
         return f"NSE:{s}"
 
-    @staticmethod
-    def option_symbol(
-        underlying: str,
-        expiry: date,
-        strike: int,
-        option_type: str,
-        *,
-        monthly: bool = False,
-        exchange: str = "NSE",
-    ) -> str:
-        """Fyers option symbols come in two shapes and picking the wrong one
-        yields "invalid symbol" rather than a useful error:
-
-            weekly : NIFTY<YY><M><DD><STRIKE><CE|PE>   e.g. NIFTY26814 24500CE
-            monthly: NIFTY<YY><MMM><STRIKE><CE|PE>     e.g. NIFTY26AUG24500CE
-
-        In the weekly form the month is one character: 1-9 for Jan-Sep, then
-        O, N, D for Oct, Nov, Dec.
-        """
-        opt = option_type.upper()
-        if opt not in ("CE", "PE"):
-            raise ValueError("option_type must be CE or PE")
-
-        u = underlying.upper()
-        yy = expiry.strftime("%y")
-        if monthly:
-            return f"{exchange}:{u}{yy}{expiry.strftime('%b').upper()}{strike}{opt}"
-        month_char = {10: "O", 11: "N", 12: "D"}.get(expiry.month, str(expiry.month))
-        return f"{exchange}:{u}{yy}{month_char}{expiry.strftime('%d')}{strike}{opt}"
 
     def candles(
         self,
@@ -277,8 +250,9 @@ class FyersSource(DataSource):
         if interval != "1d" and start_d < _INTRADAY_EPOCH:
             start_d = _INTRADAY_EPOCH
 
-        # The bar covering "now" is still forming. Acting on it means acting on
-        # incomplete information, so it never enters the dataset.
+        # Skips asking for a day that cannot have a completed bar yet. This is a
+        # date cap only: during the session today's forming bar still comes
+        # back, and callers that must not act on it filter it themselves.
         step = _INTERVAL_MINUTES.get(interval)
         if step:
             end_d = min(end_d, (datetime.now(IST) - timedelta(minutes=step)).date())
