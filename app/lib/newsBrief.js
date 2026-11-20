@@ -114,7 +114,17 @@ export function buildBriefPrompt({ prices = {}, headlines = [], marketStatus, no
 
   lines.push(
     '',
-    'Search the web for anything more current than the above where you can.',
+    // Stated as the task rather than as an option. The headline block is there
+    // so the brief is not empty when search is unavailable, but a model that
+    // treats it as sufficient produces a summary of what we already had and
+    // calls it today's news — which is the exact failure this feature exists
+    // to avoid.
+    'SEARCH THE WEB before writing. The headlines above are a floor, not the',
+    'answer: they are incomplete, they lag, and they may already be stale. Look',
+    'up today\'s NIFTY close and session, FII/DII flows, and today\'s domestic',
+    'gold and silver prices. Prefer Indian market sources — Moneycontrol,',
+    'Economic Times, Livemint, Business Standard, Reuters India.',
+    '',
     'Now write the five blocks:',
     BRIEF_SECTIONS.map((s) => `[${s.id.toUpperCase()}] — ${s.hint}`).join('\n'),
   );

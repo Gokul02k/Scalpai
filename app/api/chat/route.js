@@ -3,12 +3,20 @@ import { groqChat, hasGroq } from '../../lib/groq';
 import { keysFromBody, sharedKeysEnabled } from '../../lib/aiShared';
 
 export const dynamic = 'force-dynamic';
+// Room for a fallback provider after a slow first one. 60s is the most
+// Vercel's Hobby plan allows.
+export const maxDuration = 60;
 
 export async function POST(request) {
-  const body = await request.json();
-  const { system, messages, model } = body;
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: 'Malformed request' }, { status: 400 });
+  }
+  const { system, messages, model } = body || {};
 
-  if (!messages?.length) {
+  if (!Array.isArray(messages) || !messages.length) {
     return Response.json({ error: 'No messages provided' }, { status: 400 });
   }
 

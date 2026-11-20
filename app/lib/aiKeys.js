@@ -3,8 +3,8 @@
  *
  * The dashboard has no accounts and no server-side store, so there is nowhere
  * to keep a key for somebody. It stays on the device that typed it and travels
- * to `/api/chat` and `/api/ea` in the request body, which are the only two
- * routes that talk to a model.
+ * in the request body to the routes that talk to a model (`/api/chat`,
+ * `/api/ea`, `/api/news/brief`) and to `/api/ai-test` for the Test button.
  *
  * Two stores, chosen by whether the box was ticked:
  *
@@ -105,9 +105,4 @@ export function clearAiKey(id) {
       write(storage, data);
     }
   }
-}
-
-export function clearAllAiKeys() {
-  write('localStorage', {});
-  write('sessionStorage', {});
 }

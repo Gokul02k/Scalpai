@@ -35,10 +35,9 @@ export function envKeyFor(id) {
  * The key to use for one request: what the caller sent, or the deployment's own
  * when sharing is switched on.
  *
- * A supplied key always wins. Patchvane resolves this the other way round so an
- * operator can pin a key the page cannot replace, which is the right answer for
- * something self-hosted per person; here the point is the opposite — to stop the
- * owner's key being the one that gets spent.
+ * A supplied key always wins. Letting the environment win instead would pin
+ * the owner's key for every visitor, and the point here is the opposite: to
+ * stop the owner's key being the one that gets spent.
  */
 export function resolveKey(id, supplied) {
   const fromCaller = typeof supplied === 'string' ? supplied.trim() : '';

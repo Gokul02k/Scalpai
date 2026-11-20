@@ -19,10 +19,48 @@ export const DEFAULT_GROQ_MODEL = 'openai/gpt-oss-120b';
 export const GROQ_CHAT_MODELS = [
   { id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B (best)' },
   { id: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B (fast)' },
-  { id: 'groq/compound', label: 'Groq Compound' },
-  { id: 'groq/compound-mini', label: 'Groq Compound Mini (fast)' },
   { id: 'qwen/qwen3.8-27b', label: 'Qwen 3.8 27B' },
 ];
+
+/**
+ * Models that can search the web, and how the tool is asked for.
+ *
+ * Groq's Compound systems — `groq/compound` and `groq/compound-mini` — used to
+ * be the answer here, and they were *decommissioned on 21 September 2026*.
+ * Requests to those ids return errors now, which is the whole reason the news
+ * brief quietly stopped searching and started reorganising headlines instead:
+ * the grounded attempt threw, and the ungrounded one behind it succeeded.
+ *
+ * The file above warned about exactly this and the warning was not taken. The
+ * replacement is a built-in tool rather than a separate model, which is a
+ * better shape to depend on: `browser_search` rides on the ordinary GPT-OSS
+ * models, so a model retirement no longer takes the search capability with it,
+ * and `pickSearchModel` falls through the list against what the key really
+ * offers rather than trusting this constant.
+ *
+ * Only the GPT-OSS models accept the tool. Sending it to any other Groq model is
+ * rejected outright — Groq refuses unknown body properties rather than
+ * ignoring them.
+ */
+export const GROQ_SEARCH_MODELS = [
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  // `openai/gpt-oss-safeguard-20b` also accepts the tool, and is left out on
+  // purpose: it is a moderation model, excluded as "not chat" below, and would
+  // answer a market brief with a policy classification.
+];
+
+/** The built-in tool entry that turns on server-side search. */
+export const GROQ_BROWSER_SEARCH_TOOL = { type: 'browser_search' };
+
+/** Best search-capable model out of what a key actually offers. */
+export function pickSearchModel(available) {
+  const have = new Set(available || []);
+  for (const id of GROQ_SEARCH_MODELS) {
+    if (have.has(id)) return id;
+  }
+  return null;
+}
 
 /**
  * Order to fall back through when a requested model is gone. Anything the key
@@ -41,9 +79,7 @@ export const GROQ_MODEL_PREFERENCE = GROQ_CHAT_MODELS.map((m) => m.id);
 const NOT_CHAT = [
   'whisper',        // speech to text
   'orpheus',        // text to speech
-  'prompt-guard',   // prompt-injection classifier
-  'safeguard',      // moderation
-  'guard',          // ditto, other namings
+  'guard',          // classifiers: prompt-guard, safeguard, llama-guard
   'tts',
 ];
 

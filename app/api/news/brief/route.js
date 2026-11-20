@@ -1,9 +1,12 @@
 import { geminiGenerateGrounded, geminiGenerate, hasGemini } from '../../../lib/gemini';
-import { groqGenerateGrounded, groqGenerate, hasGroq, GROQ_SEARCH_MODELS } from '../../../lib/groq';
+import { groqGenerateGrounded, groqGenerate, hasGroq } from '../../../lib/groq';
 import { keysFromBody, sharedKeysEnabled } from '../../../lib/aiShared';
 import { BRIEF_SYSTEM, buildBriefPrompt, parseBrief, dedupeSources } from '../../../lib/newsBrief';
 
 export const dynamic = 'force-dynamic';
+// Room for a fallback provider after a slow first one. 60s is the most
+// Vercel's Hobby plan allows.
+export const maxDuration = 60;
 
 /**
  * The best model available for one market brief.
@@ -43,7 +46,7 @@ const ATTEMPTS = [
     grounded: true,
     available: (keys) => hasGroq(keys.groq),
     run: ({ system, userPrompt, keys }) =>
-      groqGenerateGrounded({ system, userPrompt, apiKey: keys.groq, model: GROQ_SEARCH_MODELS[0] }),
+      groqGenerateGrounded({ system, userPrompt, apiKey: keys.groq }),
   },
   {
     provider: 'gemini',

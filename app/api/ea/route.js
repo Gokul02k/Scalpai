@@ -3,6 +3,9 @@ import { groqGenerate, hasGroq } from '../../lib/groq';
 import { keysFromBody, sharedKeysEnabled } from '../../lib/aiShared';
 
 export const dynamic = 'force-dynamic';
+// Room for a fallback provider after a slow first one. 60s is the most
+// Vercel's Hobby plan allows.
+export const maxDuration = 60;
 
 function buildPrompt(ctx) {
   const lines = [
