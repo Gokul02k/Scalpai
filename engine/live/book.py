@@ -12,12 +12,33 @@ roughly half a spread per leg and will do it invisibly.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from ..data.timeutil import IST
+
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Replace `path` with `text` in one step.
+
+    A plain write truncates first, so a process killed mid-save left a half
+    JSON file and the next `load` raised — while the README promises the
+    session can be killed and restarted. `os.replace` is atomic on the same
+    filesystem, so the file is always either the old book or the new one.
+    """
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 @dataclass
@@ -114,7 +135,7 @@ class PaperBook:
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps({
+        atomic_write_text(self.path, json.dumps({
             "started": self.started,
             "updated": _now_iso(),
             "open": [asdict(p) for p in self.open_positions],
@@ -153,17 +174,7 @@ class PaperBook:
         self.note("close", f"{trade.exit_reason} {trade.net_rupees:+.0f}",
                   id=trade.position["id"], premium=trade.exit_premium)
 
-    def has_open(self, action: str | None = None) -> bool:
-        if action is None:
-            return bool(self.open_positions)
-        return any(p.action == action for p in self.open_positions)
 
-    def last_entry_time(self) -> datetime | None:
-        if not self.open_positions and not self.closed:
-            return None
-        stamps = [p.opened_at for p in self.open_positions]
-        stamps += [t.position["opened_at"] for t in self.closed]
-        return max(_parse(s) for s in stamps) if stamps else None
 
     # ── reporting ──────────────────────────────────────────────────────────
 

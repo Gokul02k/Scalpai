@@ -45,6 +45,7 @@ from ..core.vwap_cross import (
 )
 from ..data.base import DataSource
 from ..data.timeutil import IST
+from .book import atomic_write_text
 
 GATED = "gated"
 UNGATED = "ungated"
@@ -56,7 +57,7 @@ class CrossConfig:
     symbol: str = "NIFTY"
     interval: str = "5m"
     ema_period: int = 9
-    #: Adverse move that ends the trade. Rs 800 on one lot of 75 at an
+    #: Adverse move that ends the trade. Rs 800 on one lot of 65 at an
     #: at-the-money delta of 0.52; see `core.vwap_cross.stop_points`.
     stop_pts: float = field(default_factory=stop_points)
     sr_lookback: int = 20
@@ -139,7 +140,7 @@ class CrossBook:
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps({
+        atomic_write_text(self.path, json.dumps({
             "started": self.started,
             "updated": _now_iso(),
             "note": "EMA 9 / VWAP cross, shadow only. Never a real decision.",

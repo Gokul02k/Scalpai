@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 # Run the full v2 engine verification sequence in order.
 #
-# Usage (from anywhere):
-#   /home/gokul/Scalpai/engine/run_checks.sh
-#
-# Or from the repo root:
+# Usage, from the repo root (or call the script by its path from anywhere):
 #   ./engine/run_checks.sh
 #
 # Skips sync if you pass --no-sync (uses whatever is already archived).
@@ -40,7 +37,7 @@ hr "3/7  Data providers"
 "$PY" -m engine.cli probe
 
 if [[ "$SYNC" == 1 ]]; then
-  hr "4/7  Sync candles (archive latest from yfinance)"
+  hr "4/7  Sync candles (yfinance fills gaps; never overwrites Fyers bars)"
   "$PY" -m engine.cli sync
 else
   hr "4/7  Sync skipped (--no-sync)"
@@ -49,12 +46,12 @@ fi
 hr "5/7  Archived history"
 "$PY" -m engine.cli inventory
 
-hr "6/7  Parity + harness tests (expect 78 passed)"
+hr "6/7  Parity + harness tests (all should pass)"
 "$PY" -m pytest engine/tests -q
 
 hr "7/7  Strategy backtest + edge research"
 echo
-echo "--- NIFTY 5m scalp (last 60 days of 5m data) ---"
+echo "--- NIFTY 5m scalp (full archived 5m history) ---"
 "$PY" -m engine.cli backtest --symbol NIFTY --interval 5m --show 5
 echo
 echo "--- NIFTY daily swing (19 years) ---"

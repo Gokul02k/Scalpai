@@ -15,6 +15,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from ..core.contracts import NIFTY_LOT_SIZE
+
 GST_RATE = 0.18
 SEBI_TURNOVER_RATE = 0.000001  # ₹10 per crore
 
@@ -97,7 +99,7 @@ class OptionBuyCost(CostModel):
     STAMP_ON_BUY = 0.00003      # 0.003%, buy side only
     TICK = 0.05
 
-    def __init__(self, slippage_ticks_per_leg: float = 1.0, lot_size: int = 75) -> None:
+    def __init__(self, slippage_ticks_per_leg: float = 1.0, lot_size: int = NIFTY_LOT_SIZE) -> None:
         self.slippage_ticks = slippage_ticks_per_leg
         self.lot_size = lot_size
 

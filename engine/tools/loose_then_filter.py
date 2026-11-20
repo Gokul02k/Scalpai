@@ -88,7 +88,7 @@ def main() -> int:
     loose, c2 = dataset("loose", StrategyFlags(min_stop_pct=0.0), rows)
 
     print("\n" + "=" * 62)
-    report("v1 floor 0.20%  (what runs today)", strict, c1)
+    report("v1 floor 0.20%  (pre-production geometry)", strict, c1)
     print("\n" + "=" * 62)
     report("ATR floor, filter picks from the wider pool", loose, c2)
     return 0

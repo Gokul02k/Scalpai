@@ -694,3 +694,17 @@ def test_log_records_skipped_ticks_too(tmp_path):
     blob = json.loads((tmp_path / "b.json").read_text())
     assert blob["log"][0]["kind"] == "skip"
     assert blob["log"][0]["vix"] == 19.4
+
+
+def test_decisions_ignore_the_forming_bar():
+    """The feed's last bar is still printing during the session. Deciding on it
+    is information the backtest never had, so only closed bars count."""
+    from engine.live.runner import _completed
+
+    start = datetime(2026, 8, 14, 11, 0, tzinfo=IST)
+    rows = [{"ts": int((start + timedelta(minutes=5 * i)).timestamp() * 1000)} for i in range(4)]
+    # 11:17 — the 11:15 bar is forming, 11:10 closed at 11:15.
+    now = start + timedelta(minutes=17)
+    assert [r["ts"] for r in _completed(rows, "5m", now)] == [r["ts"] for r in rows[:3]]
+    # Exactly on a boundary the bar just finished is complete.
+    assert len(_completed(rows, "5m", start + timedelta(minutes=20))) == 4

@@ -8,7 +8,7 @@ in backtest is what makes the two numbers comparable.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Sequence
 
 from ..data.timeutil import IST
 from .jsnum import js_round, to_fixed
@@ -359,33 +359,3 @@ def summarize_outcomes(logs: Sequence[dict] = ()) -> dict:
         "winRate": js_round(passed / resolved * 100) if resolved else None,
     }
 
-
-def merge_nifty_log_lists(
-    server_logs: Sequence[dict] = (), local_logs: Sequence[dict] = ()
-) -> list[dict]:
-    by_id: dict[str, dict] = {}
-
-    def rank(e: dict) -> int:
-        return _OUTCOME_RANK.get((e.get("outcome") or {}).get("status"), 0)
-
-    for e in [*server_logs, *local_logs]:
-        existing = by_id.get(e["id"])
-        if not existing:
-            by_id[e["id"]] = e
-            continue
-        er, xr = rank(e), rank(existing)
-        if er != xr:
-            if er > xr:
-                by_id[e["id"]] = e
-            continue
-        if (
-            e.get("updates", 1) > existing.get("updates", 1)
-            or (e.get("peakConfidence") or e.get("confidence") or 0)
-            > (existing.get("peakConfidence") or existing.get("confidence") or 0)
-            or _parse_iso(e["ts"]) > _parse_iso(existing["ts"])
-        ):
-            by_id[e["id"]] = e
-
-    return sorted(by_id.values(), key=lambda e: _parse_iso(e["ts"]), reverse=True)[
-        :NIFTY_LOG_MAX_ENTRIES
-    ]

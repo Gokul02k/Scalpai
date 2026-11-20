@@ -25,6 +25,7 @@ from dataclasses import dataclass, replace
 from typing import Callable, Sequence
 
 from .calibrate import black76_delta, black76_price
+from ..core.contracts import NIFTY_LOT_SIZE
 from .costs import OptionBuyCost
 
 
@@ -41,7 +42,7 @@ class OptionMarket:
     days_to_expiry: float = 4.7
     iv: float = 0.10
     spread_pts: float = 0.60
-    lot_size: int = 75
+    lot_size: int = NIFTY_LOT_SIZE
     #: Strike offset from spot, in index points. 0 is at-the-money.
     strike_offset: float = 0.0
 

@@ -35,6 +35,9 @@ def run(name: str, keep: float, gate: float | None) -> None:
         return
 
     wf = walk_forward(samples, cost_pts=cost, n_folds=4, keep_fracs=(keep,))
+    if wf is None:
+        print(f"  {name}: not enough samples to validate")
+        return
     k = wf.keeps[0]
     print(f"   keep {keep:.0%}   AUC {wf.oos_auc:.3f}   {k.trades} oos trades   "
           f"win {k.win_rate:.1f}%   net {k.net_per_trade:+.2f}   "

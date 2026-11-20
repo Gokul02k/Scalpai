@@ -1,10 +1,14 @@
 # ScalpAI v2 engine — Python 3.13
 # Install:  python3 -m venv .venv && .venv/bin/pip install -r engine/requirements.txt
+#
+# Pinned with ~= to the versions the suite last passed on (patch updates only).
+# Every entry used to be an open >=, so a fresh venv could pull a new major
+# release of pandas or numpy and change results with no code change.
 
 # ── Market data ────────────────────────────────────────────────────────────
 # yfinance: no account needed, but a rolling 60 days of 5m bars and no options
 # coverage. Fine for wiring things up, not for concluding anything.
-yfinance>=1.5.0
+yfinance~=1.5.2
 
 # Fyers: free (no data subscription), minute candles from 3 Jul 2017 and full
 # option chains. This is what a real backtest runs on. The adapter talks to the
@@ -12,19 +16,19 @@ yfinance>=1.5.0
 # which hard-pins aiohttp==3.9.3 (no Python 3.13 wheel) and drags boto3 in via
 # aws_lambda_powertools.
 
-pandas>=2.2
-numpy>=2.0
-requests>=2.32
+pandas~=3.0.5
+numpy~=2.5.2
+requests~=2.34
 
 # ── Machine learning ───────────────────────────────────────────────────────
 # CPU-only by design; no GPU needed. LightGBM replaces the hand-tuned
 # confidence formula in suggestion.js with a probability calibrated on actual
 # graded outcomes.
-lightgbm>=4.5
-scikit-learn>=1.5
+lightgbm~=4.7.0
+# scikit-learn is not needed: the model uses LightGBM's native train/Booster API.
 
 # ── Testing ────────────────────────────────────────────────────────────────
-pytest>=8.0
+pytest~=9.1
 
 # ── Not yet required ───────────────────────────────────────────────────────
 # Added when the relevant phase starts, to keep the install light:

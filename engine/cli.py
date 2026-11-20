@@ -15,7 +15,47 @@ import sys
 from .config import load_env
 from .data import CandleStore, available_sources, get_source, market_status, now_ist
 from .data.base import DataSourceError
+from .core.contracts import NIFTY_LOT_SIZE
 from .data.timeutil import HolidayCalendarMissing
+
+# Replays measure gross in index points, and `summarize` refuses a cost model in
+# rupees rather than subtract one unit from the other. The rupee models
+# (option_buy, equity_*) used to be offered here anyway, so the README's own
+# `--costs option_buy` example crashed after the whole replay had run. Option
+# economics are priced by `option-pnl` instead.
+REPLAY_COSTS = ["index_points"]
+REPLAY_COSTS_HELP = "index_points only; price options with `option-pnl`"
+
+
+def _mlset_path(symbol: str, interval: str, variant: str = "prod"):
+    """Where a collected training set is cached.
+
+    One name per (series, collection settings). `ml` used to write the
+    production cache whatever flags it ran with, so `train --cached` could fit
+    the live filter on a variant's signals; and `option-pnl` and `regime` read
+    a pre-production name nothing writes any more, pricing a stale v1 set.
+    """
+    from pathlib import Path
+
+    return Path(__file__).parent / "var" / f"mlset_{symbol}_{interval}_{variant}.json"
+
+
+def _ml_variant(args) -> str:
+    """`prod` for the settings `train` collects under, else a readable tag."""
+    parts = []
+    if args.no_opening_range:
+        parts.append("noor")
+    if args.min_confidence != 80:
+        parts.append(f"c{args.min_confidence}")
+    if args.min_pass_points != 50:
+        parts.append(f"p{args.min_pass_points:g}")
+    if args.step != 1:
+        parts.append(f"s{args.step}")
+    if args.mode != "scalp":
+        parts.append(args.mode)
+    if args.with_smc:
+        parts.append("smc")
+    return "-".join(parts) or "prod"
 
 # Symbols archived by a bare `sync`. The 5m series is the scalp signal's input;
 # the daily series is for the equity swing track and for long-horizon context.
@@ -41,6 +81,13 @@ DEFAULT_SYNC: list[tuple[str, str, str, int | None]] = [
 
 
 def cmd_probe(args) -> int:
+    """Exit 0 when the provider answers at all.
+
+    A source counts as working when any probed series comes back. Requiring
+    all three made one empty series (an equity on a holiday, say) report a
+    valid Fyers token as "missing or expired", and the morning script then
+    sent you to re-authenticate for nothing.
+    """
     from datetime import timedelta
 
     names = (args.source,) if args.source else available_sources()
@@ -48,15 +95,14 @@ def cmd_probe(args) -> int:
 
     for name in names:
         print(f"\n=== {name} ===")
-        source_ok = True
         try:
             src = get_source(name)
         except DataSourceError as e:
             print(f"  unavailable: {e}")
-            source_ok = False
             continue
 
         end = now_ist()
+        answered = 0
         for symbol, segment, interval in [
             ("NIFTY", "INDEX", "5m"),
             ("NIFTY", "INDEX", "1d"),
@@ -65,22 +111,19 @@ def cmd_probe(args) -> int:
             try:
                 bars = src.candles(symbol, interval, end - timedelta(days=30), end, segment)
                 if bars:
+                    answered += 1
                     print(
                         f"  OK   {symbol:10} {segment:7} {interval:4} "
                         f"{len(bars):5} bars  last={bars[-1].c:.2f} @ {bars[-1].dt:%Y-%m-%d %H:%M}"
                     )
                 else:
                     print(f"  EMPTY {symbol:10} {segment:7} {interval:4}")
-                    source_ok = False
             except Exception as e:
                 print(f"  FAIL {symbol:10} {segment:7} {interval:4}  {type(e).__name__}: {e}")
-                source_ok = False
-        if source_ok:
+        if answered:
             any_working = True
 
-    if args.source:
-        return 0 if any_working else 1
-    # Probing all providers: succeed if at least one works (Fyers is optional).
+    # One provider (or, probing all, at least one of them) answering is enough.
     return 0 if any_working else 1
 
 
@@ -277,7 +320,7 @@ def cmd_vwap_cross(args) -> int:
         return _vwap_cross_grid(candles, params, args)
 
     if not args.stop_pts:
-        print(f"\n  ₹{args.rupee_stop:.0f} on one lot of 75 at delta {args.delta} "
+        print(f"\n  ₹{args.rupee_stop:.0f} on one lot of {NIFTY_LOT_SIZE} at delta {args.delta} "
               f"= {stop:.1f} index points")
     print(f"  replaying {len(candles)} bars of {args.symbol} {args.interval}…")
     result = run_vwap_cross_backtest(candles, params, get_cost_model(args.costs))
@@ -619,12 +662,11 @@ def cmd_costs(args) -> int:
 
 def cmd_option_pnl(args) -> int:
     """Re-price the strategy's trades as options rather than index points."""
-    from pathlib import Path
 
     from .backtest.option_pnl import OptionMarket, repriced
     from .ml.model import load_dataset
 
-    cache = Path(__file__).parent / "var" / f"mlset_{args.symbol}_{args.interval}.json"
+    cache = _mlset_path(args.symbol, args.interval)
     if not cache.exists():
         print(f"No dataset at {cache.name}. Run: python -m engine.cli ml")
         return 1
@@ -685,13 +727,12 @@ def cmd_option_pnl(args) -> int:
 
 def cmd_regime(args) -> int:
     """Slice results by volatility regime, pricing each trade at its own VIX."""
-    from pathlib import Path
 
     from .backtest.option_pnl import OptionMarket, price_all
     from .backtest.regime import load_vix, split_by_regime
     from .ml.model import load_dataset
 
-    cache = Path(__file__).parent / "var" / f"mlset_{args.symbol}_{args.interval}.json"
+    cache = _mlset_path(args.symbol, args.interval)
     if not cache.exists():
         print(f"No dataset at {cache.name}. Run: python -m engine.cli ml")
         return 1
@@ -735,8 +776,8 @@ def cmd_regime(args) -> int:
 
     import statistics as st
 
-    below = [n for (s, _, _), n in zip(rows, nets) if (v := vix.vix_at(s.ts_ms)) and v < args.gate]
-    above = [n for (s, _, _), n in zip(rows, nets) if (v := vix.vix_at(s.ts_ms)) and v >= args.gate]
+    below = [n for (s, _, _), n in zip(rows, nets) if (v := vix.vix_at(s.ts_ms)) and v <= args.gate]
+    above = [n for (s, _, _), n in zip(rows, nets) if (v := vix.vix_at(s.ts_ms)) and v > args.gate]
     print(f"\n  gate at VIX {args.gate:.0f}:")
     if below:
         print(f"    below   {len(below):5d} trades   net {st.mean(below):+7.2f} pts/trade   "
@@ -851,7 +892,6 @@ def _stress(values: list[float], js: list[int], samples, st) -> None:
 
 def cmd_ml(args) -> int:
     """Fit the signal filter and report what it is worth out of sample."""
-    from pathlib import Path
 
     from .backtest import BacktestConfig, get_cost_model, run_backtest
     from .core.suggestion import PRODUCTION_FLAGS, StrategyFlags
@@ -866,8 +906,7 @@ def cmd_ml(args) -> int:
     if args.with_smc:
         print(f"\n  smart-money columns spliced in — {len(columns)} features")
 
-    cache = (Path(__file__).parent / "var"
-             / f"mlset_{args.symbol}_{args.interval}_prod.json")
+    cache = _mlset_path(args.symbol, args.interval, _ml_variant(args))
 
     if args.cached and cache.exists():
         samples, cost = load_dataset(cache)
@@ -1105,8 +1144,7 @@ def cmd_train(args) -> int:
     # Keyed to the flags it was collected under. Sharing one cache with the v1
     # geometry would train the filter on a signal set the live runner does not
     # produce, and nothing downstream would notice.
-    cache = (Path(__file__).parent / "var"
-             / f"mlset_{args.symbol}_{args.interval}_prod.json")
+    cache = _mlset_path(args.symbol, args.interval)
 
     if args.cached and cache.exists():
         samples, _ = load_dataset(cache)
@@ -1199,6 +1237,10 @@ def cmd_paper(args) -> int:
         model, meta = load_model(path)
         if threshold is None:
             threshold = meta.get("threshold")
+        if threshold is None:
+            print(f"\n  {path.name} records no score threshold. Retrain it, or pass "
+                  "--min-score explicitly.\n")
+            return 1
         print(f"\n  filter    {path.name}  threshold {threshold:.4f} "
               f"(trained on {meta.get('trained_on', '?')} trades)")
 
@@ -1227,10 +1269,9 @@ def cmd_paper(args) -> int:
         _paper_tick(source, book, config, model)
         return _paper_report(book)
 
-    try:
-        status = market_status()
-    except HolidayCalendarMissing:
-        status = {"open": True, "label": "unknown", "reason": "no holiday calendar"}
+    status = _session_status()
+    if status.get("aborted"):
+        return 0
     if not status["open"] and not args.force:
         print(f"  market is {status['label']} ({status['reason']}).")
         print("  Use --force to run anyway against the last available bars.\n")
@@ -1315,7 +1356,7 @@ def cmd_cross_paper(args) -> int:
     print(f"\n  EMA {config.ema_period} x session VWAP on {config.symbol} "
           f"{config.interval}")
     print(f"  stop      {config.stop_pts:.1f} index pts  "
-          f"(Rs 800 / 75 at delta 0.52)")
+          f"(Rs 800 / {NIFTY_LOT_SIZE} at delta 0.52)" if not args.stop_pts else "(set by --stop-pts)")
     print(f"  arms      gated (R:R >= {config.min_rr:g}) and ungated (every cross)")
     print(f"  costs     {config.cost_pts:.1f} pts round trip deducted from net")
     print(f"  book      {book.path}")
@@ -1328,10 +1369,9 @@ def cmd_cross_paper(args) -> int:
         _cross_tick(source, book, config)
         return _cross_report(book)
 
-    try:
-        status = market_status()
-    except HolidayCalendarMissing:
-        status = {"open": True, "label": "unknown", "reason": "no holiday calendar"}
+    status = _session_status()
+    if status.get("aborted"):
+        return 0
     if not status["open"] and not args.force:
         print(f"  market is {status['label']} ({status['reason']}).")
         print("  Use --force to run anyway against the last available bars.\n")
@@ -1472,6 +1512,45 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def _session_status(*, wait_for_open: bool = True) -> dict:
+    """Market status for a trading loop, waiting through the pre-open.
+
+    The morning scripts start the session a few minutes before 9:15 so
+    everything is warm at the open. Before this waited, a start at 9:05 read
+    "Pre-Market", printed a hint about --force and exited, so the documented
+    morning flow never placed a trade.
+
+    With no holiday list for the year, weekends and session hours still apply
+    and only holidays are unknown. The old fallback reported the market as
+    open outright, so a loop started at 3am on New Year's Day would trade.
+    """
+    import time as _time
+
+    from .data.timeutil import IST, MARKET_OPEN
+
+    def status() -> dict:
+        try:
+            return market_status()
+        except HolidayCalendarMissing as e:
+            print(f"  WARNING: {e}\n  Treating every weekday as a trading day.\n")
+            return market_status(strict=False)
+
+    st = status()
+    if not wait_for_open or st["reason"] != "pre_open":
+        return st
+
+    now = now_ist().astimezone(IST)
+    opens = now.replace(hour=MARKET_OPEN[0], minute=MARKET_OPEN[1], second=5, microsecond=0)
+    print(f"  pre-open: waiting until {opens:%H:%M} IST. Ctrl-C to stop.")
+    try:
+        while (left := (opens - now_ist()).total_seconds()) > 0:
+            _time.sleep(min(left, 30))
+    except KeyboardInterrupt:
+        print("\n  stopped before the open.\n")
+        return {**st, "aborted": True}
+    return status()
+
+
 def cmd_status(args) -> int:
     try:
         st = market_status()
@@ -1536,7 +1615,7 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("--sl-pct", type=float, help="override settings.slPct")
     bt.add_argument("--step", type=int, default=1, help="evaluate every Nth bar")
     bt.add_argument("--costs", default="index_points",
-                    choices=["index_points", "option_buy", "equity_intraday", "equity_delivery"])
+                    choices=REPLAY_COSTS, help=REPLAY_COSTS_HELP)
     bt.add_argument("--show", type=int, default=0, help="print the N most recent signals")
     bt.set_defaults(fn=cmd_backtest)
 
@@ -1549,7 +1628,7 @@ def main(argv: list[str] | None = None) -> int:
     ab.add_argument("--min-pass-points", type=float, default=50)
     ab.add_argument("--step", type=int, default=1)
     ab.add_argument("--costs", default="index_points",
-                    choices=["index_points", "option_buy", "equity_intraday", "equity_delivery"])
+                    choices=REPLAY_COSTS, help=REPLAY_COSTS_HELP)
     ab.set_defaults(fn=cmd_ab)
 
     ml = sub.add_parser("ml", help="fit and validate the learned signal filter")
@@ -1586,13 +1665,13 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--min-trades", type=int, default=100,
                     help="below this a row is reported as unmeasured rather than read")
     st.add_argument("--costs", default="index_points",
-                    choices=["index_points", "option_buy", "equity_intraday", "equity_delivery"])
+                    choices=REPLAY_COSTS, help=REPLAY_COSTS_HELP)
     st.set_defaults(fn=cmd_strategies)
 
     ct = sub.add_parser("costs", help="measure real round-trip cost from a live option chain")
     ct.add_argument("--symbol", default="NIFTY")
     ct.add_argument("--strikes", type=int, default=10, help="strikes each side of ATM")
-    ct.add_argument("--lot-size", type=int, default=75)
+    ct.add_argument("--lot-size", type=int, default=NIFTY_LOT_SIZE)
     ct.add_argument("--hold-hours", type=float, default=6.0,
                     help="average holding period, for pricing theta")
     ct.set_defaults(fn=cmd_costs)
@@ -1604,7 +1683,7 @@ def main(argv: list[str] | None = None) -> int:
     op.add_argument("--days-to-expiry", type=float, default=4.7)
     op.add_argument("--iv", type=float, default=10.0, help="implied vol in percent")
     op.add_argument("--spread", type=float, default=0.60, help="premium points of spread")
-    op.add_argument("--lot-size", type=int, default=75)
+    op.add_argument("--lot-size", type=int, default=NIFTY_LOT_SIZE)
     op.add_argument("--strike-offset", type=float, default=0.0,
                     help="strike distance from spot in index points; 0 is ATM")
     op.add_argument("--resolved-only", action="store_true",
@@ -1618,8 +1697,10 @@ def main(argv: list[str] | None = None) -> int:
     rg.add_argument("--interval", default="5m")
     rg.add_argument("--days-to-expiry", type=float, default=4.7)
     rg.add_argument("--spread", type=float, default=0.60)
-    rg.add_argument("--lot-size", type=int, default=75)
-    rg.add_argument("--gate", type=float, default=14.0,
+    rg.add_argument("--lot-size", type=int, default=NIFTY_LOT_SIZE)
+    # 16 and "strictly above" both match `live/decide.py`, so this reports the
+    # gate the paper trader applies rather than a neighbouring one.
+    rg.add_argument("--gate", type=float, default=16.0,
                     help="VIX level to test as a stand-aside threshold")
     rg.add_argument("--iv-scale", type=float, default=1.0,
                     help="weekly IV as a multiple of VIX; VIX is a 30-day measure")
@@ -1631,7 +1712,7 @@ def main(argv: list[str] | None = None) -> int:
     ml.add_argument("--no-opening-range", action="store_true",
                     help="collect data from the variant with the opening-range factor removed")
     ml.add_argument("--costs", default="index_points",
-                    choices=["index_points", "option_buy", "equity_intraday", "equity_delivery"])
+                    choices=REPLAY_COSTS, help=REPLAY_COSTS_HELP)
     ml.set_defaults(fn=cmd_ml)
 
     sm = sub.add_parser("smc", help="replay the sweep / BOS / order-block setup")
@@ -1656,7 +1737,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="replay the setup's variants, to separate it from its parameters")
     sm.add_argument("--jobs", type=int, default=8, help="parallel replays for --grid")
     sm.add_argument("--costs", default="index_points",
-                    choices=["index_points", "option_buy", "equity_intraday", "equity_delivery"])
+                    choices=REPLAY_COSTS, help=REPLAY_COSTS_HELP)
     sm.add_argument("--show", type=int, default=0, help="print the N most recent trades")
     sm.set_defaults(fn=cmd_smc)
 
@@ -1681,7 +1762,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="vary the delta behind the stop and the gate, across cores")
     vc.add_argument("--jobs", type=int, default=8, help="parallel replays for --grid")
     vc.add_argument("--costs", default="index_points",
-                    choices=["index_points", "option_buy", "equity_intraday", "equity_delivery"])
+                    choices=REPLAY_COSTS, help=REPLAY_COSTS_HELP)
     vc.add_argument("--show", type=int, default=0, help="print the N most recent trades")
     vc.set_defaults(fn=cmd_vwap_cross)
 
@@ -1696,7 +1777,7 @@ def main(argv: list[str] | None = None) -> int:
     sw.add_argument("--min-confidence", type=int, default=80)
     sw.add_argument("--step", type=int, default=1)
     sw.add_argument("--costs", default="index_points",
-                    help="cost model for the comparison")
+                    choices=REPLAY_COSTS, help=REPLAY_COSTS_HELP)
     sw.add_argument("--atr-target", type=float, nargs="*", default=[2.0, 3.0, 4.0],
                     help="ATR multiples to try for the target (stop gets half)")
     sw.add_argument("--jobs", type=int, default=8, help="parallel replays")

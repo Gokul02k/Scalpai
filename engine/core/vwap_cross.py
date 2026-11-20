@@ -28,7 +28,8 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-from .indicators import ema, intraday_session, support_resistance
+from .contracts import NIFTY_LOT_SIZE
+from .indicators import ema, support_resistance
 
 CandleDict = dict[str, Any]
 
@@ -37,7 +38,6 @@ SHORT = "short"
 
 #: The stop the strategy is stated with, and the contract it applies to.
 DEFAULT_RUPEE_STOP = 800.0
-NIFTY_LOT_SIZE = 75
 #: At-the-money delta on a NIFTY weekly, from the measured chain in
 #: `backtest/calibrate.py`. The rupee-to-points conversion turns on it.
 ATM_DELTA = 0.52

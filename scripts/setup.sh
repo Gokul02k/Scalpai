@@ -7,7 +7,7 @@ source "$(dirname "$0")/_lib.sh"
 
 say "Python environment"
 ensure_venv
-"$PIP" install -q -r "$ROOT/engine/requirements.txt" pytest
+"$PIP" install -q -r "$ROOT/engine/requirements.txt"
 echo "  $($PY --version)"
 
 say "Node dependencies"

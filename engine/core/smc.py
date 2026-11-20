@@ -89,15 +89,6 @@ class Sweep:
 
 
 @dataclass(frozen=True)
-class Break:
-    idx: int
-    level: float
-    close: float
-    kind: str  # "BOS" or "CHoCH"
-    direction: str
-
-
-@dataclass(frozen=True)
 class Zone:
     lo: float
     hi: float

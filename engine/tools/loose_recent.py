@@ -9,8 +9,6 @@ reports the most recent fold and a per-year split rather than the average.
 """
 from __future__ import annotations
 
-from collections import defaultdict
-from datetime import datetime, timezone
 from pathlib import Path
 
 from engine.backtest.regime import load_vix
@@ -29,16 +27,15 @@ def load(name: str):
     return [s for s in samples if s.status in ("target", "stop")], cost
 
 
-def year_of(s) -> int:
-    return datetime.fromtimestamp((s.ts or 0) / 1000, tz=timezone.utc).year
-
-
 def check(name: str, keep: float) -> None:
     samples, cost = load(name)
     wf = walk_forward(samples, cost_pts=cost, n_folds=4, keep_fracs=(keep,))
+    if wf is None:
+        print(f"  {name}: not enough samples to validate")
+        return
 
     print(f"\n  {name}, keeping the top {keep:.0%}")
-    print(f"  per-fold AUC   " + ", ".join(f"{a:.3f}" for a in wf.fold_aucs))
+    print("  per-fold AUC   " + ", ".join(f"{a:.3f}" for a in wf.fold_aucs))
 
     _, _, recent = seed_robustness(samples, cost_pts=cost, n_folds=4,
                                    keep_fracs=(keep,), seeds=range(6))

@@ -32,7 +32,8 @@ export const SHORT = 'short';
 
 /** The stop the strategy is stated with, and the contract it applies to. */
 export const DEFAULT_RUPEE_STOP = 800;
-export const NIFTY_LOT_SIZE = 75;
+/** NIFTY contract size from 30 Dec 2025 (NSE/FAOP/70616; 75 before that). */
+export const NIFTY_LOT_SIZE = 65;
 /** At-the-money delta on a NIFTY weekly, from the measured chain in
  *  `engine/backtest/calibrate.py`. The rupee conversion turns on it. */
 export const ATM_DELTA = 0.52;

@@ -32,6 +32,7 @@ from ..backtest import calibrate as cal
 from ..backtest.costs import OptionBuyCost
 from ..backtest.replay import DEFAULT_SETTINGS
 from ..data.base import DataSource
+from ..core.contracts import NIFTY_LOT_SIZE
 from ..data.timeutil import IST
 from . import decide as dec
 from .book import ClosedTrade, PaperBook, Position
@@ -58,7 +59,7 @@ class PaperConfig:
     min_score: float | None = None
 
     lots: int = 1
-    lot_size: int = 75
+    lot_size: int = NIFTY_LOT_SIZE
     max_open: int = 2
     #: Minutes before another entry in the same direction is allowed. Mirrors
     #: the dedupe window in the signal log, so paper trade counts stay
@@ -144,16 +145,26 @@ def evaluate(
         result.reason = f"{len(book.open_positions)} positions already open"
         return result
 
-    window = rows[-config.window:]
+    # The decision reads completed bars only, as the backtest does. The feed's
+    # last bar is still forming during the session: deciding on it meant a
+    # signal that could fire and un-fire within one bar, on information the
+    # replay never had. Open positions above are still managed on the live
+    # price, and the fill below is still at the live price.
+    closed = _completed(rows, config.interval, now)
+    if len(closed) < config.window // 4:
+        result.reason = f"only {len(closed)} completed bars, need more history"
+        return result
+    window = closed[-config.window:]
+    price = window[-1]["c"]
     analysis = ind.analyze_from_candles(window, include_history=False)
-    prev_close = _prev_close(source, config.symbol, rows)
-    chg_pct = round((spot - prev_close) / prev_close * 100, 2) if prev_close else 0.0
+    prev_close = _prev_close(source, config.symbol, closed)
+    chg_pct = round((price - prev_close) / prev_close * 100, 2) if prev_close else 0.0
 
     index_signals = sig.generate_index_signals(
-        analysis, spot, config.instrument, config.settings
+        analysis, price, config.instrument, config.settings
     )
     final_call = sug.build_unified_suggestion(
-        analysis, spot, chg_pct, index_signals,
+        analysis, price, chg_pct, index_signals,
         config.settings, config.mode, config.instrument, config.flags,
     )
 
@@ -194,7 +205,11 @@ def evaluate(
     if levels is None:
         result.reason = "signal carried no usable target/stop"
         return result
-    target, stop = levels
+    # The call priced its levels off the last completed close, and the fill is
+    # at the live price. Carry the distances over rather than the absolute
+    # levels, so the trade keeps the risk and reward the signal measured.
+    drift = spot - price
+    target, stop = levels[0] + drift, levels[1] + drift
 
     pick = choose_strike(chain, result.action, config, now)
     if pick is None:
@@ -427,6 +442,21 @@ def _cooldown_block(
            and datetime.fromisoformat(t.closed_at) > cutoff for t in closed):
         return f"cooldown: {action} closed less than {config.cooldown_min}m ago"
     return None
+
+
+_BAR_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000}
+
+
+def _completed(rows: list[dict], interval: str, now: datetime) -> list[dict]:
+    """Bars that had closed by `now`. Unknown intervals are passed through."""
+    bar_ms = _BAR_MS.get(interval)
+    if not bar_ms:
+        return rows
+    now_ms = now.timestamp() * 1000
+    end = len(rows)
+    while end and rows[end - 1]["ts"] + bar_ms > now_ms:
+        end -= 1
+    return rows[:end]
 
 
 def _recent_candles(source: DataSource, config: PaperConfig, now: datetime) -> list:
